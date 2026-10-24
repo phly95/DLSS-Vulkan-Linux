@@ -173,3 +173,15 @@ Two facts the decompile alone got wrong, found by running it:
   prints `(int)` for a raw `movss`. As an int the dec0 kernel multiplied by ~1e-44, `aniso` stayed
   zero and the output was a soft 27 dB.
 - Jitter is NGX's `Jitter.Offset` (sample at pixel centre minus jitter); the other sign gives 31 dB.
+
+## `srunit::k_sr_gather` (not run by srref yet)
+
+Copies the game's inputs into `g_col` (RGBA16F), `g_dep` (f32), `g_mv` (RG16F). `GatherArgs` (88 B):
+three input resources `{ptr, int, int}` (colour, motion vectors, depth: the ints are a row pitch and a
+format code), then `g_col` (+0x30), `g_mv` (+0x38), `g_dep` (+0x40), render W, H (+0x48), mvhi flag (+0x50).
+Colour format codes seen in the ISA (`build/re/fn.sh sr _ZN6srunit11k_sr_gatherENS_10GatherArgsE`):
+5 = RGBA32F (to f16), 4 = R11G11B10F, 3 = RGB9E5, others 10:10:10:2 and 8-bit unorm; alpha is 1.0 for
+formats without one. No tone or exposure change: a plain format conversion. `k_sr_gather_mv` converts
+output-resolution motion vectors into `g_mvhi` when the game supplies them (F+0x4d).
+
+`tools/re/fn.sh <net> <mangled>` prints one kernel's disassembly from `artifacts/neuralhub-v0.8.0/gfx1201/<net>.s.xz`.

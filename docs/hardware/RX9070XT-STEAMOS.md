@@ -99,7 +99,10 @@ compares the result with **NVIDIA's own output** for the same input (the unmodif
 `Reset` on every frame, constant depth, zero motion), as 8-bit RGB.
 
 The model came from a community-patched `nvngx_dlssnr.dll` 310.8.0.0 (SHA256 `8270b350…44cc206`; the
-patch lifts NVIDIA's architecture check). Its whole-file hash is not the 310.8.0 hash
+patch lifts NVIDIA's architecture check), downloaded from the Hugging Face repository
+https://huggingface.co/Bandukids/DLSS-Runtimes (file `nvngx_dlssnr.dll`, 165,840,496 bytes):
+`curl -L -o nvngx_dlssnr.dll https://huggingface.co/Bandukids/DLSS-Runtimes/resolve/main/nvngx_dlssnr.dll`.
+`tools/hwtest/extract_nr_model.sh nvngx_dlssnr.dll` turns it into `build/model/dlssnr.bin`. Its whole-file hash is not the 310.8.0 hash
 `extract_model.sh` accepts, so the extraction ran with that one check swapped for this hash. The
 script's other check still ran and passed: all 599 extracted entries are byte-identical to the
 reference's tested model (`model-files.sha256`). The weights are NVIDIA's own. Nothing from the DLL is

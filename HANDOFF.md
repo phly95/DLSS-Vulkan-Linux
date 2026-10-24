@@ -17,21 +17,51 @@ are allowed). The reference Vulkan NR port is `reference-nr-vulkan/` (MIT).
 | # | deliverable | state |
 | --- | --- | --- |
 | 1 | kernel + interop inventory | **done**: `docs/inventory/KERNELS.md`, `docs/inventory/kernels-generated.md` |
-| 2 | harness | **partial**: dump format + `tools/harness/compare.py` (self-tested). **No Windows reference dumps** (need Windows + RX 9000). No Vulkan-side dumper yet. |
+| 2 | harness | **replaced in practice by running NeuralHub itself**: NeuralHub's code objects run unchanged under ROCm on this card (`tools/sr/srref`), so Windows dumps are no longer needed. `.hdump` + `tools/harness/compare.py` still exist (self-tested) for layer-by-layer compares. No Vulkan-side dumper yet. |
 | 3 | NR | **runs on the RX 9070 XT with the real 310.8.0 model**: 45.59 / 47.97 / 49.00 dB vs NVIDIA's output at 1080p / 1440p / 4K (offline runner, `tools/hwtest/nr_gate.py`), the same as the reference's published figures. ≥ 49 dB at every size needs the 310.9.16 model, and the in-game runtime path is not measured yet. See `docs/hardware/RX9070XT-STEAMOS.md`. |
 | 4 | SR | **host recovered, reference running**: NeuralHub's own SR code runs on the RX 9070 XT under ROCm (`tools/sr/srref`, presets M and L, 39 dB after 8 frames on the test sequence; `docs/sr/HOST-RE.md`). Weights from the user's `nvngx_dlss.dll` 310.9.1.0 packed exactly as NeuralHub does (`tools/sr/sr_weights.py`, `sr_pack.py`). **Vulkan shaders: not started** (next: `k_sr_stage`, ISA notes below). |
-| 5 | RR | not started |
+| 5 | RR | not started. Same method as SR applies: `rr.gfx1201.co` under ROCm + the host's RR engine (`rrunit::`, `rrk::`, `rrio::` launchers in `neuralhub_host.dll`), weights from the user's `nvngx_dlssd.dll` 310.9.1.0 (Crimson Desert `bin64/`). |
 | 6 | integration + installer | not started (the reference's `linux/package/install.sh` is the model to follow) |
 | 7 | performance | not started (needs the card) |
 
-## The real machine
+## The real machine (where work happens now)
 
-The port now also runs on the target: an RX 9070 XT under SteamOS (`docs/hardware/RX9070XT-STEAMOS.md`,
-`tools/hwtest/`). Build outputs go to `build/hwtest/` and the model to `build/model/`. Both are ignored by git.
-This machine has the user's `nvngx_dlss.dll` / `nvngx_dlssd.dll` 310.9.1.0, which NeuralHub's SR / RR target
-(Crimson Desert's `bin64/`).
+An RX 9070 XT under SteamOS 3.9 (`docs/hardware/RX9070XT-STEAMOS.md`). SteamOS's root is immutable and has
+no compiler: everything is built in podman containers and the binaries run on the host. Everything
+generated goes under `build/` (ignored by git); nothing from NVIDIA or NeuralHub may be committed except
+the NeuralHub installer and the artifacts already listed below.
 
-## The cloud container (first sessions) and what it can do
+### Setting up from a fresh clone
+
+```bash
+git submodule update --init                       # reference-nr-vulkan (MIT), pinned at c71b0f4
+(cd reference-nr-vulkan && bash fetch_deps.sh && python3 linux/build/build_network.py rdna4)
+python3 -m venv build/venv && build/venv/bin/pip install numpy pillow pefile msgpack capstone
+build/venv/bin/python -I tools/exe/extract.py artifacts/neuralhub-v0.8.0/NeuralHub_v0.8.0_setup.exe build/nh
+#   -> build/nh/{neuralhub_host.dll, sr|rr|nr|fg.<target>.co}
+podman pull docker.io/rocm/dev-ubuntu-24.04:7.2.4   # ROCm for the reference harness (/dev/kfd is usable as deck)
+tools/hwtest/build_native.sh && tools/hwtest/build_plan.sh && tools/hwtest/build_probe.sh   # NR runner etc. -> build/hwtest/
+```
+
+Ghidra (for host-code questions; `tools/re/README.md`): Ghidra 12.1.4 unzipped to `build/ghidra/`, a JDK 21
+image `localhost/ghidra:1` (`podman run --name t ubuntu:24.04 bash -c 'apt-get update && apt-get install -y
+openjdk-21-jdk-headless' && podman commit t localhost/ghidra:1`), then the commands in `tools/re/README.md`.
+A full decompile of `neuralhub_host.dll` takes about a minute; `tools/re/annotate.py` names the kernels in it.
+
+### The user's DLLs (never commit them or anything extracted from them)
+
+| what | where on this machine |
+| --- | --- |
+| `nvngx_dlss.dll` / `nvngx_dlssd.dll` 310.9.1.0 (SR / RR, the versions NeuralHub targets) | `~/.local/share/Steam/steamapps/common/Crimson Desert/bin64/` |
+| `nvngx_dlssnr.dll` 310.8.0.0, community-patched (architecture check lifted) | downloaded from https://huggingface.co/Bandukids/DLSS-Runtimes (the user's pointer); weights verified identical to the reference's tested model |
+| 310.9.16 `nvngx_dlss/dlssd/dlssg.dll` (no NR inside) | the user's zip; not needed so far |
+
+NR model: `tools/hwtest/extract_nr_model.sh <nvngx_dlssnr.dll>` -> `build/model/dlssnr.bin` (the reference's
+extractor with only the whole-file hash check relaxed; every weight entry is still checked), then
+`build/venv/bin/python tools/hwtest/nr_gate.py --runner build/hwtest/nr_graph --plan-tool build/hwtest/nr_plan
+--model build/model/dlssnr.bin --work build/hwtest/gate`.
+
+## The cloud container (first sessions only; still useful for offline compiles)
 
 - No GPU, no Windows. Ubuntu 24.04, 4 cores, 15 GB RAM.
 - **Compile for the real card without it**: `bash tools/radv-offline/build.sh` (unpacks the prebuilt
@@ -69,7 +99,7 @@ them and every code object in seconds (needs `7z`, `pip install pefile msgpack`)
 - NeuralHub's D3D12 backend runs the HIP gfx ISA through AMD's `amdxc64.dll` ElfHsa extension. Proton
   has no equivalent, so every kernel must become SPIR-V.
 - SR weights: user's `nvngx_dlss.dll` 310.9.1.0, presets M/L only; RR: `nvngx_dlssd.dll` 310.9.1.0
-  preset F; NR: `nvngx_dlssnr.dll` 310.8.0.0. None are available here; none may be committed.
+  preset F; NR: `nvngx_dlssnr.dll` 310.8.0.0. All three are on this machine (table above); none may be committed.
 - NeuralHub has built-in dumps usable on Windows: env `DLSSNR_DUMP_LAYERS`, `DLSSNR_DUMP_NOISE`, and
   `[Debug] DlssSrDumpNextFrame=1` (writes `sr_dump_<n>/stage_in_color.bin`, `stage_in_depth.bin`,
   `after_hidden0/1.bin`, `stage_output.bin`, `game_output.bin`; HIP backend only). Their file format is
@@ -108,10 +138,24 @@ them and every code object in seconds (needs `7z`, `pip install pefile msgpack`)
    through HIP external-memory interop. This breaks the goal's "no HIP at run time" and needs ROCm
    libraries; ask the user before going this way.
 
-## Next steps once unblocked
+## Next steps, in order
 
-1. On Windows + RX 9000: run NeuralHub with its dump switches on seeded inputs; work out the dump format;
-   convert to `.hdump` (`tools/harness/hdump.py`).
-2. On an RX 9070 XT: run the reference NR against NVIDIA's output at 1080p/1440p/4K (gate ≥ 49 dB).
-3. SR, then RR, one kernel per commit, each checked by `compare.py` against the dumps and by
-   `pipestats` for spills on GFX1201 before it reaches hardware.
+1. SR in Vulkan (section above): one kernel per commit, each compared with `srref --dump` output for the
+   same inputs (bit-exact where the ISA's rounding points are mirrored; otherwise report the difference),
+   compiled with zero spills (`RADV_DEBUG=shaderstats`, as in `docs/hardware/RX9070XT-STEAMOS.md`).
+   Shaders follow the reference NR port's conventions (`reference-nr-vulkan/CLAUDE.md`: wave32 pinned,
+   FP8 only where the original uses it, 16-byte aligned LDS coopmat loads). Then a Vulkan host that runs
+   the whole SR frame and matches srref end to end (39 dB test above, and per-frame diff vs srref).
+2. RR: repeat the SR recipe (host decompile -> weights reader/packer -> ROCm reference -> Vulkan).
+3. Integration: the reference's Vulkan layer + OptiScaler route (`reference-nr-vulkan/linux/`), SR/RR
+   behind NGX/FSR inputs; installer modelled on `reference-nr-vulkan/linux/package/install.sh`.
+4. Performance on this card; NR's in-game runtime path vs NVIDIA (the gate so far used the offline runner).
+
+## Known loose ends
+
+- Preset M's raw weights do not reproduce NeuralHub's M checksum (L does); M still packs to the expected
+  sizes and runs well under srref. Cause unknown (`docs/sr/HOST-RE.md`).
+- srref skips NeuralHub's `k_sr_gather` (game-input format conversion) and the auto-exposure path; the
+  Vulkan port needs both (the gather reads several DXGI formats: see `docs/sr/HOST-RE.md`).
+- The decompiler shows raw float stores as `(int)` casts; check every scalar's type against the kernel ISA
+  (this hid a bug once: dec0's first scalar).

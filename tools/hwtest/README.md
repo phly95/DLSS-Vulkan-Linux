@@ -54,3 +54,16 @@ the same `podman` container as the runner.
 Linux with nothing but a C++17 compiler and Vulkan headers. This machine (SteamOS) has no compiler
 in its immutable root, so the script builds inside a `podman` Ubuntu 24.04 container and writes the
 binary to the host, where it runs against the host's Mesa (the driver under test).
+
+## `extract_nr_model.sh` / `nr_gate.py` — the real model and the NR gate
+
+The NR weights come from `nvngx_dlssnr.dll` 310.8.0.0. One copy (community-patched, weights unchanged)
+is at https://huggingface.co/Bandukids/DLSS-Runtimes:
+
+    curl -L -o nvngx_dlssnr.dll https://huggingface.co/Bandukids/DLSS-Runtimes/resolve/main/nvngx_dlssnr.dll
+    tools/hwtest/extract_nr_model.sh nvngx_dlssnr.dll          # -> build/model/dlssnr.bin
+    build/venv/bin/python tools/hwtest/nr_gate.py --runner build/hwtest/nr_graph \
+        --plan-tool build/hwtest/nr_plan --model build/model/dlssnr.bin --work build/hwtest/gate
+
+`extract_nr_model.sh` relaxes only the reference extractor's whole-file hash check; every weight entry is
+still checked against the reference's tested model. Never commit the DLL or the model.

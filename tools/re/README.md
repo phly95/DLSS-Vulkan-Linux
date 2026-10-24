@@ -19,3 +19,4 @@ Nothing they produce may be committed: it is NeuralHub's code.
 - `annotate.py`: map each kernel handle to its demangled name and annotate `decomp.c` with `/*K:name*/`.
 - `Xrefs.java`: references to each kernel handle and their callers.
 - `pe.py`: read the DLL's memory image by virtual address (tables, constants, strings).
+- `fn.sh`: print one kernel's disassembly (`tools/re/fn.sh sr <mangled name>`).
