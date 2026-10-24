@@ -19,7 +19,7 @@ are allowed). The reference Vulkan NR port is `reference-nr-vulkan/` (MIT).
 | 1 | kernel + interop inventory | **done**: `docs/inventory/KERNELS.md`, `docs/inventory/kernels-generated.md` |
 | 2 | harness | **partial**: dump format + `tools/harness/compare.py` (self-tested). **No Windows reference dumps** (need Windows + RX 9000). No Vulkan-side dumper yet. |
 | 3 | NR | **runs on the RX 9070 XT with the real 310.8.0 model**: 45.59 / 47.97 / 49.00 dB vs NVIDIA's output at 1080p / 1440p / 4K (offline runner, `tools/hwtest/nr_gate.py`), the same as the reference's published figures. ≥ 49 dB at every size needs the 310.9.16 model, and the in-game runtime path is not measured yet. See `docs/hardware/RX9070XT-STEAMOS.md`. |
-| 4 | SR | not started |
+| 4 | SR | **host recovered, reference running**: NeuralHub's own SR code runs on the RX 9070 XT under ROCm (`tools/sr/srref`, presets M and L, 39 dB after 8 frames on the test sequence; `docs/sr/HOST-RE.md`). Weights from the user's `nvngx_dlss.dll` 310.9.1.0 packed exactly as NeuralHub does (`tools/sr/sr_weights.py`, `sr_pack.py`). **Vulkan shaders: not started** (next: `k_sr_stage`, ISA notes below). |
 | 5 | RR | not started |
 | 6 | integration + installer | not started (the reference's `linux/package/install.sh` is the model to follow) |
 | 7 | performance | not started (needs the card) |
@@ -85,9 +85,28 @@ them and every code object in seconds (needs `7z`, `pip install pefile msgpack`)
 
 ## Open questions for the user
 
-1. Is a port derived from NeuralHub's kernels acceptable (ideally with its author's permission)?
-2. Access to an RX 9070 XT (NR gate, all performance numbers) and to Windows + an RX 9000 card
-   (reference dumps for the SR/RR gates)?
+1. (Answered 2026-10-24: port NeuralHub's kernels.)
+2. (Answered: this machine is the RX 9070 XT. Windows dumps are no longer needed: NeuralHub's kernels run under ROCm here.)
+3. NR at 310.9.16 (the 49 dB figure at 1080p) needs `nvngx_dlssnr.dll` 310.9.16.
+
+## SR: how to continue (2026-10-24)
+
+1. `python3 -I tools/exe/extract.py artifacts/neuralhub-v0.8.0/NeuralHub_v0.8.0_setup.exe build/nh` (code objects, host DLL).
+2. Weights: `build/venv/bin/python -I tools/sr/sr_weights.py <Crimson Desert>/bin64/nvngx_dlss.dll --out build/re/weights`,
+   then `tools/sr/sr_pack.py build/re/weights {M,L} build/re/packed/{M,L}`.
+3. Reference: see `docs/sr/HOST-RE.md` (ROCm 7.2.4 in podman; `srref ... --dump` writes every stage tensor and the
+   dec0 outputs). Every Vulkan kernel is to be checked against it, stage by stage.
+4. Port order: `k_sr_stage<64,2,0,96,2,false>` (encoder), `k_sr_tube_split<128,4,false>`, the decoder stages,
+   `k_sr_enc0`, `k_sr_dec0`, `k_sr_post<false,12,16,false,false>`, `k_sr_downsample`, exposure; then preset L's
+   `k_sr_enc0L_in` / `k_sr_l0`. On this card every stage is "fp8-safe", so only the `false` instantiations run.
+   What is known of `k_sr_stage` so far: activations are `[C/32][H][W][32]` fp8; a workgroup (64 threads)
+   covers an 8x8 pixel tile at grid*8 - shift, mirror-padded at the borders; RMSNorm = f16 sum of squares
+   (fixed packed-add tree + a lane^16 exchange) + 2^-14, rsqrt from `g_sr_lut`, times the sqrt(C)-scaled gain,
+   to fp8; GEMMs as pairs of K=32 WMMA chains whose f32 results are added through f16 (`v_fma_mixlo_f16`).
+   No `exp` anywhere: the "attention" is not softmax.
+5. Faster route to games, if wanted: NeuralHub's kernels run under ROCm, so a Vulkan layer could drive them
+   through HIP external-memory interop. This breaks the goal's "no HIP at run time" and needs ROCm
+   libraries; ask the user before going this way.
 
 ## Next steps once unblocked
 
