@@ -193,9 +193,9 @@ The goal's numerical-match requirement comes down to these instruction-level fac
    NeuralHub's tile order: a different reduction order is a different picture (the reference's rule).
 3. **F16 WMMA** (`v_wmma_f32_16x16x16_f16`) appears in NR pre/post blocks, `k_qkv`, `k_dec_upsample`, SR
    and FG: coopmat f16 × f16 → f32.
-4. **Mixed-precision FMA** (`v_fma_mix*_f16`): an f32 product rounded **once** to f16. In GLSL,
-   `float16_t(a*b)` rounds twice (f32 then f16). Use `float16_t(fma(a, b, c))` with f32 operands,
-   which ACO lowers to `v_fma_mix`. Seen already in `sr::io::k_sr_exposure`.
+4. **Mixed-precision FMA** (`v_fma_mix*_f16`): AMD's pseudocode is `f32_to_f16(fma(f32, f32, f32))`,
+   i.e. an f32 fma rounded to f32, then rounded to f16. `float16_t(fma(a, b, c))` with f32 operands
+   gives the same bits (and ACO lowers it to `v_fma_mix`). Seen in `sr::io::k_sr_exposure`.
 5. **`v_dot2_f32_f16`** (1,232 in NR): the two f16 products are exact in f32, but the hardware sum rounds
    once and two chained `fma`s round twice. Expect ≤ 1 f32 ulp per call before the next fp8
    quantisation. That is within the fp8 tolerance, but must not be called bit-exact.
