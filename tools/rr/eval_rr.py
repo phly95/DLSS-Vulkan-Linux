@@ -4,6 +4,7 @@ a bicubic upscale of the noisy colour and of the clean albedo (the best an upsca
 noise could do). PSNR on 8-bit sRGB; writes out_i.png.
 
     eval_rr.py picture.png FRAMES_DIR OUT_DIR
+    eval_rr.py GT_DIR FRAMES_DIR OUT_DIR      # per-frame gt_i.f32 (RGBA32F, output size; tools/scenes)
 """
 import json
 import sys
@@ -25,12 +26,16 @@ def psnr(a, b):
     return 10 * np.log10(255 ** 2 / m) if m else float("inf")
 
 
-ref = np.asarray(Image.open(sys.argv[1]).convert("RGB"))
 frames, outs = Path(sys.argv[2]), Path(sys.argv[3])
-H, W = ref.shape[:2]
 fj = json.loads((frames / "frame.json").read_text())
 rw, rh = fj["render"]
+W, H = fj["output"]
+gtdir = Path(sys.argv[1]) if Path(sys.argv[1]).is_dir() else None
+if gtdir is None:
+    ref = np.asarray(Image.open(sys.argv[1]).convert("RGB"))
 for i in range(fj["frames"]):
+    if gtdir is not None:
+        ref = to_srgb8(np.fromfile(gtdir / f"gt_{i}.f32", np.float32).reshape(H, W, 4)[..., :3].astype(np.float64))
     o = outs / f"out_{i}.f32"
     if not o.exists():
         continue

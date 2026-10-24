@@ -8,8 +8,10 @@
 // <frames dir>/frame.json: {"render":[W,H],"output":[oW,oH],"frames":N}; per frame i, files
 // col_i.f16 (RGBA16F, W*H*8 B), dep_i.f32 (W*H*4 B), mv_i.f16 (RG16F, W*H*4 B) and params_i.json
 // with jitter, jitter_prev, mv_scale, exposure, pre_exposure, reset, depth_inverted.
-// The game-input "gather" is not run: those three buffers are written as the engine's g_col /
-// g_dep / g_mv directly. Output: out_i.f32 (RGBA32F, oW*oH*16 B), plus every stage tensor of the
+// By default those three buffers are written as the engine's g_col / g_dep / g_mv directly; with
+// --gather they are uploaded as the game's textures (row pitch in bytes, format code 0 = RGBA16F /
+// RG16F / R32F) and NeuralHub's srunit::k_sr_gather fills the engine buffers, as in a game.
+// Output: out_i.f32 (RGBA32F, oW*oH*16 B), plus every stage tensor of the
 // last frame with --dump.
 #include <hip/hip_runtime.h>
 
@@ -113,10 +115,11 @@ struct Tensor { void* d; int C, W, H; };
 int main(int argc, char** argv) {
     if (argc < 5) { std::fprintf(stderr, "usage: srref <sr.gfx1201.co> <weights dir> <frames dir> <out dir> [--dump]\n"); return 2; }
     const std::string co = argv[1], wdir = argv[2], fdir = argv[3], odir = argv[4];
-    bool dump = false, presetL = false;
+    bool dump = false, presetL = false, gather = false;
     for (int i = 5; i < argc; ++i) {
         if (std::string(argv[i]) == "--dump") dump = true;
         if (std::string(argv[i]) == "--L") presetL = true;
+        if (std::string(argv[i]) == "--gather") gather = true;
     }
     const std::string fj(reinterpret_cast<const char*>(slurp(fdir + "/frame.json").data()), slurp(fdir + "/frame.json").size());
     const auto rd = jget(fj, "render"), od = jget(fj, "output");
@@ -223,6 +226,9 @@ int main(int argc, char** argv) {
     void* g_col = dalloc(rp * 8);
     void* g_dep = dalloc(rp * 4);
     void* g_mv = dalloc(rp * 4);
+    void* in_col = gather ? dalloc(rp * 8) : nullptr;     // the game's textures (--gather)
+    void* in_dep = gather ? dalloc(rp * 4) : nullptr;
+    void* in_mv = gather ? dalloc(rp * 4) : nullptr;
     void* enc0_w = wbuf + woff[10];
     void* dec0_w = wbuf + woff[11];
 
@@ -231,9 +237,17 @@ int main(int argc, char** argv) {
     for (int fi = 0; fi < nframes; ++fi) {
         const std::string sfx = "_" + std::to_string(fi);
         auto col = slurp(fdir + "/col" + sfx + ".f16"), dep = slurp(fdir + "/dep" + sfx + ".f32"), mv = slurp(fdir + "/mv" + sfx + ".f16");
-        CK(hipMemcpy(g_col, col.data(), rp * 8, hipMemcpyHostToDevice));
-        CK(hipMemcpy(g_dep, dep.data(), rp * 4, hipMemcpyHostToDevice));
-        CK(hipMemcpy(g_mv, mv.data(), rp * 4, hipMemcpyHostToDevice));
+        CK(hipMemcpy(gather ? in_col : g_col, col.data(), rp * 8, hipMemcpyHostToDevice));
+        CK(hipMemcpy(gather ? in_dep : g_dep, dep.data(), rp * 4, hipMemcpyHostToDevice));
+        CK(hipMemcpy(gather ? in_mv : g_mv, mv.data(), rp * 4, hipMemcpyHostToDevice));
+        if (gather) {   // FUN_180101f60: srunit::GatherArgs, 88 bytes
+            Args a(0x58);
+            a.put(0x00, in_col).put(0x08, in_mv).put(0x10, in_dep);
+            a.put(0x18, W * 8).put(0x1c, W * 4).put(0x20, W * 4);          // row pitches in bytes
+            a.put(0x24, 0).put(0x28, 0).put(0x2c, 0);                       // format codes
+            a.put(0x30, g_col).put(0x38, g_mv).put(0x40, g_dep).put(0x48, W).put(0x4c, H).put(0x50, 0);
+            M.launch("_ZN6srunit11k_sr_gatherENS_10GatherArgsE", dim3((W + 15) >> 4, (H + 15) >> 4), dim3(16, 16), a);
+        }
         const std::string pf(reinterpret_cast<const char*>(slurp(fdir + "/params" + sfx + ".json").data()), slurp(fdir + "/params" + sfx + ".json").size());
         auto jit = jget(pf, "jitter"), jitp = jget(pf, "jitter_prev"), mvs = jget(pf, "mv_scale");
         const float exposure = float(jget(pf, "exposure").at(0)), pre = float(jget(pf, "pre_exposure").at(0));

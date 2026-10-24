@@ -174,11 +174,12 @@ Two facts the decompile alone got wrong, found by running it:
   zero and the output was a soft 27 dB.
 - Jitter is NGX's `Jitter.Offset` (sample at pixel centre minus jitter); the other sign gives 31 dB.
 
-## `srunit::k_sr_gather` (not run by srref yet)
+## `srunit::k_sr_gather` (`srref --gather`)
 
-Copies the game's inputs into `g_col` (RGBA16F), `g_dep` (f32), `g_mv` (RG16F). `GatherArgs` (88 B):
-three input resources `{ptr, int, int}` (colour, motion vectors, depth: the ints are a row pitch and a
-format code), then `g_col` (+0x30), `g_mv` (+0x38), `g_dep` (+0x40), render W, H (+0x48), mvhi flag (+0x50).
+Copies the game's inputs into `g_col` (RGBA16F), `g_dep` (f32), `g_mv` (RG16F). `GatherArgs` (88 B,
+FUN_180101f60): pointers colour (+0x00), motion vectors (+0x08), depth (+0x10); their row pitches in bytes
+(+0x18, +0x1c, +0x20); their format codes (+0x24, +0x28, +0x2c; 0 = RGBA16F / RG16F / R32F, a plain copy:
+`srref --gather` output is bit-identical to writing the engine buffers directly), then `g_col` (+0x30), `g_mv` (+0x38), `g_dep` (+0x40), render W, H (+0x48), mvhi flag (+0x50).
 Colour format codes seen in the ISA (`build/re/fn.sh sr _ZN6srunit11k_sr_gatherENS_10GatherArgsE`):
 5 = RGBA32F (to f16), 4 = R11G11B10F, 3 = RGB9E5, others 10:10:10:2 and 8-bit unorm; alpha is 1.0 for
 formats without one. No tone or exposure change: a plain format conversion. `k_sr_gather_mv` converts

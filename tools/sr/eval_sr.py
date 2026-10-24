@@ -19,13 +19,17 @@ def psnr(a, b):
     return 10 * np.log10(255 ** 2 / m) if m else float("inf")
 
 
-ref = np.asarray(Image.open(sys.argv[1]).convert("RGB"))
-frames, outs = Path(sys.argv[2]), Path(sys.argv[3])
-H, W = ref.shape[:2]
 import json
+frames, outs = Path(sys.argv[2]), Path(sys.argv[3])
 fj = json.loads((frames / "frame.json").read_text())
 rw, rh = fj["render"]
+W, H = fj["output"]
+gtdir = Path(sys.argv[1]) if Path(sys.argv[1]).is_dir() else None   # per-frame gt_i.f32 (tools/scenes)
+if gtdir is None:
+    ref = np.asarray(Image.open(sys.argv[1]).convert("RGB"))
 for i in range(fj["frames"]):
+    if gtdir is not None:
+        ref = to_srgb8(np.fromfile(gtdir / f"gt_{i}.f32", np.float32).reshape(H, W, 4)[..., :3].astype(np.float64))
     o = outs / f"out_{i}.f32"
     if not o.exists():
         continue

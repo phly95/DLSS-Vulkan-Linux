@@ -29,6 +29,10 @@ against the clean picture):
 | 960x540 -> 1920x1080 | 30.38 | 32.05 | 33.05 | 33.71 | 34.19 | 20.9-21.5 | 27.1-30.5 |
 | 960x540 -> 960x540 (`k_post<26>`) | 33.57 | 36.13 | 37.51 | 38.59 | (5) 38.97 | 20.0 | 29.3-34.9 |
 
+Moving, path-traced scene (`tools/scenes`, `sponza16`: 960x540 -> 1920x1080, 2-spp colour, real guides,
+against 512-spp denoised ground truth): 33.15 dB at frame 0, 35.03 at 4, 35.57 at 7, 36.44 at 15; the noisy
+colour scores ~22 dB. Run as above with `eval_rr.py build/scenes/sponza16/gt build/scenes/sponza16/rr OUT`.
+
 GPU time 1080p -> 4K: about 12 ms per frame (gather included). This proves the pipeline runs and
 denoises; it is not a comparison with NVIDIA's or NeuralHub-on-Windows output (none is available).
 

@@ -48,6 +48,15 @@ image `localhost/ghidra:1` (`podman run --name t ubuntu:24.04 bash -c 'apt-get u
 openjdk-21-jdk-headless' && podman commit t localhost/ghidra:1`), then the commands in `tools/re/README.md`.
 A full decompile of `neuralhub_host.dll` takes about a minute; `tools/re/annotate.py` names the kernels in it.
 
+### The private storage repository (DLLs and other inputs not in this repo)
+
+**https://github.com/phly95/dlss5-private-storage** (private; the user's): every NVIDIA DLL below
+(310.9.1.0, 310.9.16, the patched 310.8.0 NR, split into <100 MB parts), the Ghidra decompile of
+`neuralhub_host.dll` (saves the Ghidra setup), and the rendered moving test sequence `sponza16`. Its README
+has the restore commands into `build/` and the SHA-256 of every file. A fresh machine: clone it, run them,
+then continue with the setup above. Put any new non-committable input there (split files over 90 MB) and
+list it in its README. Never copy its contents into this repository.
+
 ### The user's DLLs (never commit them or anything extracted from them)
 
 | what | where on this machine |
@@ -55,6 +64,7 @@ A full decompile of `neuralhub_host.dll` takes about a minute; `tools/re/annotat
 | `nvngx_dlss.dll` / `nvngx_dlssd.dll` 310.9.1.0 (SR / RR, the versions NeuralHub targets) | `~/.local/share/Steam/steamapps/common/Crimson Desert/bin64/` |
 | `nvngx_dlssnr.dll` 310.8.0.0, community-patched (architecture check lifted) | downloaded from https://huggingface.co/Bandukids/DLSS-Runtimes (the user's pointer); weights verified identical to the reference's tested model |
 | 310.9.16 `nvngx_dlss/dlssd/dlssg.dll` (no NR inside) | the user's zip; not needed so far |
+| all of the above | also in the private storage repository (section above) |
 
 NR model: `tools/hwtest/extract_nr_model.sh <nvngx_dlssnr.dll>` -> `build/model/dlssnr.bin` (the reference's
 extractor with only the whole-file hash check relaxed; every weight entry is still checked), then
@@ -138,6 +148,18 @@ them and every code object in seconds (needs `7z`, `pip install pefile msgpack`)
    through HIP external-memory interop. This breaks the goal's "no HIP at run time" and needs ROCm
    libraries; ask the user before going this way.
 
+## Test content
+
+- Static: the NR verification's 4K Tomb Raider frame (`reference-nr-vulkan/docs/ngx-verification/310.8.0/
+  single-frame-inputs/`), jittered by `tools/sr/gen_frames.py` / `tools/rr/gen_rr_frames.py` (RR: + noise).
+- Moving, path-traced: `tools/scenes/` (README there): Blender 4.2.3 Cycles renders Khronos's Sponza with the
+  DamagedHelmet flying through it, a panning dolly camera, real low-sample noise, exact motion vectors
+  (checked by `check_mv.py`), every RR guide, and denoised ground truth. Cycles runs on the 9070 XT through
+  HIP inside a ROCm container (~49 s/frame, mostly the 512-spp ground truth). `sponza16` (16 frames,
+  960x540 -> 1920x1080) is in the storage repo. Results: RR 33.2 dB (frame 0) -> 36.4 dB (frame 15)
+  against ~22 dB for the noisy input; SR 33.0-33.4 dB vs bicubic 30.1-32.0 dB (its "clean" input still has
+  256-spp noise and fireflies while the ground truth is denoised, so this caps SR's score).
+
 ## Next steps, in order
 
 1. SR in Vulkan (section above): one kernel per commit, each compared with `srref --dump` output for the
@@ -157,7 +179,12 @@ them and every code object in seconds (needs `7z`, `pip install pefile msgpack`)
 
 - Preset M's raw weights do not reproduce NeuralHub's M checksum (L does); M still packs to the expected
   sizes and runs well under srref. Cause unknown (`docs/sr/HOST-RE.md`).
-- srref skips NeuralHub's `k_sr_gather` (game-input format conversion) and the auto-exposure path; the
-  Vulkan port needs both (the gather reads several DXGI formats: see `docs/sr/HOST-RE.md`).
+- srref runs NeuralHub's `k_sr_gather` with `--gather` (only the RGBA16F / RG16F / R32F inputs, code 0:
+  bit-identical to the direct upload); the other formats, `k_sr_gather_mv` (output-resolution MVs) and the
+  auto-exposure path are still unexercised. The Vulkan port needs them all.
+- Coverage still missing in the references: RR's transparency / alpha / virtual-hit / SSS / mask inputs,
+  UNORM normals, linear depth; SR preset L on the moving scene; a mid-sequence reset; longer sequences.
+- `sponza16` frame 6 has one firefly (8688 in a pixel): fine for scoring, but clamp
+  (`cycles.sample_clamp_direct`) if a future render needs clean warping checks.
 - The decompiler shows raw float stores as `(int)` casts; check every scalar's type against the kernel ISA
   (this hid a bug once: dec0's first scalar).
