@@ -9,7 +9,7 @@ exactly one match in 310.9.1.0, the same pattern NeuralHub looks for. The DLL is
 loaded or run. Values are f16.
 
     sr_weights.py nvngx_dlss.dll --list            # slot table of both presets
-    sr_weights.py nvngx_dlss.dll --out DIR         # DIR/{M,L}/slot_XXXX.f16 + index.json
+    sr_weights.py nvngx_dlss.dll --out DIR         # DIR/{M,L}/slot_XXXX.f16 + index.json, DIR/dither.bin
 
 Nothing this writes may be committed: the values are NVIDIA's.
 """
@@ -145,6 +145,9 @@ def main():
         if len(hits) != 1:
             raise SystemExit(f"dither table not found ({len(hits)} candidates)")
         dither = pe.get_data(hits[0], 0x1000)
+    if a.out:
+        a.out.mkdir(parents=True, exist_ok=True)
+        (a.out / "dither.bin").write_bytes(dither)
     for name, t in sorted(tables.items()):
         missing = [hex(k) for k, (n, p) in t.items() if n is None or p is None]
         total = sum(n for n, p in t.values() if n)

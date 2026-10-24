@@ -75,5 +75,7 @@ Per layer (`FUN_180111850`), slots relative to the base, element counts checked:
 - Scales: `x * sqrt(C)` (`FUN_180115ee0`) and `x * 4*sqrt(2) * 0.5` (`FUN_180116130`), rounded to f16 RNE.
 - A per-layer f32 bound (`* 1.05`) from the weights decides a flag per layer.
 
-To be transcribed into `tools/sr/` next, then checked by running NeuralHub's own code objects under
+Transcribed in `tools/sr/sr_pack.py`: every blob of both presets has the size NeuralHub requires
+(stages 0x118c0, 0x27f00, 0x2d000 x6, 0x28100, 0x11a00; enc0 0x3080 / 0x7700, dec0 0x2100 / 0x5f00).
+The enc0 / dec0 blobs start with the 4096-byte dither table. Next: checked by running NeuralHub's own code objects under
 ROCm (`/dev/kfd` works on this machine: ROCm 7.2.4 in podman sees gfx1201).
