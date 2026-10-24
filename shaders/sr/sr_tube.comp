@@ -1,0 +1,283 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_shuffle : require
+#extension GL_KHR_shader_subgroup_ballot : require
+
+#include "coopmm.glsl"
+
+// Workgroup size 64 threads: 16 pixels (4x4 tile) x 4 threads per pixel
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant) uniform PushConstants {
+    uint weights_offset;
+    uint in_offset;
+    uint skip_in_offset;
+    uint skip_out_offset;
+    uint down_out_offset;
+    int dimW;
+    int dimH;
+    int shift_x;
+    int shift_y;
+    int C;
+    int g;
+    int mode;
+    int Cnext;
+} pc;
+
+layout(set = 0, binding = 0, std430) buffer ActBuffer {
+    uint8_t acts[];
+};
+
+layout(set = 0, binding = 1, std430) readonly buffer WeightBuffer {
+    uint8_t weights[];
+};
+
+layout(set = 0, binding = 2, std430) readonly buffer LutBuffer {
+    uint16_t lut[];
+};
+
+// LDS tile: 16 pixels x 128 channels in f16 = 4096 bytes
+shared float16_t s_act[16][128];
+shared float16_t s_mid[16][128];
+shared float16_t s_acc[16][128];
+
+float16_t e4m3_to_f16(uint8_t b) {
+    uint u = uint(b);
+    float16_t s = (u & 0x80u) != 0u ? float16_t(-1.0) : float16_t(1.0);
+    uint e = (u >> 3u) & 0x0Fu;
+    uint m = u & 0x07u;
+    if (e == 0x0Fu && m == 0x07u) return float16_t(0.0);
+    if (e == 0u) {
+        return s * (float16_t(m) / float16_t(8.0)) * float16_t(0.015625);
+    }
+    return s * (float16_t(1.0) + float16_t(m) / float16_t(8.0)) * exp2(float16_t(int(e) - 7));
+}
+
+uint8_t f16_to_e4m3(float16_t x) {
+    if (isnan(x)) return uint8_t(0x7F);
+    uint sign = (x < float16_t(0.0)) ? 0x80u : 0u;
+    float16_t ax = abs(x);
+    if (ax > float16_t(448.0)) return uint8_t(sign | 0x7Eu);
+    if (ax < float16_t(0.001953125)) {
+        uint m = uint(round(float(ax) * 512.0));
+        return uint8_t(sign | min(m, 7u));
+    }
+    int e = int(floor(log2(float(ax))));
+    e = clamp(e, -6, 8);
+    float base = exp2(float(e));
+    float norm = (float(ax) - base) / base;
+    uint m = uint(round(norm * 8.0));
+    if (m >= 8u) {
+        m = 0u;
+        e += 1;
+        if (e > 8) return uint8_t(sign | 0x7Eu);
+    }
+    uint exp_bits = uint(e + 7);
+    return uint8_t(sign | (exp_bits << 3u) | m);
+}
+
+float16_t read_f16(uint byte_off) {
+    uint16_t lo = uint16_t(weights[byte_off]);
+    uint16_t hi = uint16_t(weights[byte_off + 1u]);
+    uint16_t u = uint16_t(lo | (hi << 8u));
+    return unpackFloat2x16(uint(u)).x;
+}
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint pixel_idx = tid % 16u; // 16 pixels in the 4x4 tile
+    uint thread_sub = tid / 16u; // 4 threads per pixel (each handles 32 channels)
+
+    int lx = int(pixel_idx % 4u);
+    int ly = int(pixel_idx / 4u);
+
+    int gx = int(gl_WorkGroupID.x) * 4 - pc.shift_x + lx;
+    int gy = int(gl_WorkGroupID.y) * 4 - pc.shift_y + ly;
+
+    // Mirror padding
+    int px = gx;
+    if (px < 0) px = -px;
+    else if (px >= pc.dimW) px = 2 * pc.dimW - 2 - px;
+    px = clamp(px, 0, pc.dimW - 1);
+
+    int py = gy;
+    if (py < 0) py = -py;
+    else if (py >= pc.dimH) py = 2 * pc.dimH - 2 - py;
+    py = clamp(py, 0, pc.dimH - 1);
+
+    // Load 32 channels per thread
+    uint c_start = thread_sub * 32u;
+    for (uint i = 0; i < 32u; ++i) {
+        uint c = c_start + i;
+        uint slab = c / 32u;
+        uint c_in_slab = c % 32u;
+        uint idx = pc.in_offset + (((slab * uint(pc.dimH) + uint(py)) * uint(pc.dimW) + uint(px)) * 32u + c_in_slab);
+        s_act[pixel_idx][c] = e4m3_to_f16(acts[idx]);
+        s_acc[pixel_idx][c] = float16_t(0.0);
+    }
+    barrier();
+
+    // RMSNorm 1: parallel reduction over 128 channels
+    float sum_sq = 0.0;
+    for (uint i = 0; i < 32u; ++i) {
+        float v = float(s_act[pixel_idx][c_start + i]);
+        sum_sq += v * v;
+    }
+    // Subgroup shuffle reduction across the 4 threads of the pixel
+    sum_sq += subgroupShuffleXor(sum_sq, 16u);
+    sum_sq += subgroupShuffleXor(sum_sq, 32u);
+    float inv_rms = inversesqrt(sum_sq / 128.0 + 0.00006103515625);
+
+    for (uint i = 0; i < 32u; ++i) {
+        uint c = c_start + i;
+        float16_t gain = read_f16(pc.weights_offset + uint(c * 2));
+        s_mid[pixel_idx][c] = float16_t(float(s_act[pixel_idx][c]) * inv_rms * float(gain));
+    }
+    barrier();
+
+    // Group projections (g = 4)
+    uint off_w = pc.weights_offset + uint(128 * 2);
+    for (int h = 0; h < 4; ++h) {
+        uint off_w210 = off_w;
+        off_w += uint(64 * 128);
+        uint off_v258 = off_w;
+        off_w += uint(256 * 2);
+        uint off_w1f0 = off_w;
+        off_w += uint(128 * 32);
+
+        // 4 threads per pixel compute 16 rows of qk each (4x16 = 64)
+        uint r_start = thread_sub * 16u;
+        float16_t qk_sub[16];
+        for (uint r = 0; r < 16u; ++r) {
+            float acc = 0.0;
+            for (int k = 0; k < 128; ++k) {
+                float16_t w = e4m3_to_f16(weights[off_w210 + uint((r_start + r) * 128 + k)]);
+                acc += float(s_mid[pixel_idx][k]) * float(w);
+            }
+            qk_sub[r] = float16_t(acc);
+        }
+
+        // Store qk to LDS s_act temporarily for mixing
+        for (uint r = 0; r < 16u; ++r) {
+            s_act[pixel_idx][r_start + r] = qk_sub[r];
+        }
+        barrier();
+
+        // Spatial / non-linear mixing: threads 0 and 1 compute 16 outputs of mid each (32 total)
+        if (thread_sub < 2u) {
+            uint m_idx = thread_sub * 16u;
+            for (uint i = 0; i < 16u; ++i) {
+                uint idx = m_idx + i;
+                float v = float(s_act[pixel_idx][idx]);
+                float s = v * 0.017181396484375;
+                float c_val = clamp(s, -0.55615234375, 0.55615234375);
+                float p_val = -c_val * c_val + 0.92724609375;
+                float y_val = c_val * p_val + 1.375;
+                s_act[pixel_idx][idx] = float16_t(y_val * float(s_act[pixel_idx][32u + idx]));
+            }
+        }
+        barrier();
+
+        // Project mid (32) by w1f0 (128, 32): each thread computes 32 channels of y1
+        for (uint i = 0; i < 32u; ++i) {
+            uint c = c_start + i;
+            float acc = 0.0;
+            for (int k = 0; k < 32; ++k) {
+                float16_t w = e4m3_to_f16(weights[off_w1f0 + uint(c * 32 + k)]);
+                acc += float(s_act[pixel_idx][k]) * float(w);
+            }
+            s_acc[pixel_idx][c] += float16_t(acc);
+        }
+    }
+
+    // Bias v270 and residual add: z = x_act + y1 + v270
+    uint off_v270 = off_w;
+    off_w += uint(128 * 2);
+
+    float sum_sq2 = 0.0;
+    for (uint i = 0; i < 32u; ++i) {
+        uint c = c_start + i;
+        float16_t bias = read_f16(off_v270 + uint(c * 2));
+        float16_t val = s_mid[pixel_idx][c] + s_acc[pixel_idx][c] + bias; // s_mid had normalized x
+        s_act[pixel_idx][c] = val; // Store z
+        s_acc[pixel_idx][c] = float16_t(0.0); // Reset accumulator
+        float fv = float(val);
+        sum_sq2 += fv * fv;
+    }
+    sum_sq2 += subgroupShuffleXor(sum_sq2, 16u);
+    sum_sq2 += subgroupShuffleXor(sum_sq2, 32u);
+    float inv_rms2 = inversesqrt(sum_sq2 / 128.0 + 0.00006103515625);
+
+    // RMSNorm 2 with s198
+    uint off_s198 = off_w;
+    off_w += uint(128 * 2);
+    for (uint i = 0; i < 32u; ++i) {
+        uint c = c_start + i;
+        float16_t gain = read_f16(off_s198 + uint(c * 2));
+        s_mid[pixel_idx][c] = float16_t(float(s_act[pixel_idx][c]) * inv_rms2 * float(gain));
+    }
+    barrier();
+
+    // FFWD MLP: 512 channels expand in 16 slices of 32 channels
+    for (int j = 0; j < 16; ++j) {
+        uint off_w180 = off_w;
+        off_w += uint(32 * 128);
+        uint off_v228 = off_w;
+        off_w += uint(32 * 2);
+        uint off_w1d0 = off_w;
+        off_w += uint(128 * 32);
+        if (j == 0) off_w += uint(128 * 2);
+
+        // Threads 0..31 compute the 32 hidden values
+        if (thread_sub < 2u) {
+            uint r = thread_sub * 16u + (tid % 16u < 8u ? (tid % 8u) : (tid % 8u + 8u));
+            if (r < 32u) {
+                float acc = 0.0;
+                for (int k = 0; k < 128; ++k) {
+                    float16_t w = e4m3_to_f16(weights[off_w180 + uint(r * 128 + k)]);
+                    acc += float(s_mid[pixel_idx][k]) * float(w);
+                }
+                float16_t bias = read_f16(off_v228 + uint(r * 2));
+                float val = acc + float(bias);
+                float s = val * 0.017181396484375;
+                float c_val = clamp(s, -0.55615234375, 0.55615234375);
+                float p_val = -c_val * c_val + 0.92724609375;
+                // Store hidden in s_mid temporarily
+                s_mid[pixel_idx][r] = float16_t((c_val * p_val + 1.375) * val);
+            }
+        }
+        barrier();
+
+        // Contract by w1d0: each thread computes 32 channels
+        for (uint i = 0; i < 32u; ++i) {
+            uint c = c_start + i;
+            float acc = 0.0;
+            for (int k = 0; k < 32; ++k) {
+                float16_t w = e4m3_to_f16(weights[off_w1d0 + uint(c * 32 + k)]);
+                acc += float(s_mid[pixel_idx][k]) * float(w);
+            }
+            s_acc[pixel_idx][c] += float16_t(acc);
+        }
+    }
+
+    uint off_v240 = pc.weights_offset + uint(128 * 2) + uint(4 * (64 * 128 + 512 + 128 * 32)) + uint(128 * 4) + uint(32 * 128 + 64 + 128 * 32);
+    // Final residual add and write output
+    if (pc.skip_out_offset != 0u && gx >= 0 && gx < pc.dimW && gy >= 0 && gy < pc.dimH) {
+        for (uint i = 0; i < 32u; ++i) {
+            uint c = c_start + i;
+            float16_t bias = read_f16(off_v240 + uint(c * 2));
+            float16_t out_val = s_act[pixel_idx][c] + s_acc[pixel_idx][c] + bias;
+            uint slab = c / 32u;
+            uint c_in_slab = c % 32u;
+            uint idx = pc.skip_out_offset + (((slab * uint(pc.dimH) + uint(gy)) * uint(pc.dimW) + uint(gx)) * 32u + c_in_slab);
+            acts[idx] = f16_to_e4m3(out_val);
+        }
+    }
+}

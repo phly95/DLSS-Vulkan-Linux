@@ -124,6 +124,9 @@ int main(int argc, char** argv) {
     VkShaderModule sm_stage = ctx.load_shader("build/vk/spv/sr_stage.spv");
     vk::ComputePipeline pipe_stage = vk::create_compute_pipeline(ctx, sm_stage, 3, sizeof(StagePushConstants));
 
+    VkShaderModule sm_tube = ctx.load_shader("build/vk/spv/sr_tube.spv");
+    vk::ComputePipeline pipe_tube = vk::create_compute_pipeline(ctx, sm_tube, 3, sizeof(StagePushConstants));
+
     // Allocate memory buffers
     size_t act_arena_size = 64 * 1024 * 1024; // 64 MB arena for activations
     vk::Buffer buf_act = ctx.create_buffer(act_arena_size,
@@ -253,7 +256,9 @@ int main(int argc, char** argv) {
     ctx.destroy_buffer(buf_weights);
     ctx.destroy_buffer(buf_lut);
     pipe_stage.destroy(ctx.device);
+    pipe_tube.destroy(ctx.device);
     vkDestroyShaderModule(ctx.device, sm_stage, nullptr);
+    vkDestroyShaderModule(ctx.device, sm_tube, nullptr);
 
     return 0;
 }

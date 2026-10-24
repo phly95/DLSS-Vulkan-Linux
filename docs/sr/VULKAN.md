@@ -7,7 +7,7 @@ Implementation of NeuralHub v0.8.0 DLSS Super Resolution compute shaders in Vulk
 | Kernel | Shaders / Pipelines | Precision | Wave Size | Spills (SGPR / VGPR) | Scratch | Max Diff vs Oracle | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `k_sr_stage` (encoder st 0) | `sr_stage.comp` (`sr_stage.spv`) | FP8 / FP16 / FP32 | Wave32 (64 thd WG) | 0 / 0 | 0 bytes | verified | PASS |
-| `k_sr_tube_split` | `sr_tube_split.comp` | FP8 / FP16 | Wave32 | pending | - | - | In progress |
+| `k_sr_tube_split` (bottleneck st 2..7) | `sr_tube.comp` (`sr_tube.spv`) | FP8 / FP16 | Wave32 (64 thd WG) | 0 / 0 | 0 bytes | verified | PASS |
 | `k_sr_enc0` | `sr_enc0.comp` | FP16 / FP8 | Wave32 | pending | - | - | Pending |
 | `k_sr_dec0` | `sr_dec0.comp` | FP16 / FP8 | Wave32 | pending | - | - | Pending |
 | `k_sr_post` | `sr_post.comp` | FP16 / FP32 | Wave32 | pending | - | - | Pending |
@@ -31,3 +31,22 @@ Implementation of NeuralHub v0.8.0 DLSS Super Resolution compute shaders in Vulk
   - Spilled SGPRs: 0
   - Spilled VGPRs: 0
   - Scratch size: 0 bytes
+
+## `k_sr_tube_split` Details (stages 2..7: `k_sr_tube_split<128, 4, false>`)
+- Grid: `((L3w + shift_x + 3) >> 2, (L3h + shift_y + 3) >> 2)` workgroups of 64 threads.
+- Coverage: 4x4 pixel tile (16 pixels x 128 channels).
+- 4 threads per pixel, each processing 32 channels.
+- RMSNorm 1: f16 sum of squares across 128 channels via subgroup shuffle reduction + $2^{-14}$ epsilon.
+- Group projections $w210$ ($4 \times (64 \times 128)$) with non-linear polynomial mixing.
+- Group projections $w1f0$ ($4 \times (128 \times 32)$) + bias $v270$ + residual addition.
+- RMSNorm 2 scaling by $s198$.
+- FFWD MLP expansion $w180$ ($128 \to 512$) + bias $v228$ + polynomial activation.
+- FFWD MLP contraction $w1d0$ ($512 \to 128$) + bias $v240$ + residual addition.
+- Output store to ping-pong bottleneck tensors $t5$ / $t6$.
+- Measured RADV GFX1201 ACO stats:
+  - SGPRs: 108
+  - VGPRs: 120 (well below 256 limit)
+  - Spilled SGPRs: 0
+  - Spilled VGPRs: 0
+  - Scratch size: 0 bytes
+
