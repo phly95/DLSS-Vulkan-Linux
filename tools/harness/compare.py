@@ -3,7 +3,7 @@
 
     compare.py REF TEST [--map map.json] [--image-layer N] [--json out.json]
 
-REF is the Windows side (capture or emulation), TEST the port. For every output tensor of every
+REF is the Windows side (NeuralHub dumps), TEST the port. For every output tensor of every
 layer: max / mean abs error and PSNR; for e4m3 tensors the ulp histogram and the fp8 tolerance gate
 (every element within 1 ulp, at least 99% exact). The last layer's first output (or --image-layer)
 is also reported as the final image. Exit status 1 when any layer fails its gate.

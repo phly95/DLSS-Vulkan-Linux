@@ -14,16 +14,28 @@ LIBDRM_COMMIT=b97cbde15c5c3abfe44d78e8f57139e50f612fec   # Mesa main needs libdr
 T=$R/toolchain/mesa
 mkdir -p "$T"
 
+# Prebuilt copy of exactly this build (Ubuntu 24.04 x86_64, LLVM 18 shared): unpack instead of building.
+# The ICD files carry the install's absolute path, so they are rewritten to this checkout's.
+PREBUILT=$R/artifacts/mesa/mesa-e2ab668-libdrm-b97cbde-ubuntu24.04-x86_64.tar.xz
+if [[ ! -d "$T/install" && -f "$PREBUILT" && "${MESA_FROM_SOURCE:-0}" != 1 ]]; then
+    mkdir -p "$T/install"
+    tar -C "$T/install" -xJf "$PREBUILT"
+    for j in "$T"/install/share/vulkan/icd.d/*.json; do
+        sed -i -E "s#\"library_path\": \"[^\"]*/lib/#\"library_path\": \"$T/install/lib/#" "$j"
+    done
+fi
+
 repo() {  # <dir> <url> <commit>
     [[ -d "$1" ]] && return
     git init -q "$1"
     git -C "$1" fetch -q --depth 1 "$2" "$3"
     git -C "$1" checkout -q FETCH_HEAD
 }
-repo "$T/libdrm-src" https://gitlab.freedesktop.org/mesa/drm.git "$LIBDRM_COMMIT"
-repo "$T/mesa-src" https://gitlab.freedesktop.org/mesa/mesa.git "$MESA_COMMIT"
-
-if [[ ! -f "$T/install/lib/x86_64-linux-gnu/pkgconfig/libdrm.pc" && ! -f "$T/install/lib/pkgconfig/libdrm.pc" ]]; then
+if [[ ! -f "$T/install/share/vulkan/icd.d/radeon_icd.x86_64.json" ]]; then
+    repo "$T/libdrm-src" https://gitlab.freedesktop.org/mesa/drm.git "$LIBDRM_COMMIT"
+    repo "$T/mesa-src" https://gitlab.freedesktop.org/mesa/mesa.git "$MESA_COMMIT"
+fi
+if [[ ! -f "$T/install/share/vulkan/icd.d/radeon_icd.x86_64.json" && ! -f "$T/install/lib/x86_64-linux-gnu/pkgconfig/libdrm.pc" && ! -f "$T/install/lib/pkgconfig/libdrm.pc" ]]; then
     meson setup "$T/libdrm-build" "$T/libdrm-src" --prefix="$T/install" -Dintel=disabled -Dradeon=disabled \
         -Dnouveau=disabled -Dvmwgfx=disabled -Dtests=false -Dman-pages=disabled -Dvalgrind=disabled \
         -Dcairo-tests=disabled
