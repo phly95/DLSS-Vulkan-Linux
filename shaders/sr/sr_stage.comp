@@ -1,0 +1,289 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_shuffle : require
+#extension GL_KHR_shader_subgroup_ballot : require
+
+#include "coopmm.glsl"
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant) uniform PushConstants {
+    uint weights_offset;
+    uint in_offset;
+    uint skip_in_offset;
+    uint skip_out_offset;
+    uint down_out_offset;
+    int dimW;
+    int dimH;
+    int shift_x;
+    int shift_y;
+    int C;
+    int g;
+    int mode;      // 0 = encoder (with down-projection), 1 = tube, 2 = decoder (with up-projection)
+    int Cnext;
+} pc;
+
+layout(set = 0, binding = 0, std430) buffer ActBuffer {
+    uint8_t acts[];
+};
+
+layout(set = 0, binding = 1, std430) readonly buffer WeightBuffer {
+    uint8_t weights[];
+};
+
+layout(set = 0, binding = 2, std430) readonly buffer LutBuffer {
+    uint16_t lut[];
+};
+
+// LDS tile: 64 pixels x 64 channels in float16 = 8192 bytes
+shared float16_t s_act[64][64];
+shared float16_t s_mid[64][64];
+
+// Decode e4m3 to float16
+float16_t e4m3_to_f16(uint8_t b) {
+    uint u = uint(b);
+    float16_t s = (u & 0x80u) != 0u ? float16_t(-1.0) : float16_t(1.0);
+    uint e = (u >> 3u) & 0x0Fu;
+    uint m = u & 0x07u;
+    if (e == 0x0Fu && m == 0x07u) return float16_t(0.0);
+    if (e == 0u) {
+        return s * (float16_t(m) / float16_t(8.0)) * float16_t(0.015625);
+    }
+    return s * (float16_t(1.0) + float16_t(m) / float16_t(8.0)) * exp2(float16_t(int(e) - 7));
+}
+
+// Encode float16 to e4m3
+uint8_t f16_to_e4m3(float16_t x) {
+    if (isnan(x)) return uint8_t(0x7F);
+    uint sign = (x < float16_t(0.0)) ? 0x80u : 0u;
+    float16_t ax = abs(x);
+    if (ax > float16_t(448.0)) return uint8_t(sign | 0x7Eu);
+    if (ax < float16_t(0.001953125)) {
+        uint m = uint(round(float(ax) * 512.0));
+        return uint8_t(sign | min(m, 7u));
+    }
+    int e = int(floor(log2(float(ax))));
+    e = clamp(e, -6, 8);
+    float base = exp2(float(e));
+    float norm = (float(ax) - base) / base;
+    uint m = uint(round(norm * 8.0));
+    if (m >= 8u) {
+        m = 0u;
+        e += 1;
+        if (e > 8) return uint8_t(sign | 0x7Eu);
+    }
+    uint exp_bits = uint(e + 7);
+    return uint8_t(sign | (exp_bits << 3u) | m);
+}
+
+float16_t read_f16(uint byte_off) {
+    uint16_t lo = uint16_t(weights[byte_off]);
+    uint16_t hi = uint16_t(weights[byte_off + 1u]);
+    uint16_t u = uint16_t(lo | (hi << 8u));
+    return unpackFloat2x16(uint(u)).x;
+}
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    int lx = int(tid % 8u);
+    int ly = int(tid / 8u);
+
+    int gx = int(gl_WorkGroupID.x) * 8 - pc.shift_x + lx;
+    int gy = int(gl_WorkGroupID.y) * 8 - pc.shift_y + ly;
+
+    // Mirror padding
+    int px = gx;
+    if (px < 0) px = -px;
+    else if (px >= pc.dimW) px = 2 * pc.dimW - 2 - px;
+    px = clamp(px, 0, pc.dimW - 1);
+
+    int py = gy;
+    if (py < 0) py = -py;
+    else if (py >= pc.dimH) py = 2 * pc.dimH - 2 - py;
+    py = clamp(py, 0, pc.dimH - 1);
+
+    // 1. Load activations for pixel (py, px) into LDS
+    float sum_sq = 0.0;
+    for (int c = 0; c < pc.C; ++c) {
+        uint slab = uint(c / 32);
+        uint c_in_slab = uint(c % 32);
+        uint idx = pc.in_offset + (((slab * uint(pc.dimH) + uint(py)) * uint(pc.dimW) + uint(px)) * 32u + c_in_slab);
+        float16_t val = e4m3_to_f16(acts[idx]);
+        s_act[tid][c] = val;
+        sum_sq += float(val) * float(val);
+    }
+
+    // 2. RMSNorm 1: inv_rms = rsqrt(sum_sq / C + 2^-14)
+    float inv_rms = inversesqrt(sum_sq / float(pc.C) + 0.00006103515625);
+    for (int c = 0; c < pc.C; ++c) {
+        float16_t gain = read_f16(pc.weights_offset + uint(c * 2));
+        s_mid[tid][c] = float16_t(float(s_act[tid][c]) * inv_rms * float(gain));
+    }
+    barrier();
+
+    // 3. First Projection & Group mixing
+    uint off_w = pc.weights_offset + uint(pc.C * 2);
+    int g = pc.g;
+
+    float16_t y1[64];
+    for (int c = 0; c < pc.C; ++c) y1[c] = float16_t(0.0);
+
+    for (int h = 0; h < g; ++h) {
+        uint off_w210 = off_w;
+        off_w += uint(64 * pc.C);
+        uint off_v258 = off_w;
+        off_w += uint(256 * 2);
+        uint off_w1f0 = off_w;
+        off_w += uint(pc.C * 32);
+
+        // Compute 64 channels qk
+        float16_t qk[64];
+        for (int r = 0; r < 64; ++r) {
+            float acc = 0.0;
+            for (int k = 0; k < pc.C; ++k) {
+                float16_t w = e4m3_to_f16(weights[off_w210 + uint(r * pc.C + k)]);
+                acc += float(s_mid[tid][k]) * float(w);
+            }
+            qk[r] = float16_t(acc);
+        }
+
+        // Non-linear polynomial mixing of the two 32-channel halves
+        float16_t mid[32];
+        for (int r = 0; r < 32; ++r) {
+            float v = float(qk[r]);
+            float s = v * 0.017181396484375;
+            float c_val = clamp(s, -0.55615234375, 0.55615234375);
+            float p_val = -c_val * c_val + 0.92724609375;
+            float y_val = c_val * p_val + 1.375;
+            mid[r] = float16_t(y_val * float(qk[32 + r]));
+        }
+
+        // Project mid by w1f0 (C, 32)
+        for (int c = 0; c < pc.C; ++c) {
+            float acc = 0.0;
+            for (int k = 0; k < 32; ++k) {
+                float16_t w = e4m3_to_f16(weights[off_w1f0 + uint(c * 32 + k)]);
+                acc += float(mid[k]) * float(w);
+            }
+            y1[c] += float16_t(acc);
+        }
+    }
+
+    // Bias v270 and residual add: z = x_act + y1 + v270
+    uint off_v270 = off_w;
+    off_w += uint(pc.C * 2);
+
+    float sum_sq2 = 0.0;
+    for (int c = 0; c < pc.C; ++c) {
+        float16_t bias = read_f16(off_v270 + uint(c * 2));
+        float16_t val = s_act[tid][c] + y1[c] + bias;
+        s_act[tid][c] = val; // Store z in s_act
+        sum_sq2 += float(val) * float(val);
+    }
+
+    // 4. RMSNorm 2: s198 (C f16)
+    uint off_s198 = off_w;
+    off_w += uint(pc.C * 2);
+    float inv_rms2 = inversesqrt(sum_sq2 / float(pc.C) + 0.00006103515625);
+
+    for (int c = 0; c < pc.C; ++c) {
+        float16_t gain = read_f16(off_s198 + uint(c * 2));
+        s_mid[tid][c] = float16_t(float(s_act[tid][c]) * inv_rms2 * float(gain));
+    }
+    barrier();
+
+    // 5. FFWD MLP: w180 (4C, C) -> v228 (4C) -> w1d0 (C, 4C) -> v240 (C)
+    float16_t m2[64];
+    for (int c = 0; c < pc.C; ++c) m2[c] = float16_t(0.0);
+
+    int n_slices = pc.C / 8;
+    for (int j = 0; j < n_slices; ++j) {
+        uint off_w180 = off_w;
+        off_w += uint(32 * pc.C);
+        uint off_v228 = off_w;
+        off_w += uint(32 * 2);
+        uint off_w1d0 = off_w;
+        off_w += uint(pc.C * 32);
+        if (j == 0) off_w += uint(pc.C * 2); // v240
+
+        float16_t hidden[32];
+        for (int r = 0; r < 32; ++r) {
+            float acc = 0.0;
+            for (int k = 0; k < pc.C; ++k) {
+                float16_t w = e4m3_to_f16(weights[off_w180 + uint(r * pc.C + k)]);
+                acc += float(s_mid[tid][k]) * float(w);
+            }
+            float16_t bias = read_f16(off_v228 + uint(r * 2));
+            float val = acc + float(bias);
+            float s = val * 0.017181396484375;
+            float c_val = clamp(s, -0.55615234375, 0.55615234375);
+            float p_val = -c_val * c_val + 0.92724609375;
+            hidden[r] = float16_t((c_val * p_val + 1.375) * val);
+        }
+
+        for (int c = 0; c < pc.C; ++c) {
+            float acc = 0.0;
+            for (int k = 0; k < 32; ++k) {
+                float16_t w = e4m3_to_f16(weights[off_w1d0 + uint(c * 32 + k)]);
+                acc += float(hidden[k]) * float(w);
+            }
+            m2[c] += float16_t(acc);
+        }
+    }
+
+    uint off_v240 = pc.weights_offset + uint(pc.C * 2) + uint(g * (64 * pc.C + 512 + pc.C * 32)) + uint(pc.C * 4) + uint(32 * pc.C + 64 + pc.C * 32);
+    // Residual add: out_val = z + m2 + v240
+    float16_t out_val[64];
+    for (int c = 0; c < pc.C; ++c) {
+        float16_t bias = read_f16(off_v240 + uint(c * 2));
+        out_val[c] = s_act[tid][c] + m2[c] + bias;
+        s_act[tid][c] = out_val[c];
+    }
+    barrier();
+
+    // 6. Write skip_out (t1)
+    if (pc.skip_out_offset != 0u && gx >= 0 && gx < pc.dimW && gy >= 0 && gy < pc.dimH) {
+        for (int c = 0; c < pc.C; ++c) {
+            uint slab = uint(c / 32);
+            uint c_in_slab = uint(c % 32);
+            uint idx = pc.skip_out_offset + (((slab * uint(pc.dimH) + uint(gy)) * uint(pc.dimW) + uint(gx)) * 32u + c_in_slab);
+            acts[idx] = f16_to_e4m3(out_val[c]);
+        }
+    }
+
+    // 7. Down-projection (mode == 0): w168 (Cn, 4C)
+    if (pc.mode == 0 && pc.down_out_offset != 0u) {
+        if ((lx % 2 == 0) && (ly % 2 == 0)) {
+            int dx = gx / 2;
+            int dy = gy / 2;
+            int downW = pc.dimW / 2;
+            int downH = pc.dimH / 2;
+            if (dx >= 0 && dx < downW && dy >= 0 && dy < downH) {
+                uint off_w168 = pc.weights_offset + 47104u;
+                uint off_v210 = pc.weights_offset + 71680u;
+
+                for (int oc = 0; oc < pc.Cnext; ++oc) {
+                    float acc = 0.0;
+                    for (int k = 0; k < pc.C; ++k) {
+                        float16_t w = e4m3_to_f16(weights[off_w168 + uint(oc * (4 * pc.C) + k)]);
+                        acc += float(out_val[k]) * float(w);
+                    }
+                    float16_t bias = read_f16(off_v210 + uint(oc * 2));
+                    float16_t res = float16_t(acc + float(bias));
+
+                    uint slab = uint(oc / 32);
+                    uint c_in_slab = uint(oc % 32);
+                    uint idx = pc.down_out_offset + (((slab * uint(downH) + uint(dy)) * uint(downW) + uint(dx)) * 32u + c_in_slab);
+                    acts[idx] = f16_to_e4m3(res);
+                }
+            }
+        }
+    }
+}
