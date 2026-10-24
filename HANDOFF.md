@@ -20,7 +20,7 @@ are allowed). The reference Vulkan NR port is `reference-nr-vulkan/` (MIT).
 | 2 | harness | **replaced in practice by running NeuralHub itself**: NeuralHub's code objects run unchanged under ROCm on this card (`tools/sr/srref`), so Windows dumps are no longer needed. `.hdump` + `tools/harness/compare.py` still exist (self-tested) for layer-by-layer compares. No Vulkan-side dumper yet. |
 | 3 | NR | **runs on the RX 9070 XT with the real 310.8.0 model**: 45.59 / 47.97 / 49.00 dB vs NVIDIA's output at 1080p / 1440p / 4K (offline runner, `tools/hwtest/nr_gate.py`), the same as the reference's published figures. ≥ 49 dB at every size needs the 310.9.16 model, and the in-game runtime path is not measured yet. See `docs/hardware/RX9070XT-STEAMOS.md`. |
 | 4 | SR | **host recovered, reference running**: NeuralHub's own SR code runs on the RX 9070 XT under ROCm (`tools/sr/srref`, presets M and L, 39 dB after 8 frames on the test sequence; `docs/sr/HOST-RE.md`). Weights from the user's `nvngx_dlss.dll` 310.9.1.0 packed exactly as NeuralHub does (`tools/sr/sr_weights.py`, `sr_pack.py`). **Vulkan shaders: not started** (next: `k_sr_stage`, ISA notes below). |
-| 5 | RR | not started. Same method as SR applies: `rr.gfx1201.co` under ROCm + the host's RR engine (`rrunit::`, `rrk::`, `rrio::` launchers in `neuralhub_host.dll`), weights from the user's `nvngx_dlssd.dll` 310.9.1.0 (Crimson Desert `bin64/`). |
+| 5 | RR | **host recovered, reference running**: NeuralHub's own RR (preset F) code runs on the RX 9070 XT under ROCm (`tools/rr/rrref`, gather through output; denoises a noisy test sequence to 36 dB at 1080p -> 4K after 8 frames, ~12 ms/frame; `docs/rr/HOST-RE.md`). Weights from the user's `nvngx_dlssd.dll` 310.9.1.0 match NeuralHub's fingerprint (`tools/rr/rr_weights.py`, `rr_pack.py`). Transparency / virtual-hit / SSS paths not exercised. **Vulkan shaders: not started.** |
 | 6 | integration + installer | not started (the reference's `linux/package/install.sh` is the model to follow) |
 | 7 | performance | not started (needs the card) |
 
@@ -146,7 +146,9 @@ them and every code object in seconds (needs `7z`, `pip install pefile msgpack`)
    Shaders follow the reference NR port's conventions (`reference-nr-vulkan/CLAUDE.md`: wave32 pinned,
    FP8 only where the original uses it, 16-byte aligned LDS coopmat loads). Then a Vulkan host that runs
    the whole SR frame and matches srref end to end (39 dB test above, and per-frame diff vs srref).
-2. RR: repeat the SR recipe (host decompile -> weights reader/packer -> ROCm reference -> Vulkan).
+2. RR: the ROCm reference exists (`docs/rr/HOST-RE.md`); port its kernels to Vulkan the same way as SR's,
+   checked against `rrref --dump` (it writes every engine buffer as `E<index>.bin`). The `rrk::k_level`
+   family (16 units, 18 instantiations) is the bulk; `k_rr_gather` (84 KB of ISA) is a format converter.
 3. Integration: the reference's Vulkan layer + OptiScaler route (`reference-nr-vulkan/linux/`), SR/RR
    behind NGX/FSR inputs; installer modelled on `reference-nr-vulkan/linux/package/install.sh`.
 4. Performance on this card; NR's in-game runtime path vs NVIDIA (the gate so far used the offline runner).
