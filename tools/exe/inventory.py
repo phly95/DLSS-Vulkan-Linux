@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""Render kernels.json (from kernels.py) as the per-kernel tables of docs/inventory/KERNELS.md.
+
+    inventory.py kernels.json > docs/inventory/kernels-generated.md
+
+The Vulkan column is derived mechanically from each kernel's instruction profile; the hand-written
+notes in docs/inventory/KERNELS.md say where that mapping is not exact.
+"""
+import collections
+import json
+import re
+import sys
+
+NETS = [("nr", "NR (DLSS 5 neural rendering, nvngx_dlssnr.dll 310.8.0.0)"),
+        ("sr", "SR (DLSS super resolution presets M / L, nvngx_dlss.dll 310.9.1.0)"),
+        ("rr", "RR (DLSS ray reconstruction preset F, nvngx_dlssd.dll 310.9.1.0)"),
+        ("fg", "FG (DLSS frame generation, nvngx_dlssg.dll)")]
+
+# Kernels that exist for the HIP runtime's cross-queue synchronisation, timing or self-tests. They have
+# no counterpart in a Vulkan layer that records into the game's own command buffer.
+HOST_SYNC = {"k_flag_wait", "k_flag_set", "k_abort", "k_test_stall", "k_clock_probe", "k_align_probe"}
+
+PTR_TYPES = {"unsigned char": "u8 (fp8 e4m3 / unorm8 bytes)", "unsigned short": "u16 (f16 bits)",
+             "_Float16": "f16", "__half": "f16", "float": "f32", "unsigned int": "u32",
+             "unsigned long long": "u64", "long long": "i64", "int": "i32",
+             "HIP_vector_type<float, 4u>": "f32x4"}
+
+
+def family(name):
+    base = re.sub(r"^void ", "", name).split("(")[0]
+    return re.sub(r"<.*>", "", base)
+
+
+def tparams(name):
+    m = re.search(r"<([^()]*)>\(", name)
+    return m.group(1) if m else ""
+
+
+def signature_args(name):
+    m = re.search(r"\((.*)\)", name)
+    if not m:
+        return []
+    depth, cur, out = 0, "", []
+    for ch in m.group(1):
+        if ch in "<(":
+            depth += 1
+        elif ch in ">)":
+            depth -= 1
+        if ch == "," and depth == 0:
+            out.append(cur.strip())
+            cur = ""
+        else:
+            cur += ch
+    if cur.strip():
+        out.append(cur.strip())
+    return out
+
+
+def describe_args(k):
+    parts = []
+    sig = signature_args(k["name"])
+    for i, a in enumerate(k["args"]):
+        t = sig[i] if i < len(sig) else "?"
+        if a["kind"] == "global_buffer":
+            base = t.replace("const", "").replace("*", "").strip()
+            io = "in" if "const" in t else "out/in"
+            parts.append(f"{io} {PTR_TYPES.get(base, base)}*")
+        elif a["kind"] == "by_value":
+            if a["size"] > 8:
+                reads = sum(sz for off, sz in k.get("kernarg_reads", []))
+                parts.append(f"{t} ({a['size']} B struct)")
+            else:
+                parts.append(t)
+        else:
+            parts.append(f"{t} [{a['kind']}]")
+    return "; ".join(parts)
+
+
+def math_class(p):
+    out = []
+    if p.get("wmma_fp8"):
+        out.append(f"WMMA e4m3 x e4m3 -> f32 x{p['wmma_fp8']}")
+    if p.get("wmma_f16"):
+        out.append(f"WMMA f16 x f16 -> f32 x{p['wmma_f16']}")
+    if p.get("cvt_to_fp8"):
+        out.append(f"f32->e4m3 x{p['cvt_to_fp8']}")
+    if p.get("cvt_from_fp8"):
+        out.append(f"e4m3->f32 x{p['cvt_from_fp8']}")
+    if p.get("dot2_f16"):
+        out.append(f"dot2 f16->f32 x{p['dot2_f16']}")
+    valu = p.get("f16_valu", 0) + p.get("pk_f16", 0)
+    if valu:
+        out.append(f"f16 VALU x{valu}")
+    if p.get("f32_valu"):
+        out.append(f"f32 VALU x{p['f32_valu']}")
+    tr = [f"{n} x{p[n]}" for n in ("exp", "log", "rcp", "rsq", "sqrt", "sin_cos") if p.get(n)]
+    if tr:
+        out.append("transc. " + ", ".join(tr))
+    return "; ".join(out) or "-"
+
+
+def vulkan_mapping(k):
+    p, fam = k["profile"], family(k["name"]).split("::")[-1]
+    if fam in HOST_SYNC:
+        return "**none needed** (HIP cross-queue sync / probe; Vulkan records in the game's command buffer)"
+    if fam.startswith("k_st_"):
+        return "self-test only (not ported)"
+    m = []
+    if p.get("wmma_fp8"):
+        m.append("coopmat 16x16x16 E4M3 (KHR_cooperative_matrix + EXT_shader_float8)")
+    if p.get("wmma_f16"):
+        m.append("coopmat 16x16x16 f16->f32")
+    if p.get("cvt_to_fp8") or p.get("cvt_from_fp8"):
+        m.append("OpFConvert f32<->E4M3 (RNE, no saturation)")
+    if p.get("dot2_f16"):
+        m.append("dot2_f32_f16: 2x fma in f32 (see notes)")
+    if p.get("dpp_perm"):
+        m.append("subgroup shuffle/xor (wave32)")
+    if p.get("lds_load") or p.get("lds_store") or k["lds_bytes"]:
+        m.append(f"shared {k['lds_bytes']} B")
+    if p.get("lds_atomic"):
+        m.append("shared atomics")
+    if p.get("global_atomic"):
+        m.append("SSBO atomics")
+    if p.get("image_sample"):
+        m.append("sampler2D (HIP texture object)")
+    if p.get("sin_cos"):
+        m.append("sin/cos (v_sin takes revolutions)")
+    if not m:
+        m.append("plain compute (SSBO / BDA)")
+    return "; ".join(m)
+
+
+def main():
+    d = json.load(open(sys.argv[1]))
+    files = {name.split(".")[0]: v for name, v in d.items()}
+    print("<!-- generated by tools/exe/inventory.py from tools/exe/kernels.py output; do not edit -->")
+    print()
+    for net, title in NETS:
+        v = files.get(net)
+        if not v:
+            continue
+        ks = v["kernels"]
+        tot = collections.Counter()
+        for k in ks:
+            tot.update(k["profile"])
+        print(f"## {title}")
+        print()
+        print(f"{len(ks)} kernels, {tot['insts']} instructions; {tot.get('wmma_fp8', 0)} FP8 WMMA, "
+              f"{tot.get('wmma_f16', 0)} F16 WMMA, {tot.get('cvt_to_fp8', 0)} f32->fp8 conversions, "
+              f"{tot.get('image_sample', 0)} texture samples.")
+        print()
+        print("### Families")
+        print()
+        print("| family | instances | template params | LDS (B) | VGPRs | math | Vulkan construct |")
+        print("| --- | --- | --- | --- | --- | --- | --- |")
+        fams = collections.defaultdict(list)
+        for k in ks:
+            fams[family(k["name"])].append(k)
+        for f in sorted(fams):
+            g = fams[f]
+            tps = sorted({tparams(k["name"]) for k in g} - {""})
+            agg = collections.Counter()
+            for k in g:
+                agg.update(k["profile"])
+            lds = sorted({k["lds_bytes"] for k in g})
+            vg = sorted({k["vgprs"] for k in g})
+            rep = max(g, key=lambda k: k["profile"].get("insts", 0))
+            tp = " / ".join(f"<{t}>" for t in tps)
+            if len(tp) > 160:
+                tp = tp[:157] + "..."
+            print(f"| `{f}` | {len(g)} | {tp or '-'} | {lds[0]}{'-' + str(lds[-1]) if len(lds) > 1 else ''} "
+                  f"| {vg[0]}{'-' + str(vg[-1]) if len(vg) > 1 else ''} | {math_class(agg)} | {vulkan_mapping(rep)} |")
+        print()
+        print("### Every kernel")
+        print()
+        print("| kernel | kernarg (B) | arguments | LDS | scratch | VGPR | insts |")
+        print("| --- | --- | --- | --- | --- | --- | --- |")
+        for k in ks:
+            n = k["name"].replace("|", "\\|")
+            print(f"| `{n}` | {k['kernarg_bytes']} | {describe_args(k)} | {k['lds_bytes']} | "
+                  f"{k['scratch_bytes']} | {k['vgprs']} | {k['profile'].get('insts', 0)} |")
+        print()
+
+
+if __name__ == "__main__":
+    main()
