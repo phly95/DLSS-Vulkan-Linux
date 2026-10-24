@@ -310,35 +310,64 @@ int main(int argc, char** argv) {
     }
 
     // ---- the game's inputs (19 slots, as NeuralHub's staging hands them to k_rr_gather) ----
-    struct In { void* d = nullptr; int pitch = 0, fmt = -1; };
+    struct In { void* d = nullptr; int pitch = 0, fmt = -1; size_t cap = 0; };
     In in[19];
-    auto mk = [&](int slot, size_t bpp, int fmt) {
-        CK(hipMalloc(&in[slot].d, R * bpp)); in[slot].pitch = int(W * bpp); in[slot].fmt = fmt;
+    auto ensure_alloc = [&](int slot, size_t bpp) {
+        size_t needed = R * bpp;
+        if (in[slot].cap < needed) {
+            if (in[slot].d) (void)hipFree(in[slot].d);
+            CK(hipMalloc(&in[slot].d, needed));
+            in[slot].cap = needed;
+        }
     };
-    mk(0, 8, 0);    // colour, RGBA16F
-    mk(1, 4, 2);    // motion vectors, RG16F
-    mk(2, 4, 3);    // depth, R32F
-    mk(3, 8, 0);    // normals, RGBA16F
-    mk(4, 8, 0);    // diffuse albedo, RGBA16F
-    mk(5, 8, 0);    // specular albedo, RGBA16F
-    mk(8, 4, 3);    // roughness, R32F
+    for (int i = 0; i < 19; ++i) ensure_alloc(i, 8);
 
     std::vector<float> host(O * 4);
     hipEvent_t t0, t1; CK(hipEventCreate(&t0)); CK(hipEventCreate(&t1));
     for (int fr = 0; fr < nframes; ++fr) {
         const std::string s = std::to_string(fr);
-        auto up = [&](int slot, const std::string& name, size_t bpp) {
-            auto v = slurp(fdir + "/" + name + "_" + s + (bpp == 4 && slot != 1 ? ".f32" : ".f16"));
-            if (v.size() != R * bpp) { std::fprintf(stderr, "%s_%s: %zu bytes, expected %zu\n", name.c_str(), s.c_str(), v.size(), R * bpp); std::exit(1); }
-            CK(hipMemcpy(in[slot].d, v.data(), v.size(), hipMemcpyHostToDevice));
-        };
-        up(0, "col", 8); up(1, "mv", 4); up(2, "dep", 4); up(3, "nrm", 8); up(4, "alb", 8); up(5, "spa", 8); up(8, "rgh", 4);
         const std::string pjf = slurps(fdir + "/params_" + s + ".json");
         const auto jit = jget(pjf, "jitter"), mvs = jget(pjf, "mv_scale");
         const bool reset = jget(pjf, "reset").at(0) != 0;
         const bool inverted = jget(pjf, "depth_inverted").at(0) != 0;
         const auto hwv = jget(pjf, "hw_depth");
         const bool hw = hwv.empty() ? true : hwv[0] != 0;
+        const int fmt_col = int(jget(pjf, "fmt_col").empty() ? 0 : jget(pjf, "fmt_col")[0]);
+        const int fmt_mv  = int(jget(pjf, "fmt_mv").empty() ? 2 : jget(pjf, "fmt_mv")[0]);
+        const int fmt_dep = int(jget(pjf, "fmt_dep").empty() ? 3 : jget(pjf, "fmt_dep")[0]);
+        const int fmt_nrm = int(jget(pjf, "fmt_nrm").empty() ? 0 : jget(pjf, "fmt_nrm")[0]);
+        const int fmt_alb = int(jget(pjf, "fmt_alb").empty() ? 0 : jget(pjf, "fmt_alb")[0]);
+
+        auto upload_file = [&](int slot, const std::string& name, const std::string& ext, size_t bpp, int fmt) {
+            in[slot].fmt = fmt;
+            in[slot].pitch = int(W * bpp);
+            ensure_alloc(slot, bpp);
+            std::string path = fdir + "/" + name + "_" + s + ext;
+            std::ifstream tf(path);
+            if (tf) {
+                auto v = slurp(path);
+                CK(hipMemcpy(in[slot].d, v.data(), v.size(), hipMemcpyHostToDevice));
+            }
+        };
+
+        if (fmt_col == 5) upload_file(0, "col", ".u8", 4, 5);
+        else upload_file(0, "col", ".f16", 8, 0);
+
+        if (fmt_mv == 18) upload_file(1, "mv", ".u32", 4, 18);
+        else upload_file(1, "mv", ".f16", 4, 2);
+
+        if (fmt_dep == 16) upload_file(2, "dep", ".u32", 4, 16);
+        else if (fmt_dep == 9) upload_file(2, "dep", ".u16", 2, 9);
+        else upload_file(2, "dep", ".f32", 4, 3);
+
+        if (fmt_nrm == 14) upload_file(3, "nrm", ".u16", 8, 14);
+        else upload_file(3, "nrm", ".f16", 8, 0);
+
+        if (fmt_alb == 5) upload_file(4, "alb", ".u8", 4, 5);
+        else upload_file(4, "alb", ".f16", 8, 0);
+
+        upload_file(5, "spa", ".f16", 8, 0);
+        upload_file(8, "rgh", ".f32", 4, 3);
 
         // ---- k_rr_gather (FUN_180120200): GatherArgs, 0x1e8 bytes ----
         CK(hipEventRecord(t0, nullptr));

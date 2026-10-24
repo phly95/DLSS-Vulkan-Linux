@@ -55,27 +55,62 @@ def main():
     ap.add_argument("--depth-inverted", action="store_true")
     ap.add_argument("--report-jitter", type=float, default=1.0,
                     help="scale the jitter written to params (convention tests; 1 = correct)")
+    ap.add_argument("--seed", type=int, default=None, help="seed for jitter/path generation")
+    ap.add_argument("--path", action="store_true", help="simulate camera pan with motion vectors")
+    ap.add_argument("--reset-frame", type=int, default=None, help="frame index with reset=1")
     a = ap.parse_args()
     src = srgb_to_linear(np.asarray(Image.open(a.picture).convert("RGB"), np.float64) / 255.0)
     H, W = src.shape[:2]
     rw, rh = a.render
+    ow, oh = a.output
     a.out.mkdir(parents=True, exist_ok=True)
     (a.out / "frame.json").write_text(json.dumps(dict(render=a.render, output=a.output, frames=a.frames)))
     sx, sy = W / rw, H / rh
     prev = (0.0, 0.0)
+
+    rng = np.random.default_rng(a.seed) if a.seed is not None else None
+    reset_frame = a.reset_frame
+    if reset_frame is None and rng is not None:
+        reset_frame = int(rng.integers(4, min(8, max(4, a.frames - 1))))
+
+    pan_vx, pan_vy = (0.0, 0.0)
+    if a.path:
+        pan_vx = float(rng.uniform(-2.0, 2.0)) if rng is not None else 1.5
+        pan_vy = float(rng.uniform(-1.0, 1.0)) if rng is not None else 0.5
+
     for i in range(a.frames):
         jx, jy = halton(i + 1, 2) - 0.5, halton(i + 1, 3) - 0.5
-        xs = (np.arange(rw) + 0.5 - jx) * sx - 0.5
-        ys = (np.arange(rh) + 0.5 - jy) * sy - 0.5
+        ox = pan_vx * i
+        oy = pan_vy * i
+        xs = (np.arange(rw) + 0.5 - jx) * sx - 0.5 + ox
+        ys = (np.arange(rh) + 0.5 - jy) * sy - 0.5 + oy
         X, Y = np.meshgrid(xs, ys)
         c = bilinear(src, X, Y)
         rgba = np.concatenate([c, np.ones((rh, rw, 1))], axis=2).astype(np.float16)
         rgba.tofile(a.out / f"col_{i}.f16")
-        np.full((rh, rw), a.depth, np.float32).tofile(a.out / f"dep_{i}.f32")
-        np.zeros((rh, rw, 2), np.float16).tofile(a.out / f"mv_{i}.f16")
+        # R8G8B8A8_UNORM format (fmt_col = 5)
+        np.clip(rgba * 255.0 + 0.5, 0, 255).astype(np.uint8).tofile(a.out / f"col_{i}.u8")
+
+        dep = np.full((rh, rw), a.depth, np.float32)
+        dep.tofile(a.out / f"dep_{i}.f32")
+        # D24 format (fmt_dep = 16)
+        (np.clip(dep * 16777215.0 + 0.5, 0, 16777215)).astype(np.uint32).tofile(a.out / f"dep_{i}.u32")
+        # D16 format (fmt_dep = 9)
+        (np.clip(dep * 65535.0 + 0.5, 0, 65535)).astype(np.uint16).tofile(a.out / f"dep_{i}.u16")
+
+        # NGX: pixel vector pointing to previous frame position
+        mv = np.full((rh, rw, 2), [-pan_vx / sx, -pan_vy / sy], np.float16)
+        mv.tofile(a.out / f"mv_{i}.f16")
+
+        # High-res MV at output resolution (for k_sr_gather_mv tests)
+        mvhi = np.full((oh, ow, 2), [-pan_vx / (W / ow), -pan_vy / (H / oh)], np.float16)
+        mvhi.tofile(a.out / f"mvhi_{i}.f16")
+
+        is_reset = bool(i == 0 or (reset_frame is not None and i == reset_frame))
         (a.out / f"params_{i}.json").write_text(json.dumps(dict(
-            jitter=[jx * a.report_jitter, jy * a.report_jitter], jitter_prev=[v * a.report_jitter for v in prev], mv_scale=[1.0, 1.0], exposure=1.0, pre_exposure=1.0,
-            reset=i == 0, depth_inverted=a.depth_inverted)))
+            jitter=[jx * a.report_jitter, jy * a.report_jitter], jitter_prev=[v * a.report_jitter for v in prev],
+            mv_scale=[1.0, 1.0], exposure=1.0, pre_exposure=1.0,
+            reset=is_reset, depth_inverted=a.depth_inverted)))
         prev = (jx, jy)
 
 

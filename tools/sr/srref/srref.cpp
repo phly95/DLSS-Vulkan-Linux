@@ -226,9 +226,14 @@ int main(int argc, char** argv) {
     void* g_col = dalloc(rp * 8);
     void* g_dep = dalloc(rp * 4);
     void* g_mv = dalloc(rp * 4);
-    void* in_col = gather ? dalloc(rp * 8) : nullptr;     // the game's textures (--gather)
-    void* in_dep = gather ? dalloc(rp * 4) : nullptr;
-    void* in_mv = gather ? dalloc(rp * 4) : nullptr;
+    void* g_mvhi = dalloc(size_t(oW) * oH * 4);
+    void* in_col = dalloc(rp * 8);     // texture buffers for gather
+    void* in_dep = dalloc(rp * 4);
+    void* in_mv = dalloc(rp * 4);
+    void* in_mvhi = dalloc(size_t(oW) * oH * 4);
+    const int ae_gw = (W + 7) >> 3, ae_gh = (H + 7) >> 3;
+    void* ae_luma = dalloc(size_t(ae_gw) * ae_gh * sizeof(float));
+    void* ae_ping = dalloc(size_t(ae_gw) * ae_gh * sizeof(float));
     void* enc0_w = wbuf + woff[10];
     void* dec0_w = wbuf + woff[11];
 
@@ -236,31 +241,103 @@ int main(int argc, char** argv) {
     std::vector<uint8_t> hostout(size_t(oW) * oH * 16);
     for (int fi = 0; fi < nframes; ++fi) {
         const std::string sfx = "_" + std::to_string(fi);
-        auto col = slurp(fdir + "/col" + sfx + ".f16"), dep = slurp(fdir + "/dep" + sfx + ".f32"), mv = slurp(fdir + "/mv" + sfx + ".f16");
-        CK(hipMemcpy(gather ? in_col : g_col, col.data(), rp * 8, hipMemcpyHostToDevice));
-        CK(hipMemcpy(gather ? in_dep : g_dep, dep.data(), rp * 4, hipMemcpyHostToDevice));
-        CK(hipMemcpy(gather ? in_mv : g_mv, mv.data(), rp * 4, hipMemcpyHostToDevice));
-        if (gather) {   // FUN_180101f60: srunit::GatherArgs, 88 bytes
-            Args a(0x58);
-            a.put(0x00, in_col).put(0x08, in_mv).put(0x10, in_dep);
-            a.put(0x18, W * 8).put(0x1c, W * 4).put(0x20, W * 4);          // row pitches in bytes
-            a.put(0x24, 0).put(0x28, 0).put(0x2c, 0);                       // format codes
-            a.put(0x30, g_col).put(0x38, g_mv).put(0x40, g_dep).put(0x48, W).put(0x4c, H).put(0x50, 0);
-            M.launch("_ZN6srunit11k_sr_gatherENS_10GatherArgsE", dim3((W + 15) >> 4, (H + 15) >> 4), dim3(16, 16), a);
-        }
         const std::string pf(reinterpret_cast<const char*>(slurp(fdir + "/params" + sfx + ".json").data()), slurp(fdir + "/params" + sfx + ".json").size());
         auto jit = jget(pf, "jitter"), jitp = jget(pf, "jitter_prev"), mvs = jget(pf, "mv_scale");
         const float exposure = float(jget(pf, "exposure").at(0)), pre = float(jget(pf, "pre_exposure").at(0));
         const uint8_t reset = uint8_t(jget(pf, "reset").at(0)), depinv = uint8_t(jget(pf, "depth_inverted").at(0));
+        const int fmt_col = int(jget(pf, "fmt_col").empty() ? 0 : jget(pf, "fmt_col")[0]);
+        const int fmt_mv = int(jget(pf, "fmt_mv").empty() ? 0 : jget(pf, "fmt_mv")[0]);
+        const int fmt_dep = int(jget(pf, "fmt_dep").empty() ? 0 : jget(pf, "fmt_dep")[0]);
+        const int mvhi = int(jget(pf, "mvhi").empty() ? 0 : jget(pf, "mvhi")[0]);
+        const int auto_exp = int(jget(pf, "auto_exposure").empty() ? 0 : jget(pf, "auto_exposure")[0]);
+        const bool do_gather = gather || (fmt_col != 0 || fmt_mv != 0 || fmt_dep != 0 || mvhi != 0);
+
+        // Load input textures based on format codes
+        size_t col_pitch = W * 8;
+        if (fmt_col == 5) {
+            auto col = slurp(fdir + "/col" + sfx + ".u8");
+            CK(hipMemcpy(in_col, col.data(), col.size(), hipMemcpyHostToDevice));
+            col_pitch = W * 4;
+        } else {
+            auto col = slurp(fdir + "/col" + sfx + ".f16");
+            CK(hipMemcpy(do_gather ? in_col : g_col, col.data(), col.size(), hipMemcpyHostToDevice));
+            col_pitch = W * 8;
+        }
+
+        size_t dep_pitch = W * 4;
+        if (fmt_dep == 16) {
+            auto dep = slurp(fdir + "/dep" + sfx + ".u32");
+            CK(hipMemcpy(in_dep, dep.data(), dep.size(), hipMemcpyHostToDevice));
+            dep_pitch = W * 4;
+        } else if (fmt_dep == 9) {
+            auto dep = slurp(fdir + "/dep" + sfx + ".u16");
+            CK(hipMemcpy(in_dep, dep.data(), dep.size(), hipMemcpyHostToDevice));
+            dep_pitch = W * 2;
+        } else {
+            auto dep = slurp(fdir + "/dep" + sfx + ".f32");
+            CK(hipMemcpy(do_gather ? in_dep : g_dep, dep.data(), dep.size(), hipMemcpyHostToDevice));
+            dep_pitch = W * 4;
+        }
+
+        size_t mv_pitch = W * 4;
+        if (fmt_mv == 18) {
+            auto mv = slurp(fdir + "/mv" + sfx + ".u32");
+            CK(hipMemcpy(in_mv, mv.data(), mv.size(), hipMemcpyHostToDevice));
+            mv_pitch = W * 4;
+        } else {
+            auto mv = slurp(fdir + "/mv" + sfx + ".f16");
+            CK(hipMemcpy(do_gather ? in_mv : g_mv, mv.data(), mv.size(), hipMemcpyHostToDevice));
+            mv_pitch = W * 4;
+        }
+
+        if (do_gather) {   // FUN_180101f60: srunit::GatherArgs, 88 bytes
+            Args a(0x58);
+            a.put(0x00, in_col).put(0x08, in_mv).put(0x10, in_dep);
+            a.put(0x18, int(col_pitch)).put(0x1c, int(mv_pitch)).put(0x20, int(dep_pitch));
+            a.put(0x24, fmt_col).put(0x28, fmt_mv).put(0x2c, fmt_dep);
+            a.put(0x30, g_col).put(0x38, g_mv).put(0x40, g_dep).put(0x48, W).put(0x4c, H).put(0x50, mvhi);
+            M.launch("_ZN6srunit11k_sr_gatherENS_10GatherArgsE", dim3((W + 15) >> 4, (H + 15) >> 4), dim3(16, 16), a);
+        }
+
+        if (mvhi) {
+            std::string mvhi_path = fdir + "/mvhi" + sfx + ".f16";
+            std::ifstream testf(mvhi_path);
+            if (testf) {
+                auto mvh = slurp(mvhi_path);
+                CK(hipMemcpy(in_mvhi, mvh.data(), mvh.size(), hipMemcpyHostToDevice));
+            }
+            Args gm(32);
+            gm.put(0x00, in_mvhi).put(0x08, int(oW * 4)).put(0x0c, 0).put(0x10, g_mvhi).put(0x18, oW).put(0x1c, oH);
+            M.launch("_ZN6srunit14k_sr_gather_mvEPKhjiPtii", dim3((oW + 15) >> 4, (oH + 15) >> 4), dim3(16, 16), gm);
+        }
+
         const float mvoffx = 0, mvoffy = 0;   // mv_offset_kernel (FUN_18010ff70): 0 for unjittered MVs
         // F, the per-frame parameter block (the launchers read it by offset)
         // +0x48 auto_exposure=0, +0x49 ae_exact_sum=0, +0x4a depth_inverted, +0x4b reset, +0x4c ldr=0, +0x4d mvhi=0
         const float F20x = float(jit[0]), F20y = float(jit[1]), F28x = float(jitp[0]), F28y = float(jitp[1]);
         const float F30 = exposure, F34x = float(mvs[0]), F34y = float(mvs[1]), F44 = pre;
 
-        // exposure (FUN_180116c90): no texture, fixed value
-        { Args a(28); a.put(0, (void*)nullptr).put(8, F30).put(12, F44).put(16, expo).put(24, p);
-          M.launch("_ZN2sr2io13k_sr_exposureEPKfffPti", dim3(1), dim3(32), a); }
+        // exposure (FUN_180116c90)
+        if (auto_exp) {
+            Args al(0x30);
+            al.put(0x00, g_col).put(0x08, W).put(0x0c, H).put(0x10, W * 4)
+              .put(0x14, float(W - 1)).put(0x18, float(H - 1)).put(0x1c, float(W - 1)).put(0x20, float(H - 1))
+              .put(0x24, 1.0f / (float(W) * float(H))).put(0x28, ae_luma);
+            M.launch("_ZN2sr2io12k_sr_ae_lumaEPKtiiifffffPf", dim3(ae_gw, ae_gh), dim3(8, 8), al);
+            int count = ae_gw * ae_gh;
+            void* cur_in = ae_luma; void* cur_out = ae_ping;
+            while (count > 1) {
+                int g = (count + 511) >> 9;
+                Args ar(0x20); ar.put(0x00, cur_in).put(0x08, count).put(0x10, cur_out).put(0x18, 0);
+                M.launch("_ZN2sr2io14k_sr_ae_reduceEPKfiPfi", dim3(g), dim3(256), ar);
+                count = g; std::swap(cur_in, cur_out);
+            }
+            Args ac(0x18); ac.put(0x00, cur_in).put(0x08, expo).put(0x10, 1);
+            M.launch("_ZN2sr2io12k_sr_ae_copyEPKfPti", dim3(1), dim3(32), ac);
+        } else {
+            Args a(28); a.put(0, (void*)nullptr).put(8, F30).put(12, F44).put(16, expo).put(24, p);
+            M.launch("_ZN2sr2io13k_sr_exposureEPKfffPti", dim3(1), dim3(32), a);
+        }
 
         // enc0 (FUN_180116e70, preset M): Enc0Args, 280 B
         {
@@ -349,7 +426,7 @@ int main(int argc, char** argv) {
             M.launch("_ZN2sr2io9k_sr_dec0ENS0_8Dec0ArgsE", dim3(W0 / 8, H0 / 8), dim3(32), a);
         }
 
-        // post (FUN_180117ee0): PostArgs, 256 B; <isL=false, 12/16 or 15/27, ldr=0, mvhi=0>
+        // post (FUN_180117ee0): PostArgs, 256 B; <isL, 12/16 or 15/27, ldr=0, mvhi>
         {
             const float fW = float(W), fH = float(H), f15w = float(W15), f15h = float(H15);
             Args a(256);
@@ -360,12 +437,26 @@ int main(int argc, char** argv) {
              .i2(0x88, W, H).i2(0x90, W, H).i2(0x98, W15, H15).i2(0xa0, hW15, hH15).put(0xa8, dec0_f1)
              .f2(0xac, fW / f15w, fH / f15h).f2(0xb4, F20x, F20y)
              .f2(0xbc, 1.0f / fW, 1.0f / fH).f2(0xc4, 1.0f / f15w, 1.0f / f15h).put(0xcc, 0x40549a78u)
-             .put(0xd0, uint32_t(depinv)).put(0xd4, uint32_t(0)).put(0xd8, uint64_t(0)).put(0xe0, (void*)nullptr)
+             .put(0xd0, uint32_t(depinv)).put(0xd4, uint32_t(mvhi ? oW * 4 : 0)).put(0xd8, mvhi ? g_mvhi : nullptr).put(0xe0, (void*)nullptr)
              .i2(0xe8, oW, oH).f2(0xf0, F34x / (float(oW) / f15w), F34y / (float(oH) / f15h)).f2(0xf8, mvoffx, mvoffy);
-            const char* sym = presetL ? (post_3_2 ? "_ZN2sr2io9k_sr_postILb1ELi15ELi27ELb0ELb0EEEvNS0_8PostArgsE"
-                                                  : "_ZN2sr2io9k_sr_postILb1ELi12ELi16ELb0ELb0EEEvNS0_8PostArgsE")
-                                      : (post_3_2 ? "_ZN2sr2io9k_sr_postILb0ELi15ELi27ELb0ELb0EEEvNS0_8PostArgsE"
-                                                  : "_ZN2sr2io9k_sr_postILb0ELi12ELi16ELb0ELb0EEEvNS0_8PostArgsE");
+            const char* sym = nullptr;
+            if (presetL) {
+                if (mvhi) {
+                    sym = post_3_2 ? "_ZN2sr2io9k_sr_postILb1ELi15ELi27ELb0ELb1EEEvNS0_8PostArgsE"
+                                   : "_ZN2sr2io9k_sr_postILb1ELi12ELi16ELb0ELb1EEEvNS0_8PostArgsE";
+                } else {
+                    sym = post_3_2 ? "_ZN2sr2io9k_sr_postILb1ELi15ELi27ELb0ELb0EEEvNS0_8PostArgsE"
+                                   : "_ZN2sr2io9k_sr_postILb1ELi12ELi16ELb0ELb0EEEvNS0_8PostArgsE";
+                }
+            } else {
+                if (mvhi) {
+                    sym = post_3_2 ? "_ZN2sr2io9k_sr_postILb0ELi15ELi27ELb0ELb1EEEvNS0_8PostArgsE"
+                                   : "_ZN2sr2io9k_sr_postILb0ELi12ELi16ELb0ELb1EEEvNS0_8PostArgsE";
+                } else {
+                    sym = post_3_2 ? "_ZN2sr2io9k_sr_postILb0ELi15ELi27ELb0ELb0EEEvNS0_8PostArgsE"
+                                   : "_ZN2sr2io9k_sr_postILb0ELi12ELi16ELb0ELb0EEEvNS0_8PostArgsE";
+                }
+            }
             M.launch(sym, dim3((W15 + 15) >> 4, (hH15 + 15) >> 4), dim3(256), a);
         }
 
@@ -401,6 +492,12 @@ int main(int argc, char** argv) {
         dumpbuf("hidden0.bin", hidden[0], rp * 4); dumpbuf("hidden1.bin", hidden[1], rp * 4);
         dumpbuf("mv_ero.bin", mv_ero, rp * 4); dumpbuf("prev_mvec0.bin", prev_mvec[0], rp * 4); dumpbuf("prev_mvec1.bin", prev_mvec[1], rp * 4);
         dumpbuf("dhist.bin", dhist, size_t(hW15) * hH15 * 4); dumpbuf("expo.bin", expo, 4);
+        dumpbuf("g_col.f16", g_col, rp * 8); dumpbuf("g_dep.f32", g_dep, rp * 4); dumpbuf("g_mv.f16", g_mv, rp * 4);
+        dumpbuf("g_mvhi.f16", g_mvhi, size_t(oW) * oH * 4);
+        if (presetL) {
+            dumpbuf("l0_skip.bin", l0_skip, size_t(W0) * H0 * 32);
+            dumpbuf("l0_in.bin", l0_in, size_t(W0 + 8) * (H0 + 8) * 32);
+        }
         for (int i = 0; i < 9; ++i) {
             std::vector<uint8_t> h(size_t(t[i].C) * t[i].W * t[i].H);
             CK(hipMemcpy(h.data(), t[i].d, h.size(), hipMemcpyDeviceToHost));

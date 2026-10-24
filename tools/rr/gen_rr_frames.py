@@ -35,6 +35,8 @@ def main():
     ap.add_argument("--frames", type=int, default=8)
     ap.add_argument("--noise", type=float, default=0.5)
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--path", action="store_true", help="simulate camera pan with motion vectors")
+    ap.add_argument("--reset-frame", type=int, default=None, help="frame index with reset=1")
     a = ap.parse_args()
     src = _gf.srgb_to_linear(np.asarray(Image.open(a.picture).convert("RGB"), np.float64) / 255.0)
     H, W = src.shape[:2]
@@ -44,10 +46,22 @@ def main():
     rng = np.random.default_rng(a.seed)
     sx, sy = W / rw, H / rh
     one = np.ones((rh, rw, 1))
+
+    reset_frame = a.reset_frame
+    if reset_frame is None and a.seed is not None:
+        reset_frame = int(rng.integers(4, min(8, max(4, a.frames - 1))))
+
+    pan_vx, pan_vy = (0.0, 0.0)
+    if a.path:
+        pan_vx = float(rng.uniform(-2.0, 2.0))
+        pan_vy = float(rng.uniform(-1.0, 1.0))
+
     for i in range(a.frames):
         jx, jy = _gf.halton(i + 1, 2) - 0.5, _gf.halton(i + 1, 3) - 0.5
-        xs = (np.arange(rw) + 0.5 - jx) * sx - 0.5
-        ys = (np.arange(rh) + 0.5 - jy) * sy - 0.5
+        ox = pan_vx * i
+        oy = pan_vy * i
+        xs = (np.arange(rw) + 0.5 - jx) * sx - 0.5 + ox
+        ys = (np.arange(rh) + 0.5 - jy) * sy - 0.5 + oy
         X, Y = np.meshgrid(xs, ys)
         clean = _gf.bilinear(src, X, Y)
         if a.noise > 0:
@@ -57,15 +71,40 @@ def main():
             n = one
         def f16(x, name):
             np.asarray(x, np.float16).tofile(a.out / f"{name}_{i}.f16")
-        f16(np.concatenate([clean * n, one], axis=2), "col")
+        def u8(x, name):
+            np.asarray(x, np.uint8).tofile(a.out / f"{name}_{i}.u8")
+        def u32(x, name):
+            np.asarray(x, np.uint32).tofile(a.out / f"{name}_{i}.u32")
+        def u16(x, name):
+            np.asarray(x, np.uint16).tofile(a.out / f"{name}_{i}.u16")
+
+        noisy_col = np.concatenate([clean * n, one], axis=2)
+        f16(noisy_col, "col")
+        u8(np.clip(noisy_col * 255.0 + 0.5, 0, 255), "col")
+
         f16(np.concatenate([clean, one], axis=2), "alb")
+        u8(np.clip(np.concatenate([clean, one], axis=2) * 255.0 + 0.5, 0, 255), "alb")
+
         f16(np.concatenate([np.full((rh, rw, 3), 0.04), one], axis=2), "spa")
-        f16(np.concatenate([np.zeros((rh, rw, 2)), one, np.zeros((rh, rw, 1))], axis=2), "nrm")
-        f16(np.zeros((rh, rw, 2)), "mv")
-        np.full((rh, rw), 0.5, np.float32).tofile(a.out / f"dep_{i}.f32")
+
+        nrm = np.concatenate([np.zeros((rh, rw, 2)), one, np.zeros((rh, rw, 1))], axis=2)
+        f16(nrm, "nrm")
+        # RGBA16_UNORM normals (fmt_nrm = 14)
+        u16(np.clip((nrm * 0.5 + 0.5) * 65535.0 + 0.5, 0, 65535), "nrm")
+
+        mv = np.full((rh, rw, 2), [-pan_vx / sx, -pan_vy / sy], np.float16)
+        f16(mv, "mv")
+
+        dep = np.full((rh, rw), 0.5, np.float32)
+        dep.tofile(a.out / f"dep_{i}.f32")
+        u32(np.clip(dep * 16777215.0 + 0.5, 0, 16777215), "dep")
+        u16(np.clip(dep * 65535.0 + 0.5, 0, 65535), "dep")
+
         np.full((rh, rw), 0.5, np.float32).tofile(a.out / f"rgh_{i}.f32")
+
+        is_reset = bool(i == 0 or (reset_frame is not None and i == reset_frame))
         (a.out / f"params_{i}.json").write_text(json.dumps(dict(
-            jitter=[jx, jy], mv_scale=[1.0, 1.0], reset=i == 0, depth_inverted=True, hw_depth=True)))
+            jitter=[jx, jy], mv_scale=[1.0, 1.0], reset=is_reset, depth_inverted=True, hw_depth=True)))
 
 
 if __name__ == "__main__":

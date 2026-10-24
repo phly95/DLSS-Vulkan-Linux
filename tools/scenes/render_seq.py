@@ -17,6 +17,7 @@ import argparse
 import json
 import math
 import os
+import random
 import sys
 
 import bpy
@@ -47,6 +48,9 @@ def args():
     ap.add_argument("--device", choices=["CPU", "HIP"], default="CPU",
                     help="HIP: the GPU through ROCm (run Blender inside a ROCm container; tools/scenes/README.md)")
     ap.add_argument("--only", choices=["noisy", "clean", "gt"], nargs="*")
+    ap.add_argument("--seed", type=int, default=None, help="seed for random camera/helmet paths")
+    ap.add_argument("--reset-frame", type=int, default=None, help="frame index with reset=1")
+    ap.add_argument("--no-gt", action="store_true", help="skip ground-truth renders")
     return ap.parse_args(argv)
 
 
@@ -88,23 +92,60 @@ def main():
     hroot = [o for o in helmet if o.parent is None][0]
     hroot.scale = (0.6, 0.6, 0.6)
 
-    # camera: a dolly down Sponza's nave with a slow pan; the helmet crosses in front of it
+    # camera & helmet paths: default dolly or seeded random paths within Sponza atrium
     cam_data = bpy.data.cameras.new("cam")
     cam_data.lens = 24
     cam_data.clip_start = 0.1
     cam = bpy.data.objects.new("cam", cam_data)
     sc.collection.objects.link(cam)
     sc.camera = cam
-    for f in range(a.frames + 2):
-        t = f - 1                                   # keyframes one frame before and after: exact vectors
-        cam.location = (-10.0 + 0.08 * t, 0.3 + 0.01 * t, 1.7 + 0.01 * t)
-        cam.rotation_euler = (math.radians(86), 0.0, math.radians(-92 + 0.5 * t))
-        cam.keyframe_insert("location", frame=f)
-        cam.keyframe_insert("rotation_euler", frame=f)
-        hroot.location = (-4.0 + 0.03 * t, 1.8 - 0.22 * t, 1.6 + 0.15 * math.sin(0.4 * t))
-        hroot.rotation_euler = (math.radians(90), 0.0, math.radians(20 + 5.0 * t))
-        hroot.keyframe_insert("location", frame=f)
-        hroot.keyframe_insert("rotation_euler", frame=f)
+
+    if a.seed is not None:
+        rng = random.Random(a.seed)
+        reset_frame = a.reset_frame if a.reset_frame is not None else rng.randint(4, min(8, max(4, a.frames - 1)))
+        cx0 = rng.uniform(-10.5, -9.0)
+        cvx = rng.uniform(0.06, 0.12)
+        cy0 = rng.uniform(-0.4, 0.4)
+        cvy = rng.uniform(-0.02, 0.02)
+        cz0 = rng.uniform(1.5, 1.9)
+        cvz = rng.uniform(-0.01, 0.01)
+        cpitch = math.radians(rng.uniform(84.0, 88.0))
+        cyaw0 = rng.uniform(-94.0, -90.0)
+        cyaw_rate = rng.uniform(0.3, 0.7)
+
+        hx0 = rng.uniform(-4.5, -3.5)
+        hvx = rng.uniform(0.02, 0.05)
+        hy0 = rng.uniform(1.5, 2.0)
+        hvy = rng.uniform(-0.25, -0.18)
+        hz0 = rng.uniform(1.4, 1.7)
+        h_amp = rng.uniform(0.1, 0.2)
+        h_freq = rng.uniform(0.3, 0.5)
+        hrot0 = rng.uniform(15.0, 25.0)
+        hrot_rate = rng.uniform(4.0, 6.0)
+
+        for f in range(a.frames + 2):
+            t = f - 1
+            cam.location = (cx0 + cvx * t, cy0 + cvy * t, cz0 + cvz * t)
+            cam.rotation_euler = (cpitch, 0.0, math.radians(cyaw0 + cyaw_rate * t))
+            cam.keyframe_insert("location", frame=f)
+            cam.keyframe_insert("rotation_euler", frame=f)
+
+            hroot.location = (hx0 + hvx * t, hy0 + hvy * t, hz0 + h_amp * math.sin(h_freq * t))
+            hroot.rotation_euler = (math.radians(90), 0.0, math.radians(hrot0 + hrot_rate * t))
+            hroot.keyframe_insert("location", frame=f)
+            hroot.keyframe_insert("rotation_euler", frame=f)
+    else:
+        reset_frame = a.reset_frame if a.reset_frame is not None else -1
+        for f in range(a.frames + 2):
+            t = f - 1                                   # keyframes one frame before and after: exact vectors
+            cam.location = (-10.0 + 0.08 * t, 0.3 + 0.01 * t, 1.7 + 0.01 * t)
+            cam.rotation_euler = (math.radians(86), 0.0, math.radians(-92 + 0.5 * t))
+            cam.keyframe_insert("location", frame=f)
+            cam.keyframe_insert("rotation_euler", frame=f)
+            hroot.location = (-4.0 + 0.03 * t, 1.8 - 0.22 * t, 1.6 + 0.15 * math.sin(0.4 * t))
+            hroot.rotation_euler = (math.radians(90), 0.0, math.radians(20 + 5.0 * t))
+            hroot.keyframe_insert("location", frame=f)
+            hroot.keyframe_insert("rotation_euler", frame=f)
     for o in [cam, hroot]:
         for fc in o.animation_data.action.fcurves:
             for kp in fc.keyframe_points:
@@ -148,12 +189,15 @@ def main():
     aov.type = "VALUE"
 
     rw, rh = a.render
-    meta = dict(render=a.render, output=a.output, frames=a.frames, near=cam_data.clip_start, jitter=[])
+    meta = dict(render=a.render, output=a.output, frames=a.frames, near=cam_data.clip_start,
+                seed=a.seed, reset_frame=reset_frame, jitter=[])
     for i in range(a.frames):
         sc.frame_set(i + 1)
         jx, jy = halton(i + 1, 2) - 0.5, halton(i + 1, 3) - 0.5
         meta["jitter"].append([jx, jy])
         for kind in ("noisy", "clean", "gt"):
+            if a.no_gt and kind == "gt":
+                continue
             if a.only and kind not in a.only:
                 continue
             path = os.path.join(a.out, "exr", f"{kind}_{i}.exr")
