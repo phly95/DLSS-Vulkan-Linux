@@ -79,3 +79,67 @@ Transcribed in `tools/sr/sr_pack.py`: every blob of both presets has the size Ne
 (stages 0x118c0, 0x27f00, 0x2d000 x6, 0x28100, 0x11a00; enc0 0x3080 / 0x7700, dec0 0x2100 / 0x5f00).
 The enc0 / dec0 blobs start with the 4096-byte dither table. Next: checked by running NeuralHub's own code objects under
 ROCm (`/dev/kfd` works on this machine: ROCm 7.2.4 in podman sees gfx1201).
+
+## The engine `E` (`FUN_18010db80`, engine init; `sr_engine.h`)
+
+Indices are 32-bit ints of `E` unless marked q (64-bit slot = int index / 2). Names in quotes come
+from the host's own error and dump strings.
+
+| int idx | field |
+| --- | --- |
+| 0, 1 | render W, H |
+| 2, 3 | W0, H0 = W, H rounded up to 32 |
+| 4, 5 / 6, 7 / 8, 9 | W0/2, H0/2 / W0/4 / W0/8 (levels 1-3) |
+| 10, 11 | output W, H |
+| 12, 13 | "W15", "H15" = (out*3+1)>>1 (history size, 1.5x output) |
+| 14 | frame parity `p0` (ping-pong of ihist / prev_mvec) |
+| 15 | set per frame (passed to enc0) |
+| 0x10 (q8) | "wbuf": all stage blobs, each 256-aligned; offsets at 0x12..0x24 (q9..q18) |
+| 0x26 | "w16buf" (gfx11 only: f16 copy of wbuf by `k_sr_w16`; `g_sr_w16_delta` = w16buf - 2*wbuf) |
+| 0x28 | "lutbuf": 2 x 65536 f16: `1/sqrt(h)` and `1/h` for every f16 h (symbol `g_sr_lut`) |
+| 0x2a | "unorm8buf" 512 B (`k_sr_unorm8_table`; symbol `io::g_unorm8_p`) |
+| 0x2c..0x2e+1 (bytes 0xb0..0xb9) | per-stage fp8-safe flags from the packer |
+| 0x30, 0x36, ... 0x60 | 9 level tensors `{ptr, C, W, H}` (24 B each): C 64,64,96,96,128,128,128,96,64 at levels 1,1,2,2,3,3,3,2,1 |
+| 0x66, 0x67 | W, H (copy) |
+| 0x68, 0x69 | (W15+1)/2, (H15+1)/2 |
+| 0x6a (q0x35), 0x6c (q0x36) | enc0 / dec0 blob pointers (inside wbuf) |
+| 0x6e / 0x6f / 0x70 | dec0 scalars: min(exp(s0), 8) as int, exp(s1), exp(s2) |
+| byte 0x261 / 0x262 / 0x263 | preset is L / enc0L fp8-safe / dec0L fp8-safe |
+| 0x72 (q0x39), 0x74 (q0x3a) | "prev_mvec[0/1]" 4 B/px |
+| 0x76 (q0x3b) | "mv_ero" 4 B/px |
+| 0x78 (q0x3c) | "mv_nondil" 4 B x pitch(0x92) x H; texture object at 0x94 ("mvn_tex": RG16F, bilinear, clamp, normalized) |
+| 0x7a, 0x7c (q0x3d, 0x3e) | "hidden[0/1]" 4 B/px |
+| 0x7e (q0x3f) / 0x80 (q0x40) | "gates" / "factors" 4 B/px |
+| 0x82 (q0x41) | "aniso" 8 B/px |
+| 0x84 (q0x42) | "dhist" 4 B x (W15+1)/2 x (H15+1)/2 |
+| 0x86, 0x88 (q0x43, 0x44) | "ihist[0/1]": RGBA16F W15 x H15, pitched (pitch at 0x8c); textures at 0x8e, 0x90 (bilinear, clamp, normalized) |
+| 0x92 | pitch of mv_nondil in pixels (W rounded up to 64) |
+| 0x96 (q0x4b) | "expo": f16x2, starts (1.0, 1.0) |
+| 0x98 | bool: out/render ratio below a threshold (`DAT_1801b6318`) |
+| 0x9a (q0x4d) / 0x9c (q0x4e) | "l0_skip" 32 B x W0 x H0 / "l0_in" 32 B x (W0+8) x (H0+8): preset L only |
+| 0x9e, 0x9f | AE grid "ae_gw", "ae_gh" = min(max(render, out) / 2, const) |
+| 0xa0 / 0xa2 | "ae_luma" 4 B per cell / "ae_tmp" (cells + 511) / 512 floats |
+| 0xa4 | the AE result pointer of the last reduce |
+| 0xa6 | the RGBA32F output, 16 B x outW x outH |
+
+Kernel variant choice: the global `DAT_181a190c1` is "the device is gfx11" (arch name check). On gfx12
+it is false: stages launch the `n = 2` instantiations with 64-thread workgroups and no f16 weight copy.
+
+## Per-frame parameters `F` (the second argument of every launcher)
+
+Read so far: +0x00 colour (RGBA16F, 8 B/px), +0x08 depth, +0x18 motion vectors (or +0x50 when byte
++0x4d is set: the output-resolution "mvhi" vectors), +0x10 the game's exposure texture, +0x20 / +0x28
+two float pairs (jitter / jitter_prev, by the dump job's order), +0x2c, +0x30, +0x34, +0x38 floats,
++0x3c a float pair, +0x44 float, bytes +0x48 auto-exposure, +0x49 "ae_exact_sum", +0x4a, +0x4b,
++0x4c (fixed exposure: skip), +0x4d mvhi.
+
+## Launch details
+
+- exposure (`FUN_180116c90`): if F.+0x4c, nothing; if F.+0x48, auto-exposure (`FUN_1801184a0`):
+  `k_sr_ae_luma` on an ae_gw x ae_gh grid (8x8 groups), then `k_sr_ae_reduce` (256 threads,
+  512 values per group) repeated until one value is left, then `k_sr_ae_copy` into expo;
+  else `k_sr_exposure(F.+0x10, F.+0x30, F.+0x44, expo, E[14])` (one 32-thread group).
+- enc0 (`FUN_180116e70`): preset M runs `k_sr_enc0` on (W0/8, H0/8) groups of 32 threads; preset L
+  runs `k_sr_enc0L_in` over (W0+8)(H0+8)/64 groups of 64 into l0_in, then `k_sr_l0<0,2,b>`.
+  `Enc0Args` (280 B) is assembled from F, E's buffers above, the parity and derived ratios
+  (W15/W, 1/W, ..., the constant log2(10) = 0x40549a78).
