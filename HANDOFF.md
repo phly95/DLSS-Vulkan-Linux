@@ -18,13 +18,20 @@ are allowed). The reference Vulkan NR port is `reference-nr-vulkan/` (MIT).
 | --- | --- | --- |
 | 1 | kernel + interop inventory | **done**: `docs/inventory/KERNELS.md`, `docs/inventory/kernels-generated.md` |
 | 2 | harness | **partial**: dump format + `tools/harness/compare.py` (self-tested). **No Windows reference dumps** (need Windows + RX 9000). No Vulkan-side dumper yet. |
-| 3 | NR | **base in place, not measured**: reference at `reference-nr-vulkan/` (submodule, c71b0f4). Its 64 pipelines rebuild byte-identically (62 with records; 2 motion shaders have none by design) and compile for GFX1201 with 0 spills (`artifacts/reference-nr/pipestats-gfx1201.txt`). The 49 dB gate needs an RX 9070 XT + the user's `nvngx_dlssnr.dll`. |
+| 3 | NR | **runs on the RX 9070 XT with the real 310.8.0 model**: 45.59 / 47.97 / 49.00 dB vs NVIDIA's output at 1080p / 1440p / 4K (offline runner, `tools/hwtest/nr_gate.py`), the same as the reference's published figures. ≥ 49 dB at every size needs the 310.9.16 model, and the in-game runtime path is not measured yet. See `docs/hardware/RX9070XT-STEAMOS.md`. |
 | 4 | SR | not started |
 | 5 | RR | not started |
 | 6 | integration + installer | not started (the reference's `linux/package/install.sh` is the model to follow) |
 | 7 | performance | not started (needs the card) |
 
-## This machine (cloud container) and what it can do
+## The real machine
+
+The port now also runs on the target: an RX 9070 XT under SteamOS (`docs/hardware/RX9070XT-STEAMOS.md`,
+`tools/hwtest/`). Build outputs go to `build/hwtest/` and the model to `build/model/`. Both are ignored by git.
+This machine has the user's `nvngx_dlss.dll` / `nvngx_dlssd.dll` 310.9.1.0, which NeuralHub's SR / RR target
+(Crimson Desert's `bin64/`).
+
+## The cloud container (first sessions) and what it can do
 
 - No GPU, no Windows. Ubuntu 24.04, 4 cores, 15 GB RAM.
 - **Compile for the real card without it**: `bash tools/radv-offline/build.sh` (unpacks the prebuilt
@@ -74,8 +81,7 @@ them and every code object in seconds (needs `7z`, `pip install pefile msgpack`)
 - **Do not build a CPU emulator that executes NeuralHub's code objects.** That was attempted in the
   first session and was stopped by a safety check; the partial work was deleted. Do not resume it in
   another form.
-- Reimplementing NeuralHub's SR/RR kernels from its disassembly was held back pending the user's
-  answer on NeuralHub's licence (no licence file ships in the installer). Ask the user before doing it.
+- (Resolved 2026-10-24) The user chose to port NeuralHub's SR/RR kernels to Vulkan; that is no longer blocked.
 
 ## Open questions for the user
 
