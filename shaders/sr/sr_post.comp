@@ -1,0 +1,233 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_control_flow_attributes : require
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(push_constant) uniform PostPushConstants {
+    uint g_col_offset;
+    uint expo_offset;
+    uint parity;
+    uint gates_offset;
+    uint factors_offset;
+    uint aniso_offset;
+    uint ihist_in_offset;
+    uint prev_mvec_offset;
+    uint mv_ero_offset;
+    uint full15_offset;
+    uint ihist_out_offset;
+    int W;
+    int H;
+    int W15;
+    int H15;
+    int oW;
+    int oH;
+    float jitter_x;
+    float jitter_y;
+    float scale_x;
+    float scale_y;
+    int reset;
+} pc;
+
+layout(set = 0, binding = 0, std430) buffer ActBuffer {
+    uint8_t acts[];
+};
+
+float16_t read_f16(uint idx) {
+    uint16_t lo = uint16_t(acts[idx]) | (uint16_t(acts[idx + 1u]) << 8u);
+    return unpackFloat2x16(uint(lo)).x;
+}
+
+vec4 load_g_col(int x, int y) {
+    x = clamp(x, 0, pc.W - 1);
+    y = clamp(y, 0, pc.H - 1);
+    uint idx = pc.g_col_offset + uint((y * pc.W + x) * 8);
+    float r = float(read_f16(idx));
+    float g = float(read_f16(idx + 2u));
+    float b = float(read_f16(idx + 4u));
+    float a = float(read_f16(idx + 6u));
+    return vec4(r, g, b, a);
+}
+
+vec4 load_ihist(int x, int y) {
+    x = clamp(x, 0, pc.W15 - 1);
+    y = clamp(y, 0, pc.H15 - 1);
+    uint idx = pc.ihist_in_offset + uint((y * pc.W15 + x) * 8);
+    float r = float(read_f16(idx));
+    float g = float(read_f16(idx + 2u));
+    float b = float(read_f16(idx + 4u));
+    float a = float(read_f16(idx + 6u));
+    return vec4(r, g, b, a);
+}
+
+vec2 load_mv(int x, int y) {
+    x = clamp(x, 0, pc.W - 1);
+    y = clamp(y, 0, pc.H - 1);
+    uint idx = pc.prev_mvec_offset + uint((y * pc.W + x) * 4);
+    float mx = float(read_f16(idx));
+    float my = float(read_f16(idx + 2u));
+    return vec2(mx, my);
+}
+
+uint pack_f11(float val) {
+    if (!(val > 0.0)) return 0u;
+    if (val >= 65024.0) return (30u << 6u) | 63u;
+    if (val < 0.00006103515625) { // 2^-14 subnormal
+        uint m = uint(round(val * 1048576.0)); // val * 64.0 * 2^14
+        return min(m, 63u);
+    }
+    int e = int(floor(log2(val)));
+    int exp_bits = e + 15;
+    if (exp_bits >= 31) return (30u << 6u) | 63u;
+    if (exp_bits <= 0) return 0u;
+    float base = exp2(float(e));
+    uint m = uint(round((val - base) / base * 64.0));
+    if (m >= 64u) {
+        m = 0u;
+        exp_bits += 1;
+        if (exp_bits >= 31) return (30u << 6u) | 63u;
+    }
+    return (uint(exp_bits) << 6u) | m;
+}
+
+uint pack_f10(float val) {
+    if (!(val > 0.0)) return 0u;
+    if (val >= 65024.0) return (30u << 5u) | 31u;
+    if (val < 0.00006103515625) { // 2^-14 subnormal
+        uint m = uint(round(val * 524288.0)); // val * 32.0 * 2^14
+        return min(m, 31u);
+    }
+    int e = int(floor(log2(val)));
+    int exp_bits = e + 15;
+    if (exp_bits >= 31) return (30u << 5u) | 31u;
+    if (exp_bits <= 0) return 0u;
+    float base = exp2(float(e));
+    uint m = uint(round((val - base) / base * 32.0));
+    if (m >= 32u) {
+        m = 0u;
+        exp_bits += 1;
+        if (exp_bits >= 31) return (30u << 5u) | 31u;
+    }
+    return (uint(exp_bits) << 5u) | m;
+}
+
+void write_full15(int x, int y, vec4 val) {
+    uint idx = pc.full15_offset + uint((y * pc.W15 + x) * 4);
+    uint r = pack_f11(val.r);
+    uint g = pack_f11(val.g);
+    uint b = pack_f10(val.b);
+    uint p = r | (g << 11u) | (b << 22u);
+
+    acts[idx]        = uint8_t(p & 0xFFu);
+    acts[idx + 1u]   = uint8_t((p >> 8u) & 0xFFu);
+    acts[idx + 2u]   = uint8_t((p >> 16u) & 0xFFu);
+    acts[idx + 3u]   = uint8_t((p >> 24u) & 0xFFu);
+}
+
+void write_ihist_out(int x, int y, vec4 val) {
+    if (pc.ihist_out_offset == 0u) return;
+    uint idx = pc.ihist_out_offset + uint((y * pc.W15 + x) * 8);
+    uint16_t r = uint16_t(packHalf2x16(vec2(val.r, 0.0)) & 0xFFFFu);
+    uint16_t g = uint16_t(packHalf2x16(vec2(val.g, 0.0)) & 0xFFFFu);
+    uint16_t b = uint16_t(packHalf2x16(vec2(val.b, 0.0)) & 0xFFFFu);
+    uint16_t a = uint16_t(packHalf2x16(vec2(val.a, 0.0)) & 0xFFFFu);
+
+    acts[idx]        = uint8_t(r & 0xFFu);
+    acts[idx + 1u]   = uint8_t((r >> 8u) & 0xFFu);
+    acts[idx + 2u]   = uint8_t(g & 0xFFu);
+    acts[idx + 3u]   = uint8_t((g >> 8u) & 0xFFu);
+    acts[idx + 4u]   = uint8_t(b & 0xFFu);
+    acts[idx + 5u]   = uint8_t((b >> 8u) & 0xFFu);
+    acts[idx + 6u]   = uint8_t(a & 0xFFu);
+    acts[idx + 7u]   = uint8_t((a >> 8u) & 0xFFu);
+}
+
+vec4 bicubic_weights(float t) {
+    float t2 = t * t;
+    float t3 = t2 * t;
+    return vec4(
+        -0.5 * t3 + t2 - 0.5 * t,
+         1.5 * t3 - 2.5 * t2 + 1.0,
+        -1.5 * t3 + 2.0 * t2 + 0.5 * t,
+         0.5 * t3 - 0.5 * t2
+    );
+}
+
+vec4 sample_g_col_bicubic(float rx, float ry) {
+    int ix = int(floor(rx));
+    int iy = int(floor(ry));
+    float tx = rx - float(ix);
+    float ty = ry - float(iy);
+    vec4 wx = bicubic_weights(tx);
+    vec4 wy = bicubic_weights(ty);
+
+    vec4 c = vec4(0.0);
+    for (int j = 0; j < 4; ++j) {
+        vec4 row_c = vec4(0.0);
+        for (int i = 0; i < 4; ++i) {
+            row_c += load_g_col(ix - 1 + i, iy - 1 + j) * wx[i];
+        }
+        c += row_c * wy[j];
+    }
+    return max(c, vec4(0.0));
+}
+
+vec4 load_ihist_bilinear(float hx, float hy) {
+    int x0 = int(floor(hx));
+    int y0 = int(floor(hy));
+    float tx = hx - float(x0);
+    float ty = hy - float(y0);
+
+    vec4 c00 = load_ihist(x0, y0);
+    vec4 c10 = load_ihist(x0 + 1, y0);
+    vec4 c01 = load_ihist(x0, y0 + 1);
+    vec4 c11 = load_ihist(x0 + 1, y0 + 1);
+
+    return mix(mix(c00, c10, tx), mix(c01, c11, tx), ty);
+}
+
+void main() {
+    int hx = int(gl_GlobalInvocationID.x);
+    int hy = int(gl_GlobalInvocationID.y);
+
+    if (hx >= pc.W15 || hy >= pc.H15) return;
+
+    // Map 1.5x history coordinate to render coordinate
+    float rx = (float(hx) + 0.5) * (float(pc.W) / float(pc.W15)) + pc.jitter_x - 0.5;
+    float ry = (float(hy) + 0.5) * (float(pc.H) / float(pc.H15)) + pc.jitter_y - 0.5;
+
+    vec4 cur_col = sample_g_col_bicubic(rx, ry);
+
+    int irx = clamp(int(round(rx)), 0, pc.W - 1);
+    int iry = clamp(int(round(ry)), 0, pc.H - 1);
+    vec2 mv = load_mv(irx, iry);
+
+    // Reproject previous history coordinate using motion vectors
+    float prev_hx = float(hx) + mv.x * (float(pc.W15) / float(pc.W));
+    float prev_hy = float(hy) + mv.y * (float(pc.H15) / float(pc.H));
+    vec4 hist_col = load_ihist_bilinear(prev_hx, prev_hy);
+
+    // Read gates
+    uint p_idx = uint(iry * pc.W + irx);
+    float alpha = 0.85;
+    if (pc.gates_offset != 0u) {
+        alpha = float(acts[pc.gates_offset + p_idx * 4u]) / 255.0;
+        alpha = clamp(alpha, 0.05, 0.95);
+    }
+
+    if (pc.reset != 0) {
+        // Reset: no history accumulation
+        alpha = 0.0;
+    }
+
+    // Blend history with current frame
+    vec4 resolved = mix(cur_col, hist_col, alpha);
+
+    write_full15(hx, hy, resolved);
+    write_ihist_out(hx, hy, resolved);
+}

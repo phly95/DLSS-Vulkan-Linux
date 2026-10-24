@@ -1,0 +1,133 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_16bit_storage : require
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(push_constant) uniform GatherPushConstants {
+    uint in_col_offset;
+    uint in_mv_offset;
+    uint in_dep_offset;
+    uint in_mvhi_offset;
+    uint g_col_offset;
+    uint g_mv_offset;
+    uint g_dep_offset;
+    uint g_mvhi_offset;
+    int col_pitch;
+    int mv_pitch;
+    int dep_pitch;
+    int mvhi_pitch;
+    int fmt_col;
+    int fmt_mv;
+    int fmt_dep;
+    int mvhi;
+    int W;
+    int H;
+    int oW;
+    int oH;
+} pc;
+
+layout(set = 0, binding = 0, std430) buffer ActBuffer {
+    uint8_t acts[];
+};
+
+void main() {
+    int x = int(gl_GlobalInvocationID.x);
+    int y = int(gl_GlobalInvocationID.y);
+
+    if (x < pc.W && y < pc.H) {
+        // 1. Gather Colour -> g_col (RGBA16F, 8 bytes/px)
+        uint in_col_addr = pc.in_col_offset + uint(y * pc.col_pitch + x * ((pc.fmt_col == 5) ? 4 : 8));
+        uint out_col_addr = pc.g_col_offset + uint((y * pc.W + x) * 8);
+
+        if (pc.fmt_col == 5) { // R8G8B8A8_UNORM
+            vec4 col;
+            col.r = float(acts[in_col_addr]) / 255.0;
+            col.g = float(acts[in_col_addr + 1u]) / 255.0;
+            col.b = float(acts[in_col_addr + 2u]) / 255.0;
+            col.a = float(acts[in_col_addr + 3u]) / 255.0;
+
+            uint16_t or_ = uint16_t(packHalf2x16(vec2(col.r, 0.0)) & 0xFFFFu);
+            uint16_t og_ = uint16_t(packHalf2x16(vec2(col.g, 0.0)) & 0xFFFFu);
+            uint16_t ob_ = uint16_t(packHalf2x16(vec2(col.b, 0.0)) & 0xFFFFu);
+            uint16_t oa_ = uint16_t(packHalf2x16(vec2(col.a, 0.0)) & 0xFFFFu);
+            acts[out_col_addr]      = uint8_t(or_ & 0xFFu);
+            acts[out_col_addr + 1u] = uint8_t((or_ >> 8u) & 0xFFu);
+            acts[out_col_addr + 2u] = uint8_t(og_ & 0xFFu);
+            acts[out_col_addr + 3u] = uint8_t((og_ >> 8u) & 0xFFu);
+            acts[out_col_addr + 4u] = uint8_t(ob_ & 0xFFu);
+            acts[out_col_addr + 5u] = uint8_t((ob_ >> 8u) & 0xFFu);
+            acts[out_col_addr + 6u] = uint8_t(oa_ & 0xFFu);
+            acts[out_col_addr + 7u] = uint8_t((oa_ >> 8u) & 0xFFu);
+        } else { // RGBA16F: direct copy
+            for (uint i = 0; i < 8u; ++i) {
+                acts[out_col_addr + i] = acts[in_col_addr + i];
+            }
+        }
+
+        // 2. Gather Depth -> g_dep (R32F, 4 bytes/px)
+        uint in_dep_addr = pc.in_dep_offset + uint(y * pc.dep_pitch + x * ((pc.fmt_dep == 9) ? 2 : 4));
+        uint out_dep_addr = pc.g_dep_offset + uint((y * pc.W + x) * 4);
+
+        if (pc.fmt_dep == 16) { // D24_UNORM_S8_UINT
+            uint u = uint(acts[in_dep_addr]) | (uint(acts[in_dep_addr + 1u]) << 8u) | (uint(acts[in_dep_addr + 2u]) << 16u);
+            float dep = float(u & 0xFFFFFFu) / 16777215.0;
+            uint du = floatBitsToUint(dep);
+            acts[out_dep_addr]      = uint8_t(du & 0xFFu);
+            acts[out_dep_addr + 1u] = uint8_t((du >> 8u) & 0xFFu);
+            acts[out_dep_addr + 2u] = uint8_t((du >> 16u) & 0xFFu);
+            acts[out_dep_addr + 3u] = uint8_t((du >> 24u) & 0xFFu);
+        } else if (pc.fmt_dep == 9) { // D16_UNORM
+            uint u = uint(acts[in_dep_addr]) | (uint(acts[in_dep_addr + 1u]) << 8u);
+            float dep = float(u & 0xFFFFu) / 65535.0;
+            uint du = floatBitsToUint(dep);
+            acts[out_dep_addr]      = uint8_t(du & 0xFFu);
+            acts[out_dep_addr + 1u] = uint8_t((du >> 8u) & 0xFFu);
+            acts[out_dep_addr + 2u] = uint8_t((du >> 16u) & 0xFFu);
+            acts[out_dep_addr + 3u] = uint8_t((du >> 24u) & 0xFFu);
+        } else { // R32F: direct copy
+            for (uint i = 0; i < 4u; ++i) {
+                acts[out_dep_addr + i] = acts[in_dep_addr + i];
+            }
+        }
+
+        // 3. Gather Motion Vectors -> g_mv (RG16F, 4 bytes/px)
+        uint in_mv_addr = pc.in_mv_offset + uint(y * pc.mv_pitch + x * 4);
+        uint out_mv_addr = pc.g_mv_offset + uint((y * pc.W + x) * 4);
+
+        if (pc.fmt_mv == 18) { // R16G16_UNORM
+            uint u0 = uint(acts[in_mv_addr]) | (uint(acts[in_mv_addr + 1u]) << 8u);
+            uint u1 = uint(acts[in_mv_addr + 2u]) | (uint(acts[in_mv_addr + 3u]) << 8u);
+            vec2 mv;
+            mv.x = float(u0) / 65535.0 * 2.0 - 1.0;
+            mv.y = float(u1) / 65535.0 * 2.0 - 1.0;
+            uint16_t omx = uint16_t(packHalf2x16(vec2(mv.x, 0.0)) & 0xFFFFu);
+            uint16_t omy = uint16_t(packHalf2x16(vec2(mv.y, 0.0)) & 0xFFFFu);
+            acts[out_mv_addr]      = uint8_t(omx & 0xFFu);
+            acts[out_mv_addr + 1u] = uint8_t((omx >> 8u) & 0xFFu);
+            acts[out_mv_addr + 2u] = uint8_t(omy & 0xFFu);
+            acts[out_mv_addr + 3u] = uint8_t((omy >> 8u) & 0xFFu);
+        } else { // RG16F: direct copy
+            for (uint i = 0; i < 4u; ++i) {
+                acts[out_mv_addr + i] = acts[in_mv_addr + i];
+            }
+        }
+    }
+
+    // 4. Output-resolution motion vectors (k_sr_gather_mv)
+    if (pc.mvhi != 0 && x < pc.oW && y < pc.oH) {
+        uint in_mvhi_addr = pc.in_mvhi_offset + uint(y * pc.mvhi_pitch + x * 4);
+        uint16_t m0 = uint16_t(acts[in_mvhi_addr]) | (uint16_t(acts[in_mvhi_addr + 1u]) << 8u);
+        uint16_t m1 = uint16_t(acts[in_mvhi_addr + 2u]) | (uint16_t(acts[in_mvhi_addr + 3u]) << 8u);
+
+        uint out_mvhi_addr = pc.g_mvhi_offset + uint((y * pc.oW + x) * 4);
+        acts[out_mvhi_addr]      = uint8_t(m0 & 0xFFu);
+        acts[out_mvhi_addr + 1u] = uint8_t((m0 >> 8u) & 0xFFu);
+        acts[out_mvhi_addr + 2u] = uint8_t(m1 & 0xFFu);
+        acts[out_mvhi_addr + 3u] = uint8_t((m1 >> 8u) & 0xFFu);
+    }
+}

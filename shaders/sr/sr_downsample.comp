@@ -1,0 +1,130 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_control_flow_attributes : require
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(push_constant) uniform DownPushConstants {
+    uint full15_offset;
+    uint g_col_offset;
+    uint expo_offset;
+    uint out_offset;
+    int W;
+    int H;
+    int W15;
+    int H15;
+    int oW;
+    int oH;
+    float scale_x;
+    float scale_y;
+    float jit_x;
+    float jit_y;
+} pc;
+
+layout(set = 0, binding = 0, std430) buffer ActBuffer {
+    uint acts_u32[];
+};
+
+// Catmull-Rom bicubic weights
+vec4 bicubic_weights(float t) {
+    float t2 = t * t;
+    float t3 = t2 * t;
+    return vec4(
+        -0.5 * t3 + t2 - 0.5 * t,
+         1.5 * t3 - 2.5 * t2 + 1.0,
+        -1.5 * t3 + 2.0 * t2 + 0.5 * t,
+         0.5 * t3 - 0.5 * t2
+    );
+}
+
+vec4 load_full15(int x, int y) {
+    x = clamp(x, 0, pc.W15 - 1);
+    y = clamp(y, 0, pc.H15 - 1);
+    uint idx = (pc.full15_offset >> 2u) + uint(y * pc.W15 + x);
+    uint p = acts_u32[idx];
+
+    uint r = p & 0x7FFu;
+    uint g = (p >> 11u) & 0x7FFu;
+    uint b = (p >> 22u) & 0x3FFu;
+
+    uint re = (r >> 6u) & 0x1Fu;
+    uint rm = r & 0x3Fu;
+    if (re >= 31u) return vec4(0.0, 0.0, 0.0, 1.0);
+    float rf = (re > 0u) ? (1.0 + float(rm) / 64.0) * exp2(float(int(re) - 15)) : (float(rm) / 64.0) * exp2(-14.0);
+
+    uint ge = (g >> 6u) & 0x1Fu;
+    uint gm = g & 0x3Fu;
+    if (ge >= 31u) return vec4(0.0, 0.0, 0.0, 1.0);
+    float gf = (ge > 0u) ? (1.0 + float(gm) / 64.0) * exp2(float(int(ge) - 15)) : (float(gm) / 64.0) * exp2(-14.0);
+
+    uint be = (b >> 5u) & 0x1Fu;
+    uint bm = b & 0x1Fu;
+    if (be >= 31u) return vec4(0.0, 0.0, 0.0, 1.0);
+    float bf = (be > 0u) ? (1.0 + float(bm) / 32.0) * exp2(float(int(be) - 15)) : (float(bm) / 32.0) * exp2(-14.0);
+
+    return vec4(rf, gf, bf, 1.0);
+}
+
+float sanitize(float x) {
+    uint u = floatBitsToUint(x);
+    if ((u & 0x7F800000u) == 0x7F800000u || (u & 0x80000000u) != 0u) return 0.0;
+    return x;
+}
+
+void write_out(int x, int y, vec4 val) {
+    float r = sanitize(val.r);
+    float g = sanitize(val.g);
+    float b = sanitize(val.b);
+
+    uint idx = (pc.out_offset >> 2u) + uint(y * pc.oW + x) * 4u;
+    acts_u32[idx + 0u] = floatBitsToUint(r);
+    acts_u32[idx + 1u] = floatBitsToUint(g);
+    acts_u32[idx + 2u] = floatBitsToUint(b);
+    acts_u32[idx + 3u] = floatBitsToUint(1.0);
+}
+
+void main() {
+    int ox = int(gl_GlobalInvocationID.x);
+    int oy = int(gl_GlobalInvocationID.y);
+
+    if (ox >= pc.oW || oy >= pc.oH) return;
+
+    // Output coordinate to 1.5x history coordinate
+    float fx = (float(ox) + 0.5) * (float(pc.W15) / float(pc.oW)) - 0.5;
+    float fy = (float(oy) + 0.5) * (float(pc.H15) / float(pc.oH)) - 0.5;
+
+    int ix = int(floor(fx));
+    int iy = int(floor(fy));
+    float tx = fx - float(ix);
+    float ty = fy - float(iy);
+
+    vec4 wx = bicubic_weights(tx);
+    vec4 wy = bicubic_weights(ty);
+
+    vec4 color = vec4(0.0);
+    for (int j = 0; j < 4; ++j) {
+        vec4 row_col = vec4(0.0);
+        for (int i = 0; i < 4; ++i) {
+            row_col += load_full15(ix - 1 + i, iy - 1 + j) * wx[i];
+        }
+        color += row_col * wy[j];
+    }
+
+    // Read exposure
+    float expo = 1.0;
+    if (pc.expo_offset != 0u) {
+        uint expo_raw = acts_u32[pc.expo_offset >> 2u];
+        uint16_t lo = uint16_t(expo_raw & 0xFFFFu);
+        expo = unpackFloat2x16(uint(lo)).x;
+        if (expo <= 0.0 || isnan(expo) || isinf(expo)) expo = 1.0;
+    }
+
+    // Exposure correction: color = color / expo
+    color.rgb = color.rgb / expo;
+    write_out(ox, oy, color);
+}
