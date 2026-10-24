@@ -103,7 +103,7 @@ from the host's own error and dump strings.
 | 0x66, 0x67 | W, H (copy) |
 | 0x68, 0x69 | (W15+1)/2, (H15+1)/2 |
 | 0x6a (q0x35), 0x6c (q0x36) | enc0 / dec0 blob pointers (inside wbuf) |
-| 0x6e / 0x6f / 0x70 | dec0 scalars: min(exp(s0), 8) as int, exp(s1), exp(s2) |
+| 0x6e / 0x6f / 0x70 | dec0 scalars (f32): min(exp(s0), 8), exp(s1), exp(s2) |
 | byte 0x261 / 0x262 / 0x263 | preset is L / enc0L fp8-safe / dec0L fp8-safe |
 | 0x72 (q0x39), 0x74 (q0x3a) | "prev_mvec[0/1]" 4 B/px |
 | 0x76 (q0x3b) | "mv_ero" 4 B/px |
@@ -143,3 +143,33 @@ two float pairs (jitter / jitter_prev, by the dump job's order), +0x2c, +0x30, +
   runs `k_sr_enc0L_in` over (W0+8)(H0+8)/64 groups of 64 into l0_in, then `k_sr_l0<0,2,b>`.
   `Enc0Args` (280 B) is assembled from F, E's buffers above, the parity and derived ratios
   (W15/W, 1/W, ..., the constant log2(10) = 0x40549a78).
+
+## The reference harness: NeuralHub's SR on Linux (`tools/sr/srref/`)
+
+ROCm 7.2.4 (podman, `/dev/kfd`) loads `sr.gfx1201.co` as is and runs it on the RX 9070 XT. `srref.cpp`
+transcribes the engine init and the frame (exposure, enc0 / enc0L_in + l0<0>, ten stages,
+dec0 / l0<2>, post, downsample) with every argument block byte for byte; the game-input gather is
+skipped (its colour path is a plain format conversion to RGBA16F; `g_col`, `g_dep`, `g_mv` are
+written directly).
+
+    build/venv/bin/python tools/sr/gen_frames.py picture.png frames/ --frames 8
+    podman run --rm --device /dev/kfd --device /dev/dri --group-add keep-groups --security-opt label=disable \
+        -v $PWD:/w docker.io/rocm/dev-ubuntu-24.04:7.2.4 bash -c 'cd /w && \
+        hipcc -O2 -std=c++17 tools/sr/srref/srref.cpp -o build/sr/srref && \
+        build/sr/srref build/nh/sr.gfx1201.co packed/M frames/ out/ [--L] [--dump]'
+    build/venv/bin/python tools/sr/eval_sr.py picture.png frames/ out/
+
+Static 1920x1080 -> 3840x2160 sequence from the NR verification's 4K Tomb Raider frame, Halton jitter,
+PSNR against the 4K original (bicubic of the same frame: 29.0-32.8 dB):
+
+| frame | 0 | 1 | 2 | 4 | 7 |
+| --- | --- | --- | --- | --- | --- |
+| preset M | 33.11 | 35.57 | 37.44 | 38.38 | 39.23 |
+| preset L | 31.32 | 33.10 | 36.69 | 38.27 | 39.32 |
+
+Two facts the decompile alone got wrong, found by running it:
+
+- E[0x6e] (dec0 scalar 0, Dec0Args / L0Args +0x60) is an **f32** `min(exp(s0), 8)`: the decompiler
+  prints `(int)` for a raw `movss`. As an int the dec0 kernel multiplied by ~1e-44, `aniso` stayed
+  zero and the output was a soft 27 dB.
+- Jitter is NGX's `Jitter.Offset` (sample at pixel centre minus jitter); the other sign gives 31 dB.

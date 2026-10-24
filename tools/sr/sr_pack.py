@@ -268,7 +268,7 @@ def build(S: Slots, preset: str, dither: bytes):
         dec0.f16(S.f16(0xF50))
     # FUN_180114540: exp() of the slot's first f16
     sc = [float(np.exp(np.float64(f16_to_f32(S.f16(k)[:1])[0]))) for k in (0xF60, 0xF70, 0xF80)]
-    res["dec0_int"] = int(min(np.float32(sc[0]), np.float32(8.0)))
+    res["dec0_s0"] = float(min(np.float32(sc[0]), np.float32(8.0)))   # stored as f32 (the decompiler shows an (int) cast of the raw bits)
     res["dec0_f0"] = float(np.float32(sc[1]))
     res["dec0_f1"] = float(np.float32(sc[2]))
     blobs["enc0"], blobs["dec0"] = bytes(enc0.b), bytes(dec0.b)
