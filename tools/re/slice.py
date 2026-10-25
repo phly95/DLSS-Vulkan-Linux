@@ -72,7 +72,7 @@ def defs_uses(text):
         d = regs(ops[0])
         defs += d
         srcs = ops[1:]
-        if re.search(r"_co_|_co_ci_", mn) and srcs and (srcs[0] == "null" or regs(srcs[0]) and regs(srcs[0])[0][0] == "s" or srcs[0].startswith("vcc")):
+        if mn.startswith("v_") and re.search(r"_co_|_co_ci_", mn) and srcs and (srcs[0] == "null" or regs(srcs[0]) and regs(srcs[0])[0][0] == "s" or srcs[0].startswith("vcc")):
             defs += regs(srcs[0])
             srcs = srcs[1:]
         for o in srcs:
