@@ -13,7 +13,8 @@
 # and build/oracle/<id>.tar.xz.partNN (< 90 MB each) for the private storage repository. It prints the
 # commands that add them there. Nothing it writes may go into this repository (R2).
 #
-# --dry-run does everything but the two ROCm runs (no GPU needed): sequences, weights, README layout.
+# --dry-run does everything but the ROCm runs (no GPU needed), into build/oracle-dry/, and prints the
+# container script it would run.
 # Needs: podman with docker.io/rocm/dev-ubuntu-24.04:7.2.4, /dev/kfd, build/re/nvngx_dlss{,d}_310.9.1.dll,
 # build/venv (HANDOFF.md).
 set -euo pipefail
@@ -24,7 +25,9 @@ DRY=0
 PY=$ROOT/build/venv/bin/python
 SEED=20261025
 ID=oracle-$(git rev-parse --short=10 HEAD)-s$SEED
-O=$ROOT/build/oracle/$ID
+OD=$ROOT/build/oracle
+(( DRY )) && OD=$ROOT/build/oracle-dry       # a dry run is not an oracle: kept apart
+O=$OD/$ID
 ROCM_IMAGE=docker.io/rocm/dev-ubuntu-24.04:7.2.4
 PIC=reference-nr-vulkan/docs/ngx-verification/310.8.0/single-frame-inputs/3840x2160.png
 # small enough for a git repository, large enough for every level (W0, H0 multiples of 32, level 3 = /8)
@@ -47,10 +50,8 @@ W=$O/weights.tmp
 grep -q "preset L: .*NeuralHub checksum matches" "$O/weights.log" || { echo "SR L weights: checksum differs" >&2; exit 1; }
 grep -q "fingerprint .*: matches NeuralHub" "$O/weights.log" || { echo "RR weights: fingerprint differs" >&2; exit 1; }
 
-"$PY" tools/sr/gen_frames.py "$PIC" "$O/frames/sr" --render $RW $RH --output $OW $OH --frames $FRAMES --seed $SEED --path \
-    --gt "$O/frames/sr_gt" > /dev/null
-"$PY" tools/rr/gen_rr_frames.py "$PIC" "$O/frames/rr" --render $RW $RH --output $OW $OH --frames $FRAMES --seed $SEED --path \
-    --gt "$O/frames/rr_gt" > /dev/null
+"$PY" tools/sr/gen_frames.py "$PIC" "$O/frames/sr" --render $RW $RH --output $OW $OH --frames $FRAMES --seed $SEED --path > /dev/null
+"$PY" tools/rr/gen_rr_frames.py "$PIC" "$O/frames/rr" --render $RW $RH --output $OW $OH --frames $FRAMES --seed $SEED --path > /dev/null
 
 c() { echo "/w${1#$ROOT}"; }
 SCRIPT="cd /w && set -e
@@ -91,8 +92,7 @@ rm -rf "$W"
     echo "private storage only, never the main repository."
     echo
     echo "- inputs: \`frames/sr\`, \`frames/rr\` ($RW x $RH -> $OW x $OH, $FRAMES frames, seed $SEED, seeded pan and"
-    echo "  reset frame $(grep -l '"reset": true' "$O"/frames/sr/params_*.json | sed 's/.*params_\([0-9]*\).json/\1/' | sort -n | tr '\n' ' ')),"
-    echo "  ground truth \`frames/{sr,rr}_gt\`"
+    echo "  resets at frames $(grep -l '"reset": true' "$O"/frames/sr/params_*.json | sed 's/.*params_\([0-9]*\).json/\1/' | sort -n | tr '\n' ' '| sed 's/ $//'))"
     echo "- \`sr_M\`, \`sr_L\`, \`rr_F\`: outputs \`out_<i>.f32\`, \`oracle.log\`, per-launch dumps of frames $DUMP_FRAMES in"
     echo "  \`dump/\` (\`tools/verify/oracle_dump.hpp\`; read with \`tools/verify/diffdump.py\`)"
     (( DRY )) && echo "- DRY RUN: the ROCm runs were skipped; this directory is not an oracle"
@@ -106,15 +106,15 @@ rm -rf "$W"
     echo '```'
 } > "$O/README.md"
 
-tar -C "$ROOT/build/oracle" -cJf - "$ID" | split -b 90M -d - "$ROOT/build/oracle/$ID.tar.xz.part"
-ls -la "$ROOT/build/oracle/$ID".tar.xz.part*
-(cd "$ROOT/build/oracle" && sha256sum "$ID".tar.xz.part*) > "$ROOT/build/oracle/$ID.parts.sha256"
+tar -C "$OD" -cJf - "$ID" | split -b 90M -d - "$OD/$ID.tar.xz.part"
+ls -la "$OD/$ID".tar.xz.part*
+(cd "$OD" && sha256sum "$ID".tar.xz.part*) > "$OD/$ID.parts.sha256"
 cat <<EOF
 
 Done: $O ($(du -sh "$O" | cut -f1))
 To store it (the private repository, phly95/dlss5-private-storage):
   S=/path/to/dlss5-private-storage
-  mkdir -p \$S/oracle && cp $ROOT/build/oracle/$ID.tar.xz.part* $ROOT/build/oracle/$ID.parts.sha256 \$S/oracle/
+  mkdir -p \$S/oracle && cp $OD/$ID.tar.xz.part* $OD/$ID.parts.sha256 \$S/oracle/
   cp $O/README.md \$S/oracle/$ID.README.md
   cd \$S && git add oracle && git commit -m "Oracle dumps $ID" && git push
 EOF
