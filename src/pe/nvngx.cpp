@@ -164,12 +164,29 @@ static const NVSDK_NGX_ParameterVtbl g_param_vtbl = {
 
 ParametersImpl::ParametersImpl() : vtbl(&g_param_vtbl) {}
 
+static HINSTANCE g_hinstance = NULL;
+
 // Check NVIDIA DLL presence and size
 static bool check_nvidia_dll(NVSDK_NGX_Feature feat) {
     const char* filename = (feat == NVSDK_NGX_Feature_SuperSampling) ? "nvngx_dlss.dll" : "nvngx_dlssd.dll";
     uint64_t expected_size = (feat == NVSDK_NGX_Feature_SuperSampling) ? 58956912ULL : 48343664ULL;
 
-    HANDLE hFile = CreateFileA(filename, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    char dll_path[MAX_PATH] = {0};
+    if (g_hinstance) {
+        if (GetModuleFileNameA(g_hinstance, dll_path, MAX_PATH)) {
+            char* last_slash = std::strrchr(dll_path, '\\');
+            if (!last_slash) last_slash = std::strrchr(dll_path, '/');
+            if (last_slash) {
+                *(last_slash + 1) = '\0';
+                std::strcat(dll_path, filename);
+            }
+        }
+    }
+
+    HANDLE hFile = CreateFileA(dll_path[0] ? dll_path : filename, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE && dll_path[0]) {
+        hFile = CreateFileA(filename, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    }
     if (hFile == INVALID_HANDLE_VALUE) {
         return false;
     }
@@ -356,5 +373,12 @@ __declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_VULKAN_EvaluateFeatur
 } // extern "C"
 
 BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID reserved) {
+    if (reason == DLL_PROCESS_ATTACH) {
+        g_hinstance = hinst;
+        if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+            freopen("CONOUT$", "w", stdout);
+            freopen("CONOUT$", "w", stderr);
+        }
+    }
     return TRUE;
 }
