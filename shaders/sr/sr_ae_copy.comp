@@ -1,0 +1,20 @@
+#version 460
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
+#extension GL_EXT_shader_16bit_storage : enable
+
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer InResult { float result[]; };
+layout(set = 0, binding = 1) buffer ExpoBuf           { float16_t expo[]; };
+
+layout(push_constant) uniform AECopyArgs {
+    layout(offset = 16) int parity;
+};
+
+void main() {
+    if (gl_LocalInvocationID.x != 0) return;
+    double luma = max(0.005, double(result[0]));
+    double exp_val = 0.2354700010991655 / luma;
+    expo[parity] = float16_t(float(exp_val));
+}

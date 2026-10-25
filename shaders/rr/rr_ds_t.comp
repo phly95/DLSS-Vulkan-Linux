@@ -1,0 +1,20 @@
+#version 460
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_EXT_shader_16bit_storage : enable
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer InImg  { f16vec4 in_img[]; };
+layout(set = 0, binding = 1) writeonly buffer OutImg { f16vec4 out_img[]; };
+
+layout(push_constant) uniform DsTArgs {
+    int W;
+    int H;
+};
+
+void main() {
+    int x = int(gl_GlobalInvocationID.x);
+    int y = int(gl_GlobalInvocationID.y);
+    if (x >= W || y >= H) return;
+    out_img[y * W + x] = in_img[y * W + x];
+}

@@ -1,0 +1,38 @@
+#version 460
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
+#extension GL_EXT_shader_16bit_storage : enable
+#extension GL_EXT_shader_8bit_storage : enable
+
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer InT8       { uint8_t in_t8[]; };
+layout(set = 0, binding = 1) readonly buffer InPrevMv   { f16vec2 in_prev_mv[]; };
+layout(set = 0, binding = 2) readonly buffer InHidden   { f16vec2 in_hidden[]; };
+
+layout(set = 0, binding = 3) writeonly buffer OutGates   { f16vec2 out_gates[]; };
+layout(set = 0, binding = 4) writeonly buffer OutFactors { f16vec2 out_factors[]; };
+layout(set = 0, binding = 5) writeonly buffer OutAniso   { f16vec4 out_aniso[]; };
+layout(set = 0, binding = 6) writeonly buffer OutHidden  { f16vec2 out_hidden[]; };
+layout(set = 0, binding = 7) readonly buffer InDec0W    { uint8_t dec0_w[]; };
+
+layout(push_constant) uniform Dec0Args {
+    layout(offset = 64) int W;
+    int H;
+    layout(offset = 80) int W0;
+    int H0;
+    layout(offset = 88) int W15;
+    int H15;
+};
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    int total_pixels = W * H;
+    if (int(idx) < total_pixels) {
+        float16_t g = float16_t(0.5 + float(idx & 31u) * 0.01);
+        out_gates[idx] = f16vec2(g, g);
+        out_factors[idx] = f16vec2(g, g);
+        out_aniso[idx] = f16vec4(float16_t(1.0), float16_t(0.0), float16_t(0.0), float16_t(1.0));
+        out_hidden[idx] = in_hidden[idx];
+    }
+}

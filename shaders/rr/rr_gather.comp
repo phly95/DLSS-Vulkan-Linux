@@ -1,0 +1,27 @@
+#version 460
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_EXT_shader_16bit_storage : enable
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer InCol   { f16vec4 in_col[]; };
+layout(set = 0, binding = 1) readonly buffer InMv    { f16vec2 in_mv[]; };
+layout(set = 0, binding = 2) readonly buffer InDep   { float in_dep[]; };
+layout(set = 0, binding = 3) readonly buffer InNorm  { f16vec4 in_norm[]; };
+layout(set = 0, binding = 4) readonly buffer InRough { float in_rough[]; };
+layout(set = 0, binding = 5) readonly buffer InAlb   { f16vec4 in_alb[]; };
+
+layout(set = 0, binding = 6) writeonly buffer OutFeat { f16vec4 out_feat[]; };
+
+layout(push_constant) uniform RrGatherArgs {
+    int W;
+    int H;
+};
+
+void main() {
+    int x = int(gl_GlobalInvocationID.x);
+    int y = int(gl_GlobalInvocationID.y);
+    if (x >= W || y >= H) return;
+    int idx = y * W + x;
+    out_feat[idx] = in_col[idx];
+}

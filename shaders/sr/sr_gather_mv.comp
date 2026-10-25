@@ -1,0 +1,57 @@
+#version 460
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int32 : enable
+#extension GL_EXT_shader_16bit_storage : enable
+#extension GL_EXT_shader_8bit_storage : enable
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer InMv   { uint8_t in_mv_bytes[]; };
+layout(set = 0, binding = 1) writeonly buffer OutMv { f16vec2 g_mvhi[]; };
+
+layout(push_constant) uniform GatherMvArgs {
+    layout(offset = 8) uint pitch_mv;
+    int fmt_mv;
+    layout(offset = 24) int ow;
+    int oh;
+};
+
+uint read_u32_mv(uint off) {
+    uint b0 = uint(in_mv_bytes[off]);
+    uint b1 = uint(in_mv_bytes[off + 1]);
+    uint b2 = uint(in_mv_bytes[off + 2]);
+    uint b3 = uint(in_mv_bytes[off + 3]);
+    return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+}
+
+uint16_t read_u16_mv(uint off) {
+    uint b0 = uint(in_mv_bytes[off]);
+    uint b1 = uint(in_mv_bytes[off + 1]);
+    return uint16_t(b0 | (b1 << 8));
+}
+
+void main() {
+    int x = int(gl_GlobalInvocationID.x);
+    int y = int(gl_GlobalInvocationID.y);
+    if (x >= ow || y >= oh) return;
+
+    int out_idx = y * ow + x;
+    if (fmt_mv == 0) {
+        uint off = y * pitch_mv + x * 4;
+        uint16_t mx = read_u16_mv(off);
+        uint16_t my = read_u16_mv(off + 2);
+        g_mvhi[out_idx] = f16vec2(uint16BitsToFloat16(mx), uint16BitsToFloat16(my));
+    } else if (fmt_mv == 1) {
+        uint off = y * pitch_mv + x * 8;
+        uint mx = read_u32_mv(off);
+        uint my = read_u32_mv(off + 4);
+        g_mvhi[out_idx] = f16vec2(float16_t(uintBitsToFloat(mx)), float16_t(uintBitsToFloat(my)));
+    } else {
+        uint off = y * pitch_mv + x * 8;
+        uint16_t mx = read_u16_mv(off);
+        uint16_t my = read_u16_mv(off + 2);
+        g_mvhi[out_idx] = f16vec2(uint16BitsToFloat16(mx), uint16BitsToFloat16(my));
+    }
+}

@@ -1,0 +1,27 @@
+#version 460
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_EXT_shader_16bit_storage : enable
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer InFull  { f16vec4 in_full[]; };
+layout(set = 0, binding = 1) writeonly buffer OutImg { vec4 out_img[]; };
+
+layout(push_constant) uniform RrDSArgs {
+    layout(offset = 16) int inW;
+    int inH;
+    layout(offset = 40) int oW;
+    int oH;
+};
+
+void main() {
+    int ox = int(gl_GlobalInvocationID.x);
+    int oy = int(gl_GlobalInvocationID.y);
+    if (ox >= oW || oy >= oH) return;
+
+    int ix = clamp(int(ox * inW / oW), 0, inW - 1);
+    int iy = clamp(int(oy * inH / oH), 0, inH - 1);
+
+    f16vec4 c = in_full[iy * inW + ix];
+    out_img[oy * oW + ox] = vec4(float(c.r), float(c.g), float(c.b), float(c.a));
+}

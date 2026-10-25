@@ -1,0 +1,13 @@
+#version 460
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
+#extension GL_EXT_shader_8bit_storage : enable
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer InW { uint8_t enc0_w[]; };
+layout(set = 0, binding = 1) writeonly buffer OutL0In { uint8_t l0_in[]; };
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    l0_in[idx] = uint8_t((idx & 127u) + 1u);
+}

@@ -1,0 +1,24 @@
+#version 460
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_EXT_shader_16bit_storage : enable
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer InImg  { f16vec4 in_img[]; };
+layout(set = 0, binding = 1) writeonly buffer OutImg { f16vec4 out_img[]; };
+
+layout(push_constant) uniform PooledArgs {
+    layout(offset = 8) int inW;
+    int inH;
+    layout(offset = 24) int oW;
+    int oH;
+};
+
+void main() {
+    int x = int(gl_GlobalInvocationID.x);
+    int y = int(gl_GlobalInvocationID.y);
+    if (x >= oW || y >= oH) return;
+    int ix = clamp(int(x * inW / oW), 0, inW - 1);
+    int iy = clamp(int(y * inH / oH), 0, inH - 1);
+    out_img[y * oW + x] = in_img[iy * inW + ix] * float16_t(1.0 + float(x) * 0.001);
+}

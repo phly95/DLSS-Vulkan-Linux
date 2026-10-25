@@ -1,0 +1,32 @@
+#version 460
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
+#extension GL_EXT_shader_16bit_storage : enable
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer InCol   { f16vec4 g_col[]; };
+layout(set = 0, binding = 1) writeonly buffer OutLuma { float ae_luma[]; };
+
+layout(push_constant) uniform AELumaArgs {
+    layout(offset = 8) int W;
+    int gw;
+    int gh;
+    float W_minus_1;
+    float H_minus_1;
+    float gw_minus_1;
+    float gh_minus_1;
+    float inv_area;
+};
+
+void main() {
+    int gx = int(gl_GlobalInvocationID.x);
+    int gy = int(gl_GlobalInvocationID.y);
+    if (gx >= gw || gy >= gh) return;
+
+    int x = int(float(gx) / gw_minus_1 * W_minus_1 + 0.5f);
+    int y = int(float(gy) / gh_minus_1 * H_minus_1 + 0.5f);
+    f16vec4 c = g_col[y * W + x];
+    float luma = clamp(0.25f * float(c.r) + 0.50f * float(c.g) + 0.25f * float(c.b), 0.0f, 10000.0f);
+    ae_luma[gy * gw + gx] = luma * inv_area;
+}

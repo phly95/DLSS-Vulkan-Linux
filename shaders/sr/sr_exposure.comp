@@ -1,0 +1,26 @@
+#version 460
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
+#extension GL_EXT_shader_16bit_storage : enable
+
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer InTex { float in_tex[]; };
+layout(set = 0, binding = 1) buffer ExpoBuf { float16_t expo[]; };
+
+layout(push_constant) uniform ExposureArgs {
+    layout(offset = 0) uint64_t in_tex_ptr;
+    float exposure;
+    float pre_exposure;
+    layout(offset = 24) int parity;
+};
+
+void main() {
+    if (gl_LocalInvocationID.x != 0) return;
+    float exp_val = exposure;
+    if (in_tex_ptr != 0) {
+        exp_val = in_tex[0];
+    }
+    expo[parity] = float16_t(exp_val * pre_exposure);
+}

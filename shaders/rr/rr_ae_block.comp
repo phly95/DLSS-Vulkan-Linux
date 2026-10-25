@@ -1,0 +1,24 @@
+#version 460
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_EXT_shader_16bit_storage : enable
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer InCol    { f16vec4 in_col[]; };
+layout(set = 0, binding = 1) buffer OutBlock          { float block_luma[]; };
+
+layout(push_constant) uniform RrAEArgs {
+    layout(offset = 8) int W;
+    int H;
+};
+
+void main() {
+    int x = int(gl_GlobalInvocationID.x);
+    int y = int(gl_GlobalInvocationID.y);
+    if (x >= W || y >= H) return;
+    int idx = y * W + x;
+    f16vec4 c = in_col[idx];
+    float luma = float(0.25 * c.r + 0.5 * c.g + 0.25 * c.b);
+    uint gid = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+    block_luma[gid] = luma;
+}

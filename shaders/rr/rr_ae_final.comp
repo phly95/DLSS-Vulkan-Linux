@@ -1,0 +1,15 @@
+#version 460
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_EXT_shader_16bit_storage : enable
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer InBlocks { float block_luma[]; };
+layout(set = 0, binding = 1) writeonly buffer OutExpo { float16_t expo[2]; };
+
+void main() {
+    float l = max(block_luma[0], 0.005);
+    float val = 0.23547 / l;
+    expo[0] = float16_t(val);
+    expo[1] = float16_t(val * 1.1);
+}

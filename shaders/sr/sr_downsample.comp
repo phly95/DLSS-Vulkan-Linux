@@ -1,0 +1,145 @@
+#version 460
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
+#extension GL_EXT_shader_16bit_storage : enable
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer InFull15 { uint full15[]; };
+layout(set = 0, binding = 1) readonly buffer InCol    { f16vec4 g_col[]; };
+layout(set = 0, binding = 2) readonly buffer InExpo   { f16vec2 expo; };
+layout(set = 0, binding = 3) writeonly buffer OutImg  { vec4 out_color[]; };
+
+layout(push_constant) uniform DownArgs {
+    layout(offset = 24) int parity;
+    int pad0;
+    layout(offset = 40) int W;
+    int H;
+    int W15;
+    int H15;
+    int oW;
+    int oH;
+    float scaleX;
+    float scaleY;
+    float jitX;
+    float jitY;
+    uint log2_10;
+    uint ldr;
+};
+
+shared f16vec3 s_patch[28][28];
+
+f16vec3 unpack_color(uint u) {
+    float r = float(u & 0x7ffu);
+    float g = float((u >> 11) & 0x7ffu);
+    float b = float((u >> 22) & 0x3ffu);
+    if (ldr != 0u) {
+        return f16vec3(float16_t(r * (1.0 / 2047.0)),
+                       float16_t(g * (1.0 / 2047.0)),
+                       float16_t(b * (1.0 / 1023.0)));
+    } else {
+        return f16vec3(float16_t(r * 0.0011968744),
+                       float16_t(g * 0.0011968744),
+                       float16_t(b * 0.0023951556));
+    }
+}
+
+float inv_tonemap(float v) {
+    if (ldr != 0u) {
+        return v;
+    }
+    float c = clamp(v, 0.0001, 3.0);
+    float t = c * (1.0 / 0.36);
+    float p = t * 3.321928095;
+    float e = max(float(expo[parity]), 0.0001);
+    return (exp2(p) - 1.0) * (0.01 / e);
+}
+
+void main() {
+    int tile_x0 = int(floor((float(gl_WorkGroupID.x * 16u) + 0.5) * 1.5)) - 2;
+    int tile_y0 = int(floor((float(gl_WorkGroupID.y * 16u) + 0.5) * 1.5)) - 2;
+
+    uint tid = gl_LocalInvocationIndex;
+    for (uint i = tid; i < 784u; i += 256u) {
+        int py = int(i / 28u);
+        int px = int(i % 28u);
+        int gx = clamp(tile_x0 + px, 0, W15 - 1);
+        int gy = clamp(tile_y0 + py, 0, H15 - 1);
+        s_patch[py][px] = unpack_color(full15[gy * W15 + gx]);
+    }
+
+    barrier();
+
+    int ox = int(gl_GlobalInvocationID.x);
+    int oy = int(gl_GlobalInvocationID.y);
+    if (ox >= oW || oy >= oH) {
+        return;
+    }
+
+    int bx = int(floor((float(ox) + 0.5) * 1.5)) - tile_x0;
+    int by = int(floor((float(oy) + 0.5) * 1.5)) - tile_y0;
+
+    float16_t wx[5], wy[5];
+    if ((ox & 1) != 0) {
+        wx[0] = float16_t(-0.0382996);
+        wx[1] = float16_t(0.3720703);
+        wx[2] = float16_t(0.6201172);
+        wx[3] = float16_t(0.0872803);
+        wx[4] = float16_t(-0.0413513);
+    } else {
+        wx[0] = float16_t(-0.0413513);
+        wx[1] = float16_t(0.0872803);
+        wx[2] = float16_t(0.6201172);
+        wx[3] = float16_t(0.3720703);
+        wx[4] = float16_t(-0.0382996);
+    }
+
+    if ((oy & 1) != 0) {
+        wy[0] = float16_t(-0.0382996);
+        wy[1] = float16_t(0.3720703);
+        wy[2] = float16_t(0.6201172);
+        wy[3] = float16_t(0.0872803);
+        wy[4] = float16_t(-0.0413513);
+    } else {
+        wy[0] = float16_t(-0.0413513);
+        wy[1] = float16_t(0.0872803);
+        wy[2] = float16_t(0.6201172);
+        wy[3] = float16_t(0.3720703);
+        wy[4] = float16_t(-0.0382996);
+    }
+
+    f16vec3 row_sums[5];
+    f16vec3 min_inner = f16vec3(65504.0);
+    f16vec3 max_inner = f16vec3(-65504.0);
+
+    for (int j = 0; j < 5; ++j) {
+        int py = by - 2 + j;
+        f16vec3 s0 = s_patch[py][bx - 2];
+        f16vec3 s1 = s_patch[py][bx - 1];
+        f16vec3 s2 = s_patch[py][bx + 0];
+        f16vec3 s3 = s_patch[py][bx + 1];
+        f16vec3 s4 = s_patch[py][bx + 2];
+        f16vec3 r = s0 * wx[0] + s1 * wx[1] + s2 * wx[2] + s3 * wx[3] + s4 * wx[4];
+        f16vec3 r_min = min(min(s1, s2), s3);
+        f16vec3 r_max = max(max(s1, s2), s3);
+        row_sums[j] = clamp(r, r_min, r_max);
+
+        if (j >= 1 && j <= 3) {
+            min_inner = min(min_inner, row_sums[j]);
+            max_inner = max(max_inner, row_sums[j]);
+        }
+    }
+
+    f16vec3 col_filtered = row_sums[0] * wy[0] + row_sums[1] * wy[1] + row_sums[2] * wy[2] + row_sums[3] * wy[3] + row_sums[4] * wy[4];
+    col_filtered = clamp(col_filtered, min_inner, max_inner);
+
+    vec3 final_rgb = vec3(inv_tonemap(float(col_filtered.r)),
+                          inv_tonemap(float(col_filtered.g)),
+                          inv_tonemap(float(col_filtered.b)));
+
+    int src_x = clamp(int(ox * W / oW), 0, W - 1);
+    int src_y = clamp(int(oy * H / oH), 0, H - 1);
+    float alpha = float(g_col[src_y * W + src_x].a);
+
+    out_color[oy * oW + ox] = vec4(final_rgb, alpha);
+}
