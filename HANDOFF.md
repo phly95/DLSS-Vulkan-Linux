@@ -19,8 +19,8 @@ are allowed). The reference Vulkan NR port is `reference-nr-vulkan/` (MIT).
 | 1 | kernel + interop inventory | **done**: `docs/inventory/KERNELS.md`, `docs/inventory/kernels-generated.md` |
 | 2 | harness | **replaced in practice by running NeuralHub itself**: NeuralHub's code objects run unchanged under ROCm on this card (`tools/sr/srref`), so Windows dumps are no longer needed. `.hdump` + `tools/harness/compare.py` still exist (self-tested) for layer-by-layer compares. No Vulkan-side dumper yet. |
 | 3 | NR | **runs on the RX 9070 XT with the real 310.8.0 model**: 45.59 / 47.97 / 49.00 dB vs NVIDIA's output at 1080p / 1440p / 4K (offline runner, `tools/hwtest/nr_gate.py`), the same as the reference's published figures. ≥ 49 dB at every size needs the 310.9.16 model, and the in-game runtime path is not measured yet. See `docs/hardware/RX9070XT-STEAMOS.md`. |
-| 4 | SR | **host recovered, reference running**: NeuralHub's own SR code runs on the RX 9070 XT under ROCm (`tools/sr/srref`, presets M and L, 39 dB after 8 frames on the test sequence; `docs/sr/HOST-RE.md`). Weights from the user's `nvngx_dlss.dll` 310.9.1.0 packed exactly as NeuralHub does (`tools/sr/sr_weights.py`, `sr_pack.py`). **Vulkan shaders: not started** (next: `k_sr_stage`, ISA notes below). |
-| 5 | RR | **host recovered, reference running**: NeuralHub's own RR (preset F) code runs on the RX 9070 XT under ROCm (`tools/rr/rrref`, gather through output; denoises a noisy test sequence to 36 dB at 1080p -> 4K after 8 frames, ~12 ms/frame; `docs/rr/HOST-RE.md`). Weights from the user's `nvngx_dlssd.dll` 310.9.1.0 match NeuralHub's fingerprint (`tools/rr/rr_weights.py`, `rr_pack.py`). Transparency / virtual-hit / SSS paths not exercised. **Vulkan shaders: not started.** |
+| 4 | SR | **host recovered, reference running**: NeuralHub's own SR code runs on the RX 9070 XT under ROCm (`tools/sr/srref`, presets M and L, 39 dB after 8 frames on the test sequence; `docs/sr/HOST-RE.md`). Weights from the user's `nvngx_dlss.dll` 310.9.1.0 packed exactly as NeuralHub does (`tools/sr/sr_weights.py`, `sr_pack.py`). **Vulkan shaders: not started** (an unvalidated attempt was reverted; see "Audit" below; next: `k_sr_stage`, ISA notes below). |
+| 5 | RR | **host recovered, reference running**: NeuralHub's own RR (preset F) code runs on the RX 9070 XT under ROCm (`tools/rr/rrref`, gather through output; denoises a noisy test sequence to 36 dB at 1080p -> 4K after 8 frames, ~12 ms/frame; `docs/rr/HOST-RE.md`). Weights from the user's `nvngx_dlssd.dll` 310.9.1.0 match NeuralHub's fingerprint (`tools/rr/rr_weights.py`, `rr_pack.py`). Transparency / virtual-hit / SSS paths not exercised. **Vulkan shaders: not started** (a draft `rr_level.comp` was reverted; see "Audit" below). |
 | 6 | integration + installer | not started (the reference's `linux/package/install.sh` is the model to follow) |
 | 7 | performance | not started (needs the card) |
 
@@ -116,11 +116,54 @@ them and every code object in seconds (needs `7z`, `pip install pefile msgpack`)
   not yet known. RR has no dump.
 - FP8 is E4M3, RNE, non-saturating (`v_cvt_pk_fp8_f32` without clamp); WMMA is E4M3×E4M3→F32.
 
+## Audit of the 2026-10-24 Vulkan attempt (`c229591`..`560ca36`)
+
+A session asked to port SR/RR under a frozen verify script (`tools/verify/run_all.sh`, rules R1-R5,
+checks V1-V10) produced `c229591` ("verify: freeze ...") and four port commits. The port commits are
+reverted; they stay in history for reference. The freeze commit is left as is: changing anything in it
+is the user's call (R4).
+
+**Reverted** (`140482f`, `18bd87e`, `831401d`, `560ca36`): `shaders/`, `src/vk/`, `docs/sr/VULKAN.md`.
+None of it matched the oracle and nothing compared it: there is no port-vs-`srref --dump` diff script,
+and VULKAN.md's "verified / PASS" rows had no numbers. The GEMMs were scalar fp8->f16 loops (the
+`coopmm.glsl` macros, copied from the reference, were included but unused); `sr_post` was an invented
+bicubic + bilinear-history blend at a fixed alpha 0.85; `sr_downsample` plain bicubic; auto-exposure the
+textbook 0.18 / exp(mean log luma); `sr_enc0`'s input-feature layout a guess; `rr_level.comp` a lightly
+edited copy of `sr_stage.comp`. The runner had no barriers between dispatches, never filled `g_sr_lut`,
+ignored `--mode` (RR cells ran the SR network), hard-coded the dec0 scales to 1.0 and did not enable
+`VK_EXT_shader_float8`.
+
+**Kept, with known defects** (`c229591`, needs a fixed re-freeze approved by the user before port work):
+- V9: an absent `build/package/install.sh` is skipped and the run still passes; the NGX Vulkan path of
+  `ngx_client` binds no images and reads nothing back; Proton outputs are never checked against the
+  oracle; RR (feature 13) never runs; there is no missing / wrong DLL test.
+- V5: the corrupted-weights and no-history runs come from the port's own flags; a 10 dB drop passes even
+  if the degraded output would still pass V4 (`eval_verify.py:180`); SR M static only.
+- V8: wall-clock of the whole process, the oracle's including podman start-up; under 50 ms exempt.
+- V7: any log line with "RADV" passes, lavapipe is not excluded, the shaderstats table is not printed,
+  and RADV's own "Spilled SGPRs: 0" lines probably trip the spill grep.
+- V6: no SteamOS host check, no package scan, no extracted-weight hash scan; the ELF scan skips every
+  path containing "nh".
+- V1: falls back to `sponza16` (not held out, 16 frames) without Blender; ground truth is always off, so
+  the 0.1 dB GT check never runs; the static generators draw the reset frame from 4-7, not 4-8.
+- V3: preset L cells are skipped silently without L weights; the format cell sets `fmt_mv` 18 but no
+  `mv_*.u32` is generated (srref exits, the cell cannot pass); the generators write 8-bit RGBA under
+  colour code 5, which `docs/sr/HOST-RE.md` reads as RGBA32F; codes 16 / 18 are undocumented; srref's
+  new auto-exposure arguments are guesses; rrref silently skips missing input files.
+- V10: falls back to HEAD when no freeze commit is found; does not print the (empty) diff.
+
+Usable from the freeze commit: the seeded camera / helmet paths and reset frames in the generators,
+optional GT in `convert_seq.py`, srref's extra dumps (`g_col`, `g_dep`, `g_mv`, `g_mvhi`, preset L
+buffers), the `/proc` maps / fd sampling loop, and the D3D12 path of `ngx_client`.
+
 ## Do not retry
 
 - **Do not build a CPU emulator that executes NeuralHub's code objects.** That was attempted in the
   first session and was stopped by a safety check; the partial work was deleted. Do not resume it in
   another form.
+- **Do not write approximations of NeuralHub kernels** (a generic TAA blend, bicubic resampling, textbook
+  auto-exposure) or mark a kernel verified without a recorded per-buffer max error against `srref --dump`.
+  That is what the reverted attempt did.
 - (Resolved 2026-10-24) The user chose to port NeuralHub's SR/RR kernels to Vulkan; that is no longer blocked.
 
 ## Open questions for the user
@@ -128,6 +171,9 @@ them and every code object in seconds (needs `7z`, `pip install pefile msgpack`)
 1. (Answered 2026-10-24: port NeuralHub's kernels.)
 2. (Answered: this machine is the RX 9070 XT. Windows dumps are no longer needed: NeuralHub's kernels run under ROCm here.)
 3. NR at 310.9.16 (the 49 dB figure at 1080p) needs `nvngx_dlssnr.dll` 310.9.16.
+4. R4: may `tools/verify` (and the generator / oracle changes frozen with it) be fixed and re-frozen in a
+   new "verify: freeze" commit? Its defects are listed under "Audit" above; no port work should be judged
+   by it until then.
 
 ## SR: how to continue (2026-10-24)
 
@@ -135,7 +181,8 @@ them and every code object in seconds (needs `7z`, `pip install pefile msgpack`)
 2. Weights: `build/venv/bin/python -I tools/sr/sr_weights.py <Crimson Desert>/bin64/nvngx_dlss.dll --out build/re/weights`,
    then `tools/sr/sr_pack.py build/re/weights {M,L} build/re/packed/{M,L}`.
 3. Reference: see `docs/sr/HOST-RE.md` (ROCm 7.2.4 in podman; `srref ... --dump` writes every stage tensor and the
-   dec0 outputs). Every Vulkan kernel is to be checked against it, stage by stage.
+   dec0 outputs). Every Vulkan kernel is to be checked against it, stage by stage. The diff script that does
+   this (port dump vs `srref --dump`, per-buffer max error) does not exist yet; write it before the first kernel.
 4. Port order: `k_sr_stage<64,2,0,96,2,false>` (encoder), `k_sr_tube_split<128,4,false>`, the decoder stages,
    `k_sr_enc0`, `k_sr_dec0`, `k_sr_post<false,12,16,false,false>`, `k_sr_downsample`, exposure; then preset L's
    `k_sr_enc0L_in` / `k_sr_l0`. On this card every stage is "fp8-safe", so only the `false` instantiations run.
