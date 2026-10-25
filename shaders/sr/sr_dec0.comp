@@ -103,8 +103,8 @@ void main() {
     uint tid = gl_LocalInvocationIndex;
     uint wg_x = gl_WorkGroupID.x * 8u;
     uint wg_y = gl_WorkGroupID.y * 8u;
-    uint w_base = (dec0_w.length() > 20000u) ? 1590272u : 0u;
-    uint bias_base = w_base + 8192u;
+    uint w_base = 0u;
+    uint bias_base = (dec0_w.length() > 8200u) ? 8192u : 0u;
 
     uint w_half = uint(W0) / 2u;
     uint h_half = uint(H0) / 2u;

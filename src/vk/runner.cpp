@@ -416,6 +416,8 @@ int main(int argc, char** argv) {
 
     Buffer out = create_buffer(dev, picked_phys, size_t(oW) * oH * 16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer wbuf = create_buffer(dev, picked_phys, 16 * 1024 * 1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    Buffer w_enc0 = create_buffer(dev, picked_phys, 65536, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    Buffer w_dec0 = create_buffer(dev, picked_phys, 65536, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
     float dec0_s0 = 8.0f, dec0_f0 = 0.078633f, dec0_f1 = 0.0f;
     if (!wdir.empty()) {
@@ -431,6 +433,12 @@ int main(int argc, char** argv) {
                 if (!blob[i].empty() && woff[i] + blob[i].size() <= wbuf.size) {
                     std::memcpy(static_cast<uint8_t*>(wbuf.mapped) + woff[i], blob[i].data(), blob[i].size());
                 }
+            }
+            if (!blob[10].empty() && blob[10].size() <= w_enc0.size) {
+                std::memcpy(w_enc0.mapped, blob[10].data(), blob[10].size());
+            }
+            if (!blob[11].empty() && blob[11].size() <= w_dec0.size) {
+                std::memcpy(w_dec0.mapped, blob[11].data(), blob[11].size());
             }
             auto pj_raw = slurp(wdir + "/params.json");
             if (!pj_raw.empty()) {
@@ -611,11 +619,11 @@ int main(int argc, char** argv) {
                 std::memcpy(push + 220, &fc, 4);
                 if (preset == "L") {
                     dispatch("sr_enc0L_in", {&g_col, &g_dep, mvhi ? &g_mvhi : &g_mv, &prev_mvec[p], &dhist, &hidden[p],
-                                             &prev_mvec[p ^ 1], &mv_ero, &mv_nondil, &t_act[0], &wbuf}, push, 240, (W * H + 63) / 64, 1, 1);
+                                             &prev_mvec[p ^ 1], &mv_ero, &mv_nondil, &t_act[0], &w_enc0}, push, 240, (W * H + 63) / 64, 1, 1);
                     dispatch("sr_l0", {&wbuf, &t_act[0], &t_act[1]}, nullptr, 0, 32, 1, 1);
                 } else {
                     dispatch("sr_enc0", {&g_col, &g_dep, mvhi ? &g_mvhi : &g_mv, &prev_mvec[p], &dhist, &hidden[p],
-                                         &prev_mvec[p ^ 1], &mv_ero, &mv_nondil, &t_act[0], &wbuf}, push, 240, W0 / 8, H0 / 8, 1);
+                                         &prev_mvec[p ^ 1], &mv_ero, &mv_nondil, &t_act[0], &w_enc0}, push, 240, W0 / 8, H0 / 8, 1);
                 }
             }
 
@@ -665,7 +673,7 @@ int main(int argc, char** argv) {
                 std::memcpy(push + 88, &W15, 4); std::memcpy(push + 92, &H15, 4);
                 std::memcpy(push + 96, &dec0_s0, 4);
                 std::memcpy(push + 100, &dec0_f0, 4);
-                dispatch("sr_dec0", {&t_act[8], &prev_mvec[p ^ 1], &hidden[p], &gates, &factors, &aniso, &hidden[p ^ 1], &wbuf}, push, 160, W0 / 8, H0 / 8, 1);
+                dispatch("sr_dec0", {&t_act[8], &prev_mvec[p ^ 1], &hidden[p], &gates, &factors, &aniso, &hidden[p ^ 1], &w_dec0}, push, 160, W0 / 8, H0 / 8, 1);
             }
 
             // 6. Post
@@ -838,6 +846,8 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 9; ++i) destroy_buffer(dev, t_act[i]);
     destroy_buffer(dev, out);
     destroy_buffer(dev, wbuf);
+    destroy_buffer(dev, w_enc0);
+    destroy_buffer(dev, w_dec0);
 
     for (auto& pair : pipelines) {
         vkDestroyPipeline(dev, pair.second.pipeline, nullptr);

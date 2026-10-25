@@ -68,6 +68,57 @@ vec3 sample_history(float px, float py) {
     return mix(mix(h00, h10, fx), mix(h01, h11, fx), fy);
 }
 
+// 5-tap Catmull-Rom bicubic history filter matching GFX1201 ISA image_sample_lz
+vec3 sample_history_catmull_rom(float px, float py) {
+    float tc_x = floor(px);
+    float tc_y = floor(py);
+    float fx = px - tc_x;
+    float fy = py - tc_y;
+
+    float fx2 = fx * fx;
+    float fx3 = fx2 * fx;
+    float w0_x = -0.5 * fx + 1.0 * fx2 - 0.5 * fx3;
+    float w1_x =  1.0      - 2.5 * fx2 + 1.5 * fx3;
+    float w2_x =  0.5 * fx + 2.0 * fx2 - 1.5 * fx3;
+    float w3_x =           - 0.5 * fx2 + 0.5 * fx3;
+
+    float W12_x = w1_x + w2_x;
+    float W0_x  = w0_x;
+    float W3_x  = w3_x;
+    float pos12_x = tc_x + w2_x / max(W12_x, 1e-5);
+    float pos0_x  = tc_x - 1.0;
+    float pos3_x  = tc_x + 2.0;
+
+    float fy2 = fy * fy;
+    float fy3 = fy2 * fy;
+    float w0_y = -0.5 * fy + 1.0 * fy2 - 0.5 * fy3;
+    float w1_y =  1.0      - 2.5 * fy2 + 1.5 * fy3;
+    float w2_y =  0.5 * fy + 2.0 * fy2 - 1.5 * fy3;
+    float w3_y =           - 0.5 * fy2 + 0.5 * fy3;
+
+    float W12_y = w1_y + w2_y;
+    float W0_y  = w0_y;
+    float W3_y  = w3_y;
+    float pos12_y = tc_y + w2_y / max(W12_y, 1e-5);
+    float pos0_y  = tc_y - 1.0;
+    float pos3_y  = tc_y + 2.0;
+
+    float wc = W12_x * W12_y;
+    float wl = W0_x  * W12_y;
+    float wr = W3_x  * W12_y;
+    float wt = W12_x * W0_y;
+    float wb = W12_x * W3_y;
+
+    vec3 c_center = sample_history(pos12_x, pos12_y);
+    vec3 c_left   = sample_history(pos0_x,  pos12_y);
+    vec3 c_right  = sample_history(pos3_x,  pos12_y);
+    vec3 c_top    = sample_history(pos12_x, pos0_y);
+    vec3 c_bottom = sample_history(pos12_x, pos3_y);
+
+    vec3 result = (wc * c_center + wl * c_left + wr * c_right + wt * c_top + wb * c_bottom) / max(wc + wl + wr + wt + wb, 1e-5);
+    return max(result, vec3(0.0));
+}
+
 uint pack_from_tonemapped(vec3 t) {
     if (ldr != 0u) {
         vec3 c = max(pow(vec3(10.0), t / 0.36) - 1.0, vec3(0.0)) / 100.0;
@@ -97,9 +148,10 @@ vec3 process_pixel(int x, int y, float e) {
 
     // 1. 9-tap anisotropic spatial reconstruction
     f16vec4 A = aniso[aniso_idx];
-    float Axx = float(A.x);
-    float Ayy = float(A.y);
-    float Axy = float(A.z);
+    float Axx = max(float(A.x), 3.0);
+    float Ayy = max(float(A.y), 3.0);
+    float max_cross = sqrt(Axx * Ayy) * 0.95;
+    float Axy = clamp(float(A.z), -max_cross, max_cross);
 
     int fx = int(floor(s3x - 0.5));
     int fy = int(floor(s4y - 0.5));
@@ -145,7 +197,7 @@ vec3 process_pixel(int x, int y, float e) {
         return t_spatial;
     }
 
-    vec3 t_hist = sample_history(px, py);
+    vec3 t_hist = sample_history_catmull_rom(px, py);
     if (dot(t_hist, t_hist) < 1e-6) {
         return t_spatial;
     }

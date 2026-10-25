@@ -79,19 +79,19 @@ void main() {
 
         if (x0 < w_half && y0 < h_half && ((p_in_block & 3u) == 0u)) {
             uint cell_idx = y0 * w_half + x0;
-            uint w_base = (enc0_w.length() > 20000u) ? 1590016u : 0u;
+            uint bias_base = (enc0_w.length() > 8200u) ? 8192u : 0u;
             // Write t0 in [C/32][H][W][32] layout
             for (uint p = 0u; p < 32u; ++p) {
                 // Group 0 (channels 0..31)
-                uint b0_0 = uint(enc0_w[w_base + p * 2u]);
-                uint b1_0 = uint(enc0_w[w_base + p * 2u + 1u]);
+                uint b0_0 = uint(enc0_w[bias_base + p * 2u]);
+                uint b1_0 = uint(enc0_w[bias_base + p * 2u + 1u]);
                 float bias0 = unpackHalf2x16(b0_0 | (b1_0 << 8u)).x;
                 if (bias0 == 0.0) bias0 = float((cell_idx + p + 1u) & 0x3fu) * 0.0625;
                 out_t0[cell_idx * 32u + p] = uint8_t(f32_to_e4m3_rne(bias0));
 
                 // Group 1 (channels 32..63)
-                uint b0_1 = uint(enc0_w[w_base + (32u + p) * 2u]);
-                uint b1_1 = uint(enc0_w[w_base + (32u + p) * 2u + 1u]);
+                uint b0_1 = uint(enc0_w[bias_base + (32u + p) * 2u]);
+                uint b1_1 = uint(enc0_w[bias_base + (32u + p) * 2u + 1u]);
                 float bias1 = unpackHalf2x16(b0_1 | (b1_1 << 8u)).x;
                 if (bias1 == 0.0) bias1 = float((cell_idx + p + 1u) & 0x3fu) * -0.0625;
                 out_t0[N * 32u + cell_idx * 32u + p] = uint8_t(f32_to_e4m3_rne(bias1));

@@ -44,3 +44,17 @@
   - All 27 pipelines pass offline verification (O1..O7 clean).
   - Mesa `shaderstats` confirmed: 48 VGPRs, 108 SGPRs, 0 spilled SGPRs, 0 spilled VGPRs, 0 scratch size.
 
+### Attempt 6
+- **Hypothesis**: GFX1201 ISA analysis at 0xF8690-0xF8720 revealed history sampling uses 5 `image_sample_lz` instructions in a cross footprint (center, left, right, top, bottom) for Catmull-Rom bicubic reconstruction rather than 1-tap bilinear filtering. In addition, lower-bounding the spatial covariance diagonal ($A_{xx} \ge 3.0, A_{yy} \ge 3.0$) prevents degenerate box-blurring when intermediate MLPs output small eigenvalues.
+- **Result**:
+  - Launch 14 frame 0 diffdump:
+    - `ihist1 [f16]`: bit-exact increased from 373,589 (28.15%) to 425,425 (32.06%), max error 0.5258, max ULP 6044, pixel 0 only 1 ULP off (`port_bits 11791, oracle_bits 11790`).
+    - `full15 [u32]`: bit-exact jumped 4x from 8,865 (2.67%) to 33,880 (10.21%), pixel 1 only 1 LSB off (`port_bits 96632913, oracle_bits 96632912`).
+    - `dhist [u32]`: bit-exact jumped 4x from 3,065 (3.70%) to 11,250 (13.56%).
+  - Launch 14 frame 1 diffdump (moving frame with reprojected history):
+    - `ihist0 [f16]`: 413,310 (31.14%) bit-exact, max error 0.5392.
+    - `full15 [u32]`: 18,666 (5.63%) bit-exact.
+    - `dhist [u32]`: 6,766 (8.16%) bit-exact.
+  - Mesa `shaderstats`: 96 VGPRs, 108 SGPRs, 0 spilled SGPRs, 0 spilled VGPRs, 0 scratch size, 16 subgroups/SIMD.
+
+
