@@ -8,10 +8,14 @@
 
 ## Attempts and Hypotheses
 
-### Attempt 1
-- **Hypothesis**: Nearest-neighbor proxy with exact tonemap packing `pack_r11g11b10` for `full15`.
+### Attempt 2
+- **Hypothesis**: Decoded coordinate transform and tonemapping formats from GFX1201 ISA:
+  - Input sample coordinate: `floor((float(x15) + 0.5) * scaleX + jitterX - 0.5)` with clamp to `[0, W-1]`, using `scaleX`, `scaleY`, `jitterX`, `jitterY` unpacked from push constants.
+  - `ihist1`: tonemapped history `0.36 * log10(max(1.0 + 100.0 * c * e, 0.0001))` in float16 with alpha = 0.0.
+  - `dhist`: 2x2 box average at half resolution (384x216), tonemapped and packed to 10:10:10 format `ur | (ug << 10) | (ub << 20)`.
+  - `full15`: R11G11B10 format with rounded float scaling.
 - **Result**:
-  - `full15 [u32]`: 331776 elements, bit-exact 16317 (4.9181%), max |err| 9.73943e+08, max ulp 973943226.
-  - Pixel 0 is bit-exact (`0x5c2784f` matches oracle).
-  - First mismatch at index 1: `{'index': 1, 'port': 96630863.0, 'oracle': 96632912.0, 'port_bits': 96630863, 'oracle_bits': 96632912}`.
-  - Full temporal filter blends warped `ihist0` using anisotropic weights `aniso`, `factors`, and `gates`.
+  - `ihist1 [f16]`: 1327104 elements, bit-exact 373589 (28.1507%), max |err| 0.6423, max ulp 7268, first mismatch `{'index': 4, 'port': 0.0946044921875, 'oracle': 0.0960693359375, 'port_bits': 11790, 'oracle_bits': 11814}` (Raw byte-exact: 1,244,196 / 2,654,208 bytes = 46.88% bit-exact).
+  - `dhist [u8]`: 331776 elements, bit-exact 84930 (25.5986%), max |err| 255.
+  - `full15 [u8]`: 1327104 elements, bit-exact 240463 (18.1194%), first mismatch index 4 `port: 79.0, oracle: 80.0` (1 LSB off).
+
