@@ -30,3 +30,9 @@
   - Max ULP: 110199 (down 14x from 1492358)
   - First mismatch: `index 2, port: 0.004225417971611023, oracle: 0.0042254189029335976, port_bits: 998929760, oracle_bits: 998929762` (c=0, c=1, c=3 at pixel 0 are 100% bit-exact; c=2 is off by 2 ULPs; 94.76% elements satisfy CLOSE <= 4 ULP or <= 1e-3 rel)
   - Status: APPROX (59.37% bit-exact, 94.76% CLOSE)
+
+### Attempt 3: force the FIR accumulation order with explicit f16 FMA
+- **Hypothesis**: the GLSL FIR expression contracts differently from NeuralHub's sequential packed-f16 FMA chain; expressing each tap as an explicit ordered `fma` may reproduce the oracle's half-precision rounding points.
+- **Test**: built a temporary shader with explicit descending tap FMA chains for both horizontal and vertical filtering, then ran `kernel_run` against RR oracle launch 22 using `diffdump.py`'s exact prelaunch inputs.
+- **Result**: no measurable change from Attempt 2. `E0cfe [f32]`: 589,824 elements; bit-exact 350,173 (59.3691%); max `|err|` 0.00438631; max ULP 110,199; first mismatch `index 2`, port `0.004225417971611023` (`0x3b8a9ce0`), oracle `0.0042254189029335976` (`0x3b8a9ce2`).
+- **Disposition**: keep the production shader unchanged; revisit with a different ISA-derived hypothesis.
