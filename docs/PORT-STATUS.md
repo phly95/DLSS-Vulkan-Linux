@@ -42,16 +42,16 @@ Never mark CLOSE or EXACT without pasted diffdump numbers.
 | `ngx_client` / Proton | EXACT | D3D12: 12/12 frames read back, half-size create/eval/release cycles pass<br>Vulkan: 12/12 frames read back, half-size cycles pass<br>CreateFeature refusal: pass on missing (none) and wrong NVIDIA DLLs | All 16 NGX exports implemented; passes D3D12 and Vulkan validation under Proton on SteamOS |
 
 ## Referee Run Summary (`tools/verify/run_all.sh`)
-- **Run ID**: `20261025_125135_1719411`
+- **Run ID**: `20261025_142540_1926957`
 - **[V10] Provenance**: PASS (clean working tree, freeze v2 matched)
 - **[V6] Host**: PASS (SteamOS)
 - **[V7] Device & Compiler**: PASS (AMD Radeon RX 9070 XT GFX1201; all 13 pipelines 0 spilled SGPRs, 0 spilled VGPRs, 0 scratch size)
 - **[Setup] Weights & Oracles**: PASS (weights verified against NeuralHub fingerprints; oracles built under ROCm)
-- **[V1] Fresh Inputs**: PASS (seed 2122730639, 12 moving frames rendered via Blender Cycles on GPU)
+- **[V1] Fresh Inputs**: PASS (seed 2647682509, 12 moving frames rendered via Blender Cycles on GPU)
 - **[V2] Port Matrix Execution**: PASS (all 25 test matrix cells executed)
 - **[V5] Corruption Sensitivity**: PASS (all 7 corrupted input/weight tests properly rejected)
 - **[V9] Proton Package Execution**: PASS (all 14 tests pass: D3D12 & Vulkan on SR M/L and RR F, half-size cycles, and refusal on missing/wrong NVIDIA DLLs)
 - **[V6] Package R2 Scan**: PASS (56 files verified clean of proprietary secrets/bytes)
 - **[V2] Oracle Reference Runs**: PASS (all 25 ROCm reference cells executed)
-- **[V4] Numerical Target**: In progress — `sr_M_seq` (1080p moving): Mean PSNR 54.16 dB across all 12 frames, Frame 0 reached 51.02 dB vs oracle; Frames 1..6 exceed 57-67 dB with multiple frames achieving GT delta <= 0.014 dB (Frame 04: 0.014 dB, Frame 05: 0.002 dB, Frame 07: 0.000 dB). Target is >= 50 dB per frame and <= 0.1 dB diff vs oracle against GT.
+- **[V4] Numerical Target**: In progress — `sr_M_seq` (1080p moving): Frame 0 reached 45.03 dB vs oracle (port vs GT: 40.625 dB, ref vs GT: 40.409 dB, |diff| = 0.216 dB, within 0.116 dB of the 0.100 dB threshold). Target is >= 50 dB per frame and <= 0.1 dB diff vs oracle against GT.
 
