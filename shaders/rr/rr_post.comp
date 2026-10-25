@@ -4,7 +4,7 @@
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-layout(set = 0, binding = 0) readonly buffer InFeat   { f16vec4 in_feat[]; };
+layout(set = 0, binding = 0) readonly buffer InTap    { f16vec4 in_tap[]; };
 layout(set = 0, binding = 1) readonly buffer InExpo   { vec4 in_expo; };
 layout(set = 0, binding = 2) writeonly buffer OutRG   { f16vec2 out_rg[]; };
 layout(set = 0, binding = 3) writeonly buffer OutB    { float16_t out_b[]; };
@@ -23,11 +23,6 @@ layout(push_constant) uniform RrPostArgs {
     float expo_val;
 };
 
-vec3 get_tonemapped(vec3 c, float e) {
-    vec3 p = log2(max(1.0 + 100.0 * c * e, vec3(0.0001))) * 0.3010299956639812;
-    return p * 0.36;
-}
-
 void main() {
     int x15 = int(gl_GlobalInvocationID.x);
     int y15 = int(gl_GlobalInvocationID.y);
@@ -37,17 +32,44 @@ void main() {
 
     float sx = (scaleX != 0.0) ? scaleX : (float(W) / float(targetW));
     float sy = (scaleY != 0.0) ? scaleY : (float(H) / float(targetH));
-    float rx_f = (float(x15) + 0.5) * sx + jitterX - 0.5;
-    int rx = clamp(int(floor(rx_f)), 0, max(W - 1, 0));
-    float ry_f = (float(y15) + 0.5) * sy + jitterY - 0.5;
-    int ry = clamp(int(floor(ry_f)), 0, max(H - 1, 0));
 
-    vec3 c = vec3(in_feat[ry * W + rx].rgb);
-    float e = (in_expo.x > 0.0) ? in_expo.x : ((expo_val > 0.0) ? expo_val : 1.0);
-    vec3 t = get_tonemapped(c, e);
+    float s3x = (float(x15) + 0.5) * sx + jitterX;
+    float s4y = (float(y15) + 0.5) * sy + jitterY;
+
+    int aniso_x = clamp(int(floor(s3x)), 0, W - 1);
+    int aniso_y = clamp(int(floor(s4y)), 0, H - 1);
+    int aniso_idx = aniso_y * W + aniso_x;
+
+    float an0 = float(in_tap[aniso_idx * 4 + 1].z);
+    float an1 = float(in_tap[aniso_idx * 4 + 1].w);
+    float an2 = float(in_tap[aniso_idx * 4 + 2].x);
+
+    int fx = int(floor(s3x - 0.5));
+    int fy = int(floor(s4y - 0.5));
+
+    vec3 num = vec3(0.0);
+    float den = 0.0;
+
+    for (int dy = 0; dy < 3; ++dy) {
+        int in_y = clamp(fy + dy, 0, H - 1);
+        float ddy = (float(fy + dy) + 0.5) - s4y;
+        for (int dx = 0; dx < 3; ++dx) {
+            int in_x = clamp(fx + dx, 0, W - 1);
+            float ddx = (float(fx + dx) + 0.5) - s3x;
+
+            float dist = an0 * (ddx * ddx) + an2 * ddx * ddy + an1 * (ddy * ddy);
+            float w = exp2(dist);
+
+            vec3 c = vec3(in_tap[(in_y * W + in_x) * 4 + 0].rgb);
+            num += w * c;
+            den += w;
+        }
+    }
+
+    vec3 c_filt = num / max(den, 1e-6);
 
     int idx = y15 * targetW + x15;
-    out_rg[idx] = f16vec2(float16_t(t.r), float16_t(t.g));
-    out_b[idx] = float16_t(t.b);
-    out_full[idx] = f16vec4(f16vec3(t), float16_t(0.0));
+    out_rg[idx] = f16vec2(float16_t(c_filt.r), float16_t(c_filt.g));
+    out_b[idx] = float16_t(c_filt.b);
+    out_full[idx] = f16vec4(f16vec3(c_filt), float16_t(0.0));
 }

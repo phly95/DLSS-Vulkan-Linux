@@ -743,7 +743,7 @@ int main(int argc, char** argv) {
                 uint8_t push[40] = {0};
                 std::memcpy(push + 8, &W, 4);
                 std::memcpy(push + 32, &W, 4); std::memcpy(push + 36, &H, 4);
-                dispatch("rr_post_prep", {&t_act[0], &gates, &aniso, &cf2}, push, 40, (W + 15) / 16, (H + 15) / 16, 1);
+                dispatch("rr_post_prep", {&bec, &gates, &aniso, &cf2}, push, 40, (W + 15) / 16, (H + 15) / 16, 1);
             }
             // 6. Post
             {
@@ -760,7 +760,7 @@ int main(int argc, char** argv) {
                 std::memcpy(push + 28, &jx, 4);
                 std::memcpy(push + 32, &jy, 4);
                 std::memcpy(push + 36, &exposure_val, 4);
-                dispatch("rr_post", {&g_col, &expo, &cf6, &cfa, &ihist[0]}, push, 120, (W15 + 15) / 16, (H15 + 15) / 16, 1);
+                dispatch("rr_post", {&cf2, &expo, &cf6, &cfa, &ihist[0]}, push, 120, (W15 + 15) / 16, (H15 + 15) / 16, 1);
             }
             // 7. Downsample
             {
