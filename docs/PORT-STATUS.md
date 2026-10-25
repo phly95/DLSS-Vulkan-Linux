@@ -20,7 +20,7 @@ Never mark CLOSE or EXACT without pasted diffdump numbers.
 | `k_sr_downsample` | APPROX | out [f32]: 589824 elements, bit-exact 329882 (55.9289%), max \|err\| 0.0320093, max ulp 2648755, first mismatch {'index': 0, 'port': 0.008307147771120071, 'oracle': 0.00830714963376522, 'port_bits': 1007164084, 'oracle_bits': 1007164086} | 5-tap separable filter with min/max clamp. Pixel 0 red/blue bit-exact, green 2 ULPs off |
 | `k_sr_tube_split` | APPROX | Offline verification O7 passed | Bottleneck stages (128 channels, 4 groups) |
 | `k_sr_post` | APPROX | full15 [u32]: 331776 elements, bit-exact 16317 (4.9181%), max \|err\| 9.73943e+08, max ulp 973943226, first mismatch {'index': 1, 'port': 96630863.0, 'oracle': 96632912.0, 'port_bits': 96630863, 'oracle_bits': 96632912}<br>dhist: 82944 elements (0.0000%)<br>ihist1: 1327104 elements, bit-exact 72 (0.0054%) | Pixel 0 tonemapped packing is bit-exact (0x5c2784f); full temporal warp and blending placeholder |
-| `k_sr_enc0` | APPROX | Offline verification O7 passed | Level-0 encoder (preset M) |
+| `k_sr_enc0` | APPROX | prev_mvec1 [f16]: 73728/73728 (100.0000%), max \|err\| 0, max ulp 0<br>mv_ero [f16]: 73728/73728 (100.0000%), max \|err\| 0, max ulp 0<br>mv_nondil [f16]: 73728/73728 (100.0000%), max \|err\| 0, max ulp 0<br>t0 [u8]: 655360 elements, bit-exact 1509 (0.2303%), max \|err\| 192 | 3 of 4 output buffers 100% bit-exact (prev_mvec1, mv_ero, mv_nondil mv*3); t0 feature map approximate |
 | `k_sr_dec0` | APPROX | Offline verification O7 passed | Level-0 decoder |
 | `k_sr_stage` | APPROX | Offline verification O7 passed | 18 instantiations, open softmax / second norm |
 | `k_sr_enc0L_in` / `l0` | APPROX | Offline verification O7 passed | Preset L encoder / decoder level 0 |

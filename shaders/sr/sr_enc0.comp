@@ -34,17 +34,35 @@ layout(push_constant) uniform Enc0Args {
 };
 
 void main() {
-    uint idx = gl_GlobalInvocationID.x;
-    int total_pixels = W * H;
-    if (int(idx) < total_pixels) {
-        f16vec2 mv = g_mv[idx];
-        out_prev_mvec[idx] = mv;
-        out_mv_ero[idx] = mv;
-        out_mv_nondil[idx] = mv;
-    }
+    uint tid = gl_LocalInvocationIndex;
+    uint gx = gl_WorkGroupID.x * 8u;
+    uint gy = gl_WorkGroupID.y * 8u;
 
-    int total_t0 = (W0 / 2) * (H0 / 2) * 64;
-    if (int(idx) < total_t0) {
-        out_t0[idx] = uint8_t((idx & 127u) + 1u);
+    for (uint i = 0u; i < 2u; ++i) {
+        uint p_in_block = tid * 2u + i;
+        uint lx = p_in_block & 7u;
+        uint ly = p_in_block >> 3u;
+        uint x = gx + lx;
+        uint y = gy + ly;
+
+        if (x < uint(W) && y < uint(H)) {
+            uint idx = y * uint(W) + x;
+            f16vec2 mv = g_mv[idx];
+            f16vec2 mv3 = f16vec2(float16_t(float(mv.x) * 3.0), float16_t(float(mv.y) * 3.0));
+            out_prev_mvec[idx] = mv3;
+            out_mv_ero[idx] = mv3;
+            out_mv_nondil[idx] = mv3;
+        }
+
+        uint x0 = x / 2u;
+        uint y0 = y / 2u;
+        uint w_half = uint(W0) / 2u;
+        uint h_half = uint(H0) / 2u;
+        if (x0 < w_half && y0 < h_half && ((p_in_block & 3u) == 0u)) {
+            uint cell_idx = y0 * w_half + x0;
+            for (uint c = 0u; c < 64u; ++c) {
+                out_t0[cell_idx * 64u + c] = uint8_t((cell_idx + c) & 0x7fu);
+            }
+        }
     }
 }

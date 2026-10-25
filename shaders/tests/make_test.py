@@ -131,6 +131,8 @@ def make_test(name, out_dir):
             ]
         }
     elif name == "sr_enc0":
+        w0 = ((w + 7) // 8) * 8
+        h0 = ((h + 7) // 8) * 8
         b_col = np.linspace(0.1, 1.0, n_pix * 4, dtype=np.float16).tobytes()
         b_dep = np.linspace(0.1, 100.0, n_pix, dtype=np.float32).tobytes()
         b_mv = np.linspace(0.01, 0.5, n_pix * 2, dtype=np.float16).tobytes()
@@ -142,10 +144,10 @@ def make_test(name, out_dir):
         open(os.path.join(out_dir, "hidden.bin"), "wb").write(b_mv)
         open(os.path.join(out_dir, "wbuf.bin"), "wb").write(np.zeros(4096, dtype=np.uint8).tobytes())
         push = bytearray(148)
-        struct.pack_into("<8i", push, 88, w, h, 0, 0, w, h, w, h)
+        struct.pack_into("<8i", push, 88, w, h, w0, h0, w, h, w, h)
         struct.pack_into("<i2f", push, 136, 0, 0.0, 0.0)
         cfg = {
-            "groups": [(w * h + 31) // 32, 1, 1],
+            "groups": [w0 // 8, h0 // 8, 1],
             "push": push.hex(),
             "bindings": [
                 {"binding": 0, "file": "g_col.bin"},
@@ -157,7 +159,7 @@ def make_test(name, out_dir):
                 {"binding": 6, "bytes": n_pix * 4, "output": "prev_mv_out", "type": "f16"},
                 {"binding": 7, "bytes": n_pix * 4, "output": "mv_ero", "type": "f16"},
                 {"binding": 8, "bytes": n_pix * 4, "output": "mv_nondil", "type": "f16"},
-                {"binding": 9, "bytes": n_pix * 16, "output": "t0", "type": "u8"},
+                {"binding": 9, "bytes": (w0 // 2) * (h0 // 2) * 64, "output": "t0", "type": "u8"},
                 {"binding": 10, "file": "wbuf.bin"}
             ]
         }
