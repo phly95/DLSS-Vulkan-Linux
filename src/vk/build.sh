@@ -28,6 +28,10 @@ EOF
 RPATH='$ORIGIN/../../toolchain/mesa/install/lib/x86_64-linux-gnu'
 
 mkdir -p "$ROOT/build/package"
+if [[ -f "$ROOT/src/package/install.sh" ]]; then
+    cp "$ROOT/src/package/install.sh" "$ROOT/build/package/install.sh"
+    chmod +x "$ROOT/build/package/install.sh"
+fi
 if [[ -f "$ROOT/src/pe/nvngx.cpp" ]]; then
     if command -v x86_64-w64-mingw32-g++ >/dev/null; then
         x86_64-w64-mingw32-g++ -std=c++17 -shared -O2 \

@@ -549,8 +549,13 @@ int main(int argc, char** argv) {
             }
 
             // 4. Stages 0..9
+            static const uint32_t k_stage_w_off[10] = {
+                0, 71936, 235520, 419840, 604160, 788480, 972800, 1157120, 1341440, 1505536
+            };
             for (int st = 0; st < 10; ++st) {
                 uint8_t push[56] = {0};
+                uint32_t w_off = k_stage_w_off[st];
+                std::memcpy(push + 0, &w_off, 4);
                 int dimW, dimH, s0, s1;
                 const int pe = (p == 0) * 2, po = (p != 0) * 2;
                 if (st == 0) { dimW = L1w; dimH = L1h; s0 = pe; s1 = 2;

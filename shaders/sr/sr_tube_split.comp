@@ -1,6 +1,8 @@
 #version 460
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
 #extension GL_EXT_shader_8bit_storage : enable
+#extension GL_EXT_shader_16bit_storage : enable
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
@@ -9,16 +11,246 @@ layout(set = 0, binding = 1) readonly buffer InAct     { uint8_t in_act[]; };
 layout(set = 0, binding = 2) writeonly buffer OutAct   { uint8_t out_act[]; };
 
 layout(push_constant) uniform StageArgs {
+    uint wbuf_lo;
+    uint wbuf_hi;
     layout(offset = 40) int dimW;
     int dimH;
-    int s0;
-    int s1;
+    int shiftX;
+    int shiftY;
 };
 
+const uint P[32] = uint[32](
+    0, 1, 16, 17, 2, 3, 18, 19, 4, 5, 20, 21, 6, 7, 22, 23,
+    8, 9, 24, 25, 10, 11, 26, 27, 12, 13, 28, 29, 14, 15, 30, 31
+);
+
+shared float16_t s_act[16][128];
+shared float16_t s_norm[16][128];
+shared float16_t s_Q[4][16][32];
+shared float16_t s_K[4][16][32];
+shared float16_t s_V[4][16][32];
+shared float16_t s_mlp[16][128];
+shared float16_t s_h1[16][32];
+
+float e4m3_to_f32(uint b) {
+    float s = (b >= 128u) ? -1.0 : 1.0;
+    uint e = (b >> 3u) & 15u;
+    uint m = b & 7u;
+    if (e == 0u) return s * (float(m) * 0.001953125);
+    return s * (1.0 + float(m) * 0.125) * exp2(float(e) - 7.0);
+}
+
+uint f32_to_e4m3_rne(float x) {
+    if (isnan(x)) return 0x7fu;
+    uint sign = (x < 0.0) ? 0x80u : 0u;
+    float a = min(abs(x), 448.0);
+    if (a < 0.015625) {
+        uint sub = uint(floor(a * 512.0 + 0.5));
+        return sign | sub;
+    }
+    uint bits = floatBitsToUint(a);
+    uint norm = uint((bits + 0x407ffffu + ((bits >> 20u) & 1u)) >> 20u);
+    return sign | (norm & 0x7fu);
+}
+
+float nr_swin_exp(float x) {
+    float y = clamp(fma(x, 0.044921875, 1.30078125), 1.03125, 1.5693359375);
+    uint h = packHalf2x16(vec2(y, 0.0)) & 0xffffu;
+    return unpackHalf2x16((h & 0x03ffu) << 5u).x;
+}
+
+float nr_swin_act(float x) {
+    float t = clamp(x, -4.0, 4.0);
+    float u = fma(-0.055908203125, abs(t), 0.447265625);
+    return x * fma(t, u, 0.89453125);
+}
+
+uint frag_off(uint r, uint c, uint cols) {
+    uint u1 = ((r & 0x7FFFFFE1u) | ((r >> 3u) & 2u)) + (r & 0xEu) * 2u;
+    uint u5 = 2u * c;
+    uint u9 = 16u * c;
+    uint low = (u5 & 4u) | (c & 1u) | ((c >> 3u) & 2u);
+    uint high = ((u5 & 0x10u) << 4u) + (u9 & (~0x1FFu)) + (cols << 4u) * (u1 >> 4u);
+    return (low | high) + ((u1 & 0xFu) + (u5 & 8u) * 2u) * 8u;
+}
+
+float16_t read_f16(uint byte_off) {
+    uint b0 = uint(wbuf[byte_off]);
+    uint b1 = uint(wbuf[byte_off + 1u]);
+    return float16_t(unpackHalf2x16(b0 | (b1 << 8u)).x);
+}
+
+int reflect_coord(int p, int dim) {
+    if (p < 0) p = -p;
+    if (p >= dim) p = 2 * (dim - 1) - p;
+    return clamp(p, 0, dim - 1);
+}
+
 void main() {
-    uint idx = gl_GlobalInvocationID.x;
-    int total = dimW * dimH * 128;
-    if (int(idx) < total) {
-        out_act[idx] = in_act[idx];
+    uint tid = gl_LocalInvocationID.x;
+    uint tok = tid % 16u;
+    uint head = tid / 16u;
+
+    int gx = int(gl_WorkGroupID.x);
+    int gy = int(gl_WorkGroupID.y);
+    int x0 = gx * 4 - shiftX;
+    int y0 = gy * 4 - shiftY;
+
+    int dx = int(tok % 4u);
+    int dy = int(tok / 4u);
+    int px = reflect_coord(x0 + dx, dimW);
+    int py = reflect_coord(y0 + dy, dimH);
+
+    // 1. Load input activation into s_act
+    uint in_base = (head * uint(dimH * dimW) + uint(py * dimW + px)) * 32u;
+    for (uint i = 0; i < 32u; ++i) {
+        float val = e4m3_to_f32(uint(in_act[in_base + i]));
+        s_act[tok][head * 32u + P[i]] = float16_t(val);
+    }
+    barrier();
+
+    uint w_off = wbuf_lo & 0x1fffffu;
+
+    // 2. RMSNorm 1
+    float sum_sq1 = 0.0;
+    for (uint c = 0; c < 128u; ++c) {
+        float v = float(s_act[tok][c]);
+        sum_sq1 += v * v;
+    }
+    float rs1 = inversesqrt(sum_sq1 + 6.103515625e-05);
+    for (uint c = 0; c < 32u; ++c) {
+        uint my_c = head * 32u + c;
+        float16_t gain1 = read_f16(w_off + my_c * 2u);
+        s_norm[tok][my_c] = s_act[tok][my_c] * float16_t(rs1) * gain1;
+    }
+    barrier();
+
+    // 3. Compute Q, K, V for this head
+    uint head_w_base = w_off + 256u + head * 12800u;
+    uint qk_base = head_w_base;
+    uint bias_base = head_w_base + 8192u;
+    uint v_base = head_w_base + 8704u;
+
+    for (uint c = 0; c < 32u; ++c) {
+        float sum_q = 0.0;
+        float sum_k = 0.0;
+        for (uint k = 0; k < 128u; ++k) {
+            float vnorm = float(s_norm[tok][k]);
+            uint off_q = qk_base + frag_off(c, k, 128u);
+            uint off_k = qk_base + 4096u + frag_off(c, k, 128u);
+            sum_q += vnorm * e4m3_to_f32(uint(wbuf[off_q]));
+            sum_k += vnorm * e4m3_to_f32(uint(wbuf[off_k]));
+        }
+        s_Q[head][tok][c] = float16_t(sum_q);
+        s_K[head][tok][c] = float16_t(sum_k);
+
+        float sum_v = 0.0;
+        for (uint k = 0; k < 128u; ++k) {
+            uint off_v = v_base + frag_off(k, c, 32u);
+            sum_v += float(s_norm[tok][k]) * e4m3_to_f32(uint(wbuf[off_v]));
+        }
+        s_V[head][tok][c] = float16_t(sum_v);
+    }
+    barrier();
+
+    // 4. Attention Logits & Softmax & Context Projection
+    float sum_exp = 0.0;
+    for (uint j = 0; j < 16u; ++j) {
+        float dot_qk = 0.0;
+        for (uint c = 0; c < 32u; ++c) {
+            dot_qk += float(s_Q[head][tok][c]) * float(s_K[head][j][c]);
+        }
+        float bias = float(read_f16(bias_base + (tok * 16u + j) * 2u));
+        sum_exp += nr_swin_exp(dot_qk + bias);
+    }
+    float inv_sum = 1.0 / max(sum_exp, 1e-4);
+
+    uint v270_base = w_off + 256u + 4u * 12800u;
+    for (uint c = 0; c < 32u; ++c) {
+        float sum_ctx = 0.0;
+        for (uint j = 0; j < 16u; ++j) {
+            float dot_qk = 0.0;
+            for (uint k = 0; k < 32u; ++k) {
+                dot_qk += float(s_Q[head][tok][k]) * float(s_K[head][j][k]);
+            }
+            float bias = float(read_f16(bias_base + (tok * 16u + j) * 2u));
+            float prob = nr_swin_exp(dot_qk + bias) * inv_sum;
+            float prob_q = e4m3_to_f32(f32_to_e4m3_rne(prob));
+            sum_ctx += prob_q * float(s_V[head][j][c]);
+        }
+        float16_t b_out = read_f16(v270_base + (head * 32u + c) * 2u);
+        // Residual 1: add to original input activation
+        s_act[tok][head * 32u + c] += float16_t(sum_ctx) + b_out;
+        s_mlp[tok][head * 32u + c] = float16_t(0.0);
+    }
+    barrier();
+
+    // 5. RMSNorm 2
+    uint s198_base = v270_base + 256u;
+    float sum_sq2 = 0.0;
+    for (uint c = 0; c < 128u; ++c) {
+        float v = float(s_act[tok][c]);
+        sum_sq2 += v * v;
+    }
+    float rs2 = inversesqrt(sum_sq2 + 6.103515625e-05);
+    for (uint c = 0; c < 32u; ++c) {
+        uint my_c = head * 32u + c;
+        float16_t gain2 = read_f16(s198_base + my_c * 2u);
+        s_norm[tok][my_c] = s_act[tok][my_c] * float16_t(rs2) * gain2;
+    }
+    barrier();
+
+    // 6. MLP (16 blocks of FC1 -> SiLU -> FC2)
+    uint ffn_base = s198_base + 256u;
+    uint fc2_bias_base = ffn_base + 4096u + 64u + 4096u;
+    uint cur_block = ffn_base;
+
+    for (uint b = 0; b < 16u; ++b) {
+        uint fc1_off = cur_block;
+        cur_block += 4096u;
+        uint b1_off = cur_block;
+        cur_block += 64u;
+        uint fc2_off = cur_block;
+        cur_block += 4096u;
+        if (b == 0u) cur_block += 256u;
+
+        // Head 0 computes FC1 activations for this token and stores in s_h1
+        if (head == 0u) {
+            for (uint m = 0; m < 32u; ++m) {
+                float sum_fc1 = 0.0;
+                for (uint k = 0; k < 128u; ++k) {
+                    uint w_idx = fc1_off + frag_off(m, k, 128u);
+                    sum_fc1 += float(s_norm[tok][k]) * e4m3_to_f32(uint(wbuf[w_idx]));
+                }
+                float b1 = float(read_f16(b1_off + m * 2u));
+                s_h1[tok][m] = float16_t(nr_swin_act(sum_fc1 + b1));
+            }
+        }
+        barrier();
+
+        // All heads accumulate FC2 for their 32 channels
+        for (uint c = 0; c < 32u; ++c) {
+            uint my_c = head * 32u + c;
+            float sum_fc2 = 0.0;
+            for (uint m = 0; m < 32u; ++m) {
+                uint w_idx = fc2_off + frag_off(my_c, m, 32u);
+                sum_fc2 += float(s_h1[tok][m]) * e4m3_to_f32(uint(wbuf[w_idx]));
+            }
+            s_mlp[tok][my_c] += float16_t(sum_fc2);
+        }
+        barrier();
+    }
+
+    // Add FC2 bias, final residual add to s_act, clamp to [-448, 448], write to OutAct
+    int real_x = x0 + dx;
+    int real_y = y0 + dy;
+    if (real_x >= 0 && real_x < dimW && real_y >= 0 && real_y < dimH) {
+        uint out_base = (head * uint(dimH * dimW) + uint(real_y * dimW + real_x)) * 32u;
+        for (uint i = 0; i < 32u; ++i) {
+            uint my_c = head * 32u + P[i];
+            float b2 = float(read_f16(fc2_bias_base + my_c * 2u));
+            float v = clamp(float(s_act[tok][my_c]) + float(s_mlp[tok][my_c]) + b2, -448.0, 448.0);
+            out_act[out_base + i] = uint8_t(f32_to_e4m3_rne(v));
+        }
     }
 }
