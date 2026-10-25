@@ -114,7 +114,7 @@ W=$SCRATCH/weights
 run "$PY" -I tools/sr/sr_weights.py build/re/nvngx_dlss_310.9.1.dll --out "$W/sr_raw" > "$SCRATCH/weights.log" 2>&1 || fail "sr_weights.py"
 run "$PY" -I tools/sr/sr_pack.py "$W/sr_raw" M "$W/sr_M" >> "$SCRATCH/weights.log" 2>&1 || fail "sr_pack.py M"
 run "$PY" -I tools/sr/sr_pack.py "$W/sr_raw" L "$W/sr_L" >> "$SCRATCH/weights.log" 2>&1 || fail "sr_pack.py L"
-run "$PY" -I tools/rr/rr_weights.py build/re/nvngx_dlssd_310.9.1.dll --out "$W/rr_raw" >> "$SCRATCH/weights.log" 2>&1 || fail "rr_weights.py"
+run "$PY" -I tools/rr/rr_weights.py build/re/nvngx_dlssd_310.9.1.dll --dither "$W/sr_raw/dither.bin" --out "$W/rr_raw" >> "$SCRATCH/weights.log" 2>&1 || fail "rr_weights.py"
 run "$PY" -I tools/rr/rr_pack.py "$W/rr_raw" "$W/rr_F" >> "$SCRATCH/weights.log" 2>&1 || fail "rr_pack.py"
 grep -q "preset L: .*NeuralHub checksum matches" "$SCRATCH/weights.log" || fail "SR preset L weights do not match NeuralHub's checksum"
 grep -q "fingerprint .*: matches NeuralHub" "$SCRATCH/weights.log" || fail "RR weights do not match NeuralHub's fingerprint"

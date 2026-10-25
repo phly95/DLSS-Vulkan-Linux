@@ -35,6 +35,9 @@ does not change afterwards (`run_all.sh` V10 checks it); a real bug in it is a q
   `RADV_DEBUG=shaderstats` and `MESA_SHADER_CACHE_DISABLE=true`: Mesa prints one statistics block per
   pipeline, which V7 reads.
 
+**Its build output** is under `build/vk/` (programs) and `build/shaders/` (the SPIR-V it loads); V6
+scans both, and the package, for NVIDIA / NeuralHub content.
+
 **The package**: `build/package/install.sh <game folder> optiscaler` installs, `... remove` restores
 the folder byte for byte. If the game needs environment variables, the installer writes them as
 `KEY=VALUE` lines to `<game folder>/dlss5-amd-launch.env`. The game folder holds the user's

@@ -11,7 +11,7 @@
 #   O2  the referee's own tools: self-tests of texfmt, eval_verify (V4/V5/V7/V8 logic; V7's parser also
 #       on a real RADV_DEBUG=shaderstats log), diffdump; srref / rrref syntax (declaration-only HIP stub,
 #       nothing linked or run), vkprobe, ngx_client (mingw), every shell script (bash -n)
-#   O3  R2: tools/verify/r2scan.py over every tracked file
+#   O3  R2: tools/verify/r2scan.py's self-test, then the scan of every tracked file
 #   O4  R1 lint: no shader under shaders/ names a cooperative matrix or an FP8 type or extension, none
 #       copies the reference's includes; shaders/include/nh_mm.glsl is the one wrapper, includes the
 #       reference's coopmm.glsl and selects the f16 build by NH_F16
@@ -111,6 +111,8 @@ done
 
 # ---------------------------------------------------------------------------------------------
 step O3 "R2 scan of the tracked files"
+"$PY" -I tools/verify/r2scan.py --self-test | tail -4
+[[ ${PIPESTATUS[0]} -eq 0 ]] || fail "r2scan self-test"
 "$PY" -I tools/verify/r2scan.py --tracked | tail -12
 [[ ${PIPESTATUS[0]} -eq 0 ]] || fail "r2scan"
 

@@ -20,7 +20,8 @@ A scanned file fails when
   * with --tracked: it lies under artifacts/ and is not one of the pinned files below with exactly
     this SHA-256 (the intentional binaries the repository already holds; changing them is the user's
     call), or under build/ or toolchain/.
-Last line: "R2SCAN: PASS <files>" or "R2SCAN: FAIL <n> findings".
+Last line: "R2SCAN: PASS <files>" or "R2SCAN: FAIL <n> findings". `r2scan.py --self-test` plants three
+kinds of copy next to a clean file and checks exactly those are found.
 """
 import argparse
 import hashlib
@@ -59,6 +60,8 @@ PREEXISTING = {
     ("tools/rr/rr_weights.py", "4bc7ea5fcb2f32cf86bc2cb072e8d2860914a0be511cbdcb2fc206c1d9d83b80"),
     ("tools/rr/rr_weights.py", "8f4c75775480450c05aae2e0a37cd64582834babba85346d99a0bbcd2ef88c7e"),
 }
+PREEXISTING_DIGESTS = {d for _, d in PREEXISTING}
+PINNED = set(ARTIFACTS.values())
 DEFAULT_SECRETS = ["build/re", "build/dlls", "build/rr/weights", "build/rr/packed", "build/nh", "build/oracle",
                    "build/verify/weights"]
 
@@ -112,7 +115,34 @@ def find_probes(data, index):
     return None
 
 
+def self_test():
+    """plant a raw chunk, a hex spelling and a hash of secret files in a scratch directory next to a
+    clean file: exactly those three must be reported"""
+    import tempfile
+    secret = [p for d in DEFAULT_SECRETS[:4] for p in files_under(os.path.join(ROOT, d))
+              if os.path.getsize(p) >= 8192 and not p.endswith(".dll")]
+    if len(secret) < 2:
+        print("R2SCAN SELF-TEST: FAIL (no extracted weights in build/ to plant)")
+        return False
+    a, b = open(secret[0], "rb").read(), open(secret[1], "rb").read()
+    with tempfile.TemporaryDirectory(dir=os.path.join(ROOT, "build")) as t:
+        open(os.path.join(t, "chunk.bin"), "wb").write(b"pad" + a[3001:4501])
+        open(os.path.join(t, "spelled.txt"), "w").write("w = '" + b[2000:2600].hex() + "'\n")
+        open(os.path.join(t, "hash.txt"), "w").write("sha256 " + sha(secret[1]) + "\n")
+        open(os.path.join(t, "clean.py"), "w").write(open(os.path.join(ROOT, "tools/verify/texfmt.py")).read())
+        r = subprocess.run([sys.executable, "-I", __file__, "--dir", t], capture_output=True, text=True)
+    found = [l for l in r.stdout.splitlines() if l.startswith("  R2:")]
+    want = ("chunk.bin: contains bytes", "spelled.txt: contains the hex spelling", "hash.txt: contains the SHA-256")
+    ok = r.returncode == 1 and len(found) == 3 and all(any(w in f for f in found) for w in want)
+    for f in found:
+        print(f)
+    print("R2SCAN SELF-TEST:", "PASS" if ok else "FAIL")
+    return ok
+
+
 def main():
+    if sys.argv[1:] == ["--self-test"]:
+        sys.exit(0 if self_test() else 1)
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tracked", action="store_true")
     ap.add_argument("--dir", action="append", default=[])
@@ -187,7 +217,10 @@ def main():
                     findings.append(f"{rel}: contains the hex spelling of bytes of {os.path.relpath(src, ROOT)}")
                     break
             for hh, src in shas.items():
-                if hh.encode() in low and (rel, hh) not in PREEXISTING:
+                # a pinned artifact's hash says nothing the committed artifact does not; this file's own
+                # tables name the pinned and the PREEXISTING hashes
+                pinned_here = rel == "tools/verify/r2scan.py" and hh in PREEXISTING_DIGESTS
+                if hh.encode() in low and (rel, hh) not in PREEXISTING and hh not in PINNED and not pinned_here:
                     findings.append(f"{rel}: contains the SHA-256 of {os.path.relpath(src, ROOT)}")
     if a.tracked:
         for rel in sorted(set(ARTIFACTS) - seen_art):
