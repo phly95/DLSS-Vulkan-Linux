@@ -54,34 +54,19 @@ def main():
         one = np.ones((h, w, 1), np.float32)
         f16 = lambda x, d, name: np.asarray(x, np.float16).tofile(os.path.join(seq, d, f"{name}_{i}.f16"))
         f32 = lambda x, d, name: np.asarray(x, np.float32).tofile(os.path.join(seq, d, f"{name}_{i}.f32"))
-        u8  = lambda x, d, name: np.asarray(x, np.uint8).tofile(os.path.join(seq, d, f"{name}_{i}.u8"))
-        u32 = lambda x, d, name: np.asarray(x, np.uint32).tofile(os.path.join(seq, d, f"{name}_{i}.u32"))
-        u16 = lambda x, d, name: np.asarray(x, np.uint16).tofile(os.path.join(seq, d, f"{name}_{i}.u16"))
         # Cycles' vector pass: pixels to the previous frame position in X, Y (y up)
         v = noisy("Vector", "XY")
         mv = np.stack([sign[0] * v[..., 0], -sign[1] * v[..., 1]], axis=-1)
         z = noisy("Depth", "Z")[..., 0]
         dep = np.where(z > 0, near / np.maximum(z, near), 0.0)
-
-        col_noisy_rgba = np.concatenate([noisy("Combined", "RGB"), one], axis=2)
-        col_clean_rgba = np.concatenate([clean("Combined", "RGB"), one], axis=2)
-        f16(col_noisy_rgba, "rr", "col")
-        f16(col_clean_rgba, "sr", "col")
-        # Also write non-float UNORM guides for non-zero gather format tests
-        u8(np.clip(col_clean_rgba * 255.0 + 0.5, 0, 255), "sr", "col")
-        u8(np.clip(col_noisy_rgba * 255.0 + 0.5, 0, 255), "rr", "col")
-
+        f16(np.concatenate([noisy("Combined", "RGB"), one], axis=2), "rr", "col")
+        f16(np.concatenate([clean("Combined", "RGB"), one], axis=2), "sr", "col")
         f16(np.concatenate([noisy("DiffCol", "RGB"), one], axis=2), "rr", "alb")
         f16(np.concatenate([noisy("GlossCol", "RGB"), one], axis=2), "rr", "spa")
         f16(np.concatenate([noisy("Normal", "XYZ"), np.zeros((h, w, 1))], axis=2), "rr", "nrm")
         for d in ("rr", "sr"):
             f16(mv, d, "mv")
             f32(dep, d, "dep")
-            # D24 unorm depth (24 bits in u32)
-            u32(np.clip(dep * 16777215.0 + 0.5, 0, 16777215), d, "dep")
-            # D16 unorm depth (16 bits in u16)
-            u16(np.clip(dep * 65535.0 + 0.5, 0, 65535), d, "dep")
-
         f32(noisy("rough", "X")[..., 0], "rr", "rgh")
         jx, jy = meta["jitter"][i]
         is_reset = bool(i == 0 or i == reset_frame)

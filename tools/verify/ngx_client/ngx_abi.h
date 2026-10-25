@@ -1,7 +1,13 @@
+// The part of NVIDIA's public NGX ABI that ngx_client calls, written out by hand (no NVIDIA header is
+// in this repository): entry points, the parameter object's vtable, the Vulkan resource struct, the
+// key strings and enum values. The key strings are the ones NeuralHub's host reads (its string table,
+// artifacts/neuralhub-v0.8.0/host_strings.txt.xz).
 #pragma once
 
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
+
+#include <vulkan/vulkan.h>
 
 #ifdef _WIN32
 #define NGX_MSABI __attribute__((ms_abi))
@@ -14,34 +20,37 @@ struct ID3D12GraphicsCommandList;
 struct ID3D12Resource;
 struct ID3D11Resource;
 
-using NrVkInstance = void*;
-using NrVkPhysicalDevice = void*;
-using NrVkDevice = void*;
-using NrVkCommandBuffer = void*;
-
 typedef enum NVSDK_NGX_Result {
     NVSDK_NGX_Result_Success = 0x1,
     NVSDK_NGX_Result_Fail = 0xBAD00000,
-    NVSDK_NGX_Result_FAIL_FeatureNotSupported = NVSDK_NGX_Result_Fail | 1,
-    NVSDK_NGX_Result_FAIL_PlatformError = NVSDK_NGX_Result_Fail | 2,
-    NVSDK_NGX_Result_FAIL_FeatureAlreadyExists = NVSDK_NGX_Result_Fail | 3,
-    NVSDK_NGX_Result_FAIL_FeatureNotFound = NVSDK_NGX_Result_Fail | 4,
-    NVSDK_NGX_Result_FAIL_InvalidParameter = NVSDK_NGX_Result_Fail | 5,
-    NVSDK_NGX_Result_FAIL_NotInitialized = NVSDK_NGX_Result_Fail | 7,
-    NVSDK_NGX_Result_FAIL_UnableToInitializeFeature = NVSDK_NGX_Result_Fail | 11,
 } NVSDK_NGX_Result;
+static inline bool ngx_ok(NVSDK_NGX_Result r) { return (uint32_t(r) & 0xFFF00000u) != 0xBAD00000u; }
 
 typedef enum NVSDK_NGX_Feature {
     NVSDK_NGX_Feature_SuperSampling = 1,
     NVSDK_NGX_Feature_RayReconstruction = 13,
 } NVSDK_NGX_Feature;
 
-typedef struct NVSDK_NGX_Handle {
-    unsigned int Id;
-} NVSDK_NGX_Handle;
+enum { NGX_VERSION_API = 0x15 };
 
+// DLSS.Feature.Create.Flags
+enum {
+    NGX_FLAG_IS_HDR = 1 << 0,
+    NGX_FLAG_MV_LOW_RES = 1 << 1,
+    NGX_FLAG_MV_JITTERED = 1 << 2,
+    NGX_FLAG_DEPTH_INVERTED = 1 << 3,
+    NGX_FLAG_AUTO_EXPOSURE = 1 << 6,
+};
+// DLSS.Hint.Render.Preset.*: Default 0, A 1 ... L 12, M 13 (NeuralHub serves L = 0xc and M = 0xd)
+enum { NGX_PRESET_L = 12, NGX_PRESET_M = 13 };
+// PerfQualityValue
+enum { NGX_PQ_MAX_PERF = 0, NGX_PQ_BALANCED = 1, NGX_PQ_MAX_QUALITY = 2, NGX_PQ_ULTRA_PERF = 3, NGX_PQ_ULTRA_QUALITY = 4, NGX_PQ_DLAA = 5 };
+
+typedef struct NVSDK_NGX_Handle { unsigned int Id; } NVSDK_NGX_Handle;
+
+// NVSDK_NGX_Parameter is a C++ class with overloaded pure virtual Set / Get; MSVC lays overloads out
+// in reverse declaration order, which is the order below.
 struct NVSDK_NGX_Parameter;
-
 struct NVSDK_NGX_ParameterVtbl {
     void (NGX_MSABI* SetVoidPtr)(NVSDK_NGX_Parameter*, const char*, void*);
     void (NGX_MSABI* SetD3D12Resource)(NVSDK_NGX_Parameter*, const char*, ID3D12Resource*);
@@ -51,7 +60,6 @@ struct NVSDK_NGX_ParameterVtbl {
     void (NGX_MSABI* SetDouble)(NVSDK_NGX_Parameter*, const char*, double);
     void (NGX_MSABI* SetFloat)(NVSDK_NGX_Parameter*, const char*, float);
     void (NGX_MSABI* SetULL)(NVSDK_NGX_Parameter*, const char*, unsigned long long);
-
     NVSDK_NGX_Result (NGX_MSABI* GetVoidPtr)(const NVSDK_NGX_Parameter*, const char*, void**);
     NVSDK_NGX_Result (NGX_MSABI* GetD3D12Resource)(const NVSDK_NGX_Parameter*, const char*, ID3D12Resource**);
     NVSDK_NGX_Result (NGX_MSABI* GetD3D11Resource)(const NVSDK_NGX_Parameter*, const char*, ID3D11Resource**);
@@ -60,10 +68,8 @@ struct NVSDK_NGX_ParameterVtbl {
     NVSDK_NGX_Result (NGX_MSABI* GetDouble)(const NVSDK_NGX_Parameter*, const char*, double*);
     NVSDK_NGX_Result (NGX_MSABI* GetFloat)(const NVSDK_NGX_Parameter*, const char*, float*);
     NVSDK_NGX_Result (NGX_MSABI* GetULL)(const NVSDK_NGX_Parameter*, const char*, unsigned long long*);
-
     void (NGX_MSABI* Reset)(NVSDK_NGX_Parameter*);
 };
-
 struct NVSDK_NGX_Parameter {
     const NVSDK_NGX_ParameterVtbl* vtbl;
     void Set(const char* k, void* v) { vtbl->SetVoidPtr(this, k, v); }
@@ -75,18 +81,48 @@ struct NVSDK_NGX_Parameter {
     void Set(const char* k, unsigned long long v) { vtbl->SetULL(this, k, v); }
 };
 
-// D3D12 Entry Points
-typedef NVSDK_NGX_Result (NGX_MSABI* PFN_NVSDK_NGX_D3D12_Init)(unsigned long long appId, const wchar_t* logDir, ID3D12Device* device);
-typedef NVSDK_NGX_Result (NGX_MSABI* PFN_NVSDK_NGX_D3D12_Shutdown)(void);
-typedef NVSDK_NGX_Result (NGX_MSABI* PFN_NVSDK_NGX_D3D12_GetCapabilityParameters)(NVSDK_NGX_Parameter** out);
-typedef NVSDK_NGX_Result (NGX_MSABI* PFN_NVSDK_NGX_D3D12_CreateFeature)(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Feature featureId, NVSDK_NGX_Parameter* params, NVSDK_NGX_Handle** out);
-typedef NVSDK_NGX_Result (NGX_MSABI* PFN_NVSDK_NGX_D3D12_ReleaseFeature)(NVSDK_NGX_Handle* handle);
-typedef NVSDK_NGX_Result (NGX_MSABI* PFN_NVSDK_NGX_D3D12_EvaluateFeature)(ID3D12GraphicsCommandList* cmd, const NVSDK_NGX_Handle* handle, const NVSDK_NGX_Parameter* params, void* callback);
+// A Vulkan image handed to NGX through Set(key, void*)
+typedef enum { NGX_RESOURCE_VK_IMAGEVIEW = 0, NGX_RESOURCE_VK_BUFFER = 1 } NGX_Resource_VK_Type;
+struct NGX_ImageViewInfo_VK {
+    VkImageView ImageView;
+    VkImage Image;
+    VkImageSubresourceRange SubresourceRange;
+    VkFormat Format;
+    unsigned int Width;
+    unsigned int Height;
+};
+struct NGX_BufferInfo_VK {
+    VkBuffer Buffer;
+    unsigned int SizeInBytes;
+};
+struct NGX_Resource_VK {
+    union {
+        NGX_ImageViewInfo_VK ImageViewInfo;
+        NGX_BufferInfo_VK BufferInfo;
+    } Resource;
+    NGX_Resource_VK_Type Type;
+    bool ReadWrite;
+};
 
-// Vulkan Entry Points
-typedef NVSDK_NGX_Result (NGX_MSABI* PFN_NVSDK_NGX_VULKAN_Init)(unsigned long long appId, const wchar_t* logDir, NrVkInstance instance, NrVkPhysicalDevice physDevice, NrVkDevice device);
-typedef NVSDK_NGX_Result (NGX_MSABI* PFN_NVSDK_NGX_VULKAN_Shutdown)(void);
-typedef NVSDK_NGX_Result (NGX_MSABI* PFN_NVSDK_NGX_VULKAN_GetCapabilityParameters)(NVSDK_NGX_Parameter** out);
-typedef NVSDK_NGX_Result (NGX_MSABI* PFN_NVSDK_NGX_VULKAN_CreateFeature1)(NrVkDevice device, NrVkCommandBuffer cmd, NVSDK_NGX_Feature featureId, NVSDK_NGX_Parameter* params, NVSDK_NGX_Handle** out);
-typedef NVSDK_NGX_Result (NGX_MSABI* PFN_NVSDK_NGX_VULKAN_ReleaseFeature)(NVSDK_NGX_Handle* handle);
-typedef NVSDK_NGX_Result (NGX_MSABI* PFN_NVSDK_NGX_VULKAN_EvaluateFeature)(NrVkCommandBuffer cmd, const NVSDK_NGX_Handle* handle, const NVSDK_NGX_Parameter* params, void* callback);
+// D3D12 entry points
+typedef NVSDK_NGX_Result (NGX_MSABI* PFN_NGX_D3D12_Init)(unsigned long long appId, const wchar_t* dataPath, ID3D12Device* device,
+                                                          const void* featureInfo, int sdkVersion);
+typedef NVSDK_NGX_Result (NGX_MSABI* PFN_NGX_D3D12_Shutdown1)(ID3D12Device* device);
+typedef NVSDK_NGX_Result (NGX_MSABI* PFN_NGX_AllocateParameters)(NVSDK_NGX_Parameter** out);
+typedef NVSDK_NGX_Result (NGX_MSABI* PFN_NGX_DestroyParameters)(NVSDK_NGX_Parameter* p);
+typedef NVSDK_NGX_Result (NGX_MSABI* PFN_NGX_D3D12_CreateFeature)(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Feature feature,
+                                                                   NVSDK_NGX_Parameter* params, NVSDK_NGX_Handle** out);
+typedef NVSDK_NGX_Result (NGX_MSABI* PFN_NGX_ReleaseFeature)(NVSDK_NGX_Handle* handle);
+typedef NVSDK_NGX_Result (NGX_MSABI* PFN_NGX_D3D12_EvaluateFeature)(ID3D12GraphicsCommandList* cmd, const NVSDK_NGX_Handle* handle,
+                                                                     NVSDK_NGX_Parameter* params, void* callback);
+// Vulkan entry points
+typedef NVSDK_NGX_Result (NGX_MSABI* PFN_NGX_VULKAN_RequiredExtensions)(unsigned int* instCount, const char*** inst,
+                                                                         unsigned int* devCount, const char*** dev);
+typedef NVSDK_NGX_Result (NGX_MSABI* PFN_NGX_VULKAN_Init)(unsigned long long appId, const wchar_t* dataPath, VkInstance instance,
+                                                           VkPhysicalDevice pd, VkDevice device, PFN_vkGetInstanceProcAddr gipa,
+                                                           PFN_vkGetDeviceProcAddr gdpa, const void* featureInfo, int sdkVersion);
+typedef NVSDK_NGX_Result (NGX_MSABI* PFN_NGX_VULKAN_Shutdown1)(VkDevice device);
+typedef NVSDK_NGX_Result (NGX_MSABI* PFN_NGX_VULKAN_CreateFeature1)(VkDevice device, VkCommandBuffer cmd, NVSDK_NGX_Feature feature,
+                                                                     NVSDK_NGX_Parameter* params, NVSDK_NGX_Handle** out);
+typedef NVSDK_NGX_Result (NGX_MSABI* PFN_NGX_VULKAN_EvaluateFeature)(VkCommandBuffer cmd, const NVSDK_NGX_Handle* handle,
+                                                                      NVSDK_NGX_Parameter* params, void* callback);

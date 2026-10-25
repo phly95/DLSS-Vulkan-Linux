@@ -102,7 +102,9 @@ def main():
 
     if a.seed is not None:
         rng = random.Random(a.seed)
-        reset_frame = a.reset_frame if a.reset_frame is not None else rng.randint(4, min(8, max(4, a.frames - 1)))
+        if a.reset_frame is None and a.frames < 9:
+            sys.exit("a seeded sequence needs >= 9 frames (its reset frame is drawn from 4..8)")
+        reset_frame = a.reset_frame if a.reset_frame is not None else rng.randint(4, 8)   # inclusive
         cx0 = rng.uniform(-10.5, -9.0)
         cvx = rng.uniform(0.06, 0.12)
         cy0 = rng.uniform(-0.4, 0.4)

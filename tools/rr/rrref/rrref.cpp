@@ -4,14 +4,18 @@
 // buffer at the same index, and the frame (FUN_180127f10, FUN_180133980) fills every argument block
 // byte for byte from it.
 //
-//   rrref <rr.gfx1201.co> <packed dir (rr_pack.py)> <frames dir> <out dir> [--dump]
+//   rrref <rr.gfx1201.co> <packed dir (rr_pack.py)> <frames dir> <out dir> [--dump DIR [--dump-frames a,b]]
 //
-// <frames dir>/frame.json: {"render":[W,H],"output":[oW,oH],"frames":N}; per frame i: col_i.f16
-// (RGBA16F), mv_i.f16 (RG16F, render pixels), dep_i.f32, nrm_i.f16 (RGBA16F, xyz signed), alb_i.f16
-// and spa_i.f16 (RGBA16F diffuse / specular albedo), rgh_i.f32 (roughness), params_i.json (jitter,
-// mv_scale, reset, depth_inverted, hw_depth). These go through NeuralHub's own k_rr_gather exactly as
-// the game's textures would (row pitch in bytes + its format code). Output: out_i.f32 (RGBA32F,
-// oW*oH*16 B).
+// <frames dir>/frame.json: {"render":[W,H],"output":[oW,oH],"frames":N}; per frame i: params_i.json
+// (jitter, mv_scale, reset, depth_inverted, hw_depth; optional normals_unorm (F+0x9a: xyz = 2v - 1)
+// and format codes fmt_col, fmt_mv, fmt_dep, fmt_nrm, fmt_alb, fmt_spa, fmt_rgh) and the game's
+// textures, tightly packed: colour col_i, motion vectors mv_i (render pixels), depth dep_i, normals
+// nrm_i, diffuse / specular albedo alb_i / spa_i, roughness rgh_i. With the default code a file is
+// <name>_i.f16 (RGBA16F: col, nrm, alb, spa; RG16F: mv) or <name>_i.f32 (R32F: dep, rgh); with another
+// code it is <name>_i.c<code> (texel sizes: tools/verify/texfmt.py, RR_BPP). A missing or wrongly sized
+// file is an error. They go through NeuralHub's own k_rr_gather exactly as the game's textures would
+// (row pitch in bytes + its format code). Output: out_i.f32 (RGBA32F, oW*oH*16 B) and a line
+// "GPU_FRAME_MS <i> <ms>" per frame; --dump writes every launch's outputs (tools/verify/oracle_dump.hpp).
 #include <hip/hip_runtime.h>
 
 #include <cmath>
@@ -23,6 +27,10 @@
 #include <map>
 #include <string>
 #include <vector>
+
+#include "../../verify/oracle_dump.hpp"
+
+static OracleDump g_dump;
 
 #define CK(x) do { hipError_t e_ = (x); if (e_ != hipSuccess) { \
     std::fprintf(stderr, "%s:%d %s: %s\n", __FILE__, __LINE__, #x, hipGetErrorString(e_)); std::exit(1); } } while (0)
@@ -80,6 +88,7 @@ struct Mod {
         size_t sz = a.b.size();
         void* cfg[] = {HIP_LAUNCH_PARAM_BUFFER_POINTER, a.b.data(), HIP_LAUNCH_PARAM_BUFFER_SIZE, &sz, HIP_LAUNCH_PARAM_END};
         CK(hipModuleLaunchKernel(get(sym), g.x, g.y, g.z, b.x, b.y, b.z, 0, nullptr, nullptr, cfg));
+        g_dump.after_launch(sym, g, b, a.b);
         if (std::getenv("RRREF_SYNC")) {
             hipError_t e = hipDeviceSynchronize();
             if (e != hipSuccess) { std::fprintf(stderr, "%s: %s\n", sym, hipGetErrorString(e)); std::exit(1); }
@@ -196,10 +205,19 @@ static void level(Mod& M, int p) {
 }
 
 int main(int argc, char** argv) {
-    if (argc < 5) { std::fprintf(stderr, "usage: rrref <rr.gfx1201.co> <packed dir> <frames dir> <out dir> [--dump]\n"); return 2; }
+    if (argc < 5) {
+        std::fprintf(stderr, "usage: rrref <rr.gfx1201.co> <packed dir> <frames dir> <out dir> [--dump DIR [--dump-frames a,b]]\n");
+        return 2;
+    }
     const std::string co = argv[1], wdir = argv[2], fdir = argv[3], odir = argv[4];
-    bool dump = false;
-    for (int i = 5; i < argc; ++i) if (std::string(argv[i]) == "--dump") dump = true;
+    std::string dump_dir, dump_frames;
+    for (int i = 5; i < argc; ++i) {
+        const std::string a = argv[i];
+        if (a == "--dump" && i + 1 < argc) dump_dir = argv[++i];
+        else if (a == "--dump-frames" && i + 1 < argc) dump_frames = argv[++i];
+        else { std::fprintf(stderr, "rrref: unknown argument %s\n", a.c_str()); return 2; }
+    }
+    if (!dump_dir.empty()) g_dump.configure(dump_dir, dump_frames);
     const std::string fj = slurps(fdir + "/frame.json");
     const auto rd = jget(fj, "render"), od = jget(fj, "output");
     const int nframes = int(jget(fj, "frames").at(0));
@@ -310,64 +328,49 @@ int main(int argc, char** argv) {
     }
 
     // ---- the game's inputs (19 slots, as NeuralHub's staging hands them to k_rr_gather) ----
-    struct In { void* d = nullptr; int pitch = 0, fmt = -1; size_t cap = 0; };
+    struct In { void* d = nullptr; int pitch = 0, fmt = -1; };
     In in[19];
-    auto ensure_alloc = [&](int slot, size_t bpp) {
-        size_t needed = R * bpp;
-        if (in[slot].cap < needed) {
-            if (in[slot].d) (void)hipFree(in[slot].d);
-            CK(hipMalloc(&in[slot].d, needed));
-            in[slot].cap = needed;
-        }
-    };
-    for (int i = 0; i < 19; ++i) ensure_alloc(i, 8);
+    // the inputs this harness supplies; every other slot stays null, so F's "present" flags are 0
+    struct Slot { int slot; const char* name; const char* key; int code0; const char* ext0; };
+    static const Slot slots[] = {{0, "col", "fmt_col", 0, "f16"}, {1, "mv", "fmt_mv", 2, "f16"}, {2, "dep", "fmt_dep", 3, "f32"},
+                                 {3, "nrm", "fmt_nrm", 0, "f16"}, {4, "alb", "fmt_alb", 0, "f16"}, {5, "spa", "fmt_spa", 0, "f16"},
+                                 {8, "rgh", "fmt_rgh", 3, "f32"}};
+    static const int rr_bpp[24] = {8, 4, 4, 4, 2, 4, 4, 4, 1, 2, 8, 16, 4, 4, 8, 8, 4, 4, 4, 4, 2, 2, 2, 1};   // texfmt.RR_BPP
+    for (const Slot& sl : slots) CK(hipMalloc(&in[sl.slot].d, R * 16));
+    if (g_dump.enabled()) {
+        for (auto& kv : g_size) { char nm[16]; std::snprintf(nm, sizeof nm, "E%04x", kv.first); g_dump.add(nm, P(kv.first), kv.second); }
+        for (const Slot& sl : slots) g_dump.add(std::string("in_") + sl.name, in[sl.slot].d, R * 16);
+        g_dump.add_handle("E0c06", Q(0xd08)); g_dump.add_handle("E0c0a", Q(0xd0a));
+        g_dump.write_index();
+    }
 
     std::vector<float> host(O * 4);
     hipEvent_t t0, t1; CK(hipEventCreate(&t0)); CK(hipEventCreate(&t1));
     for (int fr = 0; fr < nframes; ++fr) {
         const std::string s = std::to_string(fr);
         const std::string pjf = slurps(fdir + "/params_" + s + ".json");
+        for (const Slot& sl : slots) {
+            const auto c = jget(pjf, sl.key);
+            const int code = c.empty() ? sl.code0 : int(c[0]);
+            if (code < 0 || code > 23) { std::fprintf(stderr, "params_%s.json: %s %d is not a format code\n", s.c_str(), sl.key, code); return 1; }
+            const std::string path = fdir + "/" + sl.name + "_" + s + (code == sl.code0 ? std::string(".") + sl.ext0 : ".c" + std::to_string(code));
+            auto v = slurp(path);
+            if (v.size() != R * rr_bpp[code]) {
+                std::fprintf(stderr, "%s: %zu bytes, expected %zu\n", path.c_str(), v.size(), R * rr_bpp[code]);
+                return 1;
+            }
+            CK(hipMemcpy(in[sl.slot].d, v.data(), v.size(), hipMemcpyHostToDevice));
+            in[sl.slot].pitch = W * rr_bpp[code];
+            in[sl.slot].fmt = code;
+        }
         const auto jit = jget(pjf, "jitter"), mvs = jget(pjf, "mv_scale");
         const bool reset = jget(pjf, "reset").at(0) != 0;
         const bool inverted = jget(pjf, "depth_inverted").at(0) != 0;
         const auto hwv = jget(pjf, "hw_depth");
         const bool hw = hwv.empty() ? true : hwv[0] != 0;
-        const int fmt_col = int(jget(pjf, "fmt_col").empty() ? 0 : jget(pjf, "fmt_col")[0]);
-        const int fmt_mv  = int(jget(pjf, "fmt_mv").empty() ? 2 : jget(pjf, "fmt_mv")[0]);
-        const int fmt_dep = int(jget(pjf, "fmt_dep").empty() ? 3 : jget(pjf, "fmt_dep")[0]);
-        const int fmt_nrm = int(jget(pjf, "fmt_nrm").empty() ? 0 : jget(pjf, "fmt_nrm")[0]);
-        const int fmt_alb = int(jget(pjf, "fmt_alb").empty() ? 0 : jget(pjf, "fmt_alb")[0]);
-
-        auto upload_file = [&](int slot, const std::string& name, const std::string& ext, size_t bpp, int fmt) {
-            in[slot].fmt = fmt;
-            in[slot].pitch = int(W * bpp);
-            ensure_alloc(slot, bpp);
-            std::string path = fdir + "/" + name + "_" + s + ext;
-            std::ifstream tf(path);
-            if (tf) {
-                auto v = slurp(path);
-                CK(hipMemcpy(in[slot].d, v.data(), v.size(), hipMemcpyHostToDevice));
-            }
-        };
-
-        if (fmt_col == 5) upload_file(0, "col", ".u8", 4, 5);
-        else upload_file(0, "col", ".f16", 8, 0);
-
-        if (fmt_mv == 18) upload_file(1, "mv", ".u32", 4, 18);
-        else upload_file(1, "mv", ".f16", 4, 2);
-
-        if (fmt_dep == 16) upload_file(2, "dep", ".u32", 4, 16);
-        else if (fmt_dep == 9) upload_file(2, "dep", ".u16", 2, 9);
-        else upload_file(2, "dep", ".f32", 4, 3);
-
-        if (fmt_nrm == 14) upload_file(3, "nrm", ".u16", 8, 14);
-        else upload_file(3, "nrm", ".f16", 8, 0);
-
-        if (fmt_alb == 5) upload_file(4, "alb", ".u8", 4, 5);
-        else upload_file(4, "alb", ".f16", 8, 0);
-
-        upload_file(5, "spa", ".f16", 8, 0);
-        upload_file(8, "rgh", ".f32", 4, 3);
+        const auto nuv = jget(pjf, "normals_unorm");
+        const bool nrm_unorm = !nuv.empty() && nuv[0] != 0;
+        g_dump.begin_frame(fr);
 
         // ---- k_rr_gather (FUN_180120200): GatherArgs, 0x1e8 bytes ----
         CK(hipEventRecord(t0, nullptr));
@@ -394,7 +397,7 @@ int main(int argc, char** argv) {
         F.put<uint8_t>(0x16, inverted);
         F.put<uint8_t>(0x98, in[3].fmt != 0);
         F.put<uint8_t>(0x99, hw);
-        F.put<uint8_t>(0x9a, 0);                                     // normals are not UNORM
+        F.put<uint8_t>(0x9a, nrm_unorm);                             // job +0x58: UNORM normals (xyz = 2v - 1)
         F.put<uint8_t>(0x9b, in[8].d != nullptr);
         F.put<uint8_t>(0x9c, in[9].d != nullptr);
         F.put<uint8_t>(0x9d, in[10].d != nullptr);
@@ -520,22 +523,16 @@ int main(int argc, char** argv) {
         E[0x1a] = 0;
         CK(hipEventRecord(t1, nullptr));
         CK(hipDeviceSynchronize());
+        g_dump.end_frame();
         float ms = 0; CK(hipEventElapsedTime(&ms, t0, t1));
         CK(hipMemcpy(host.data(), P(0xcfe), O * 16, hipMemcpyDeviceToHost));
         spit(odir + "/out_" + s + ".f32", host.data(), O * 16);
         float ex[4]; CK(hipMemcpy(ex, P(0xc22), 16, hipMemcpyDeviceToHost));
         double sum = 0; int nan = 0;
         for (size_t i = 0; i < O * 4; ++i) { if (std::isfinite(host[i])) sum += host[i]; else ++nan; }
-        std::printf("frame %d: %.2f ms GPU, mean %.5f, non-finite %d, exposure (%g %g %g %g)\n", fr, ms, sum / double(O * 4), nan, ex[0], ex[1], ex[2], ex[3]);
+        std::printf("frame %d: %.2f ms GPU, mean %.5f, non-finite %d, exposure (%g %g %g %g)\nGPU_FRAME_MS %d %.4f\n", fr, ms,
+                    sum / double(O * 4), nan, ex[0], ex[1], ex[2], ex[3], fr, ms);
         std::fflush(stdout);
-    }
-    if (dump) {
-        for (auto& kv : g_size) {
-            std::vector<uint8_t> v(kv.second);
-            CK(hipMemcpy(v.data(), P(kv.first), kv.second, hipMemcpyDeviceToHost));
-            char nm[64]; std::snprintf(nm, sizeof nm, "/E%04x.bin", kv.first);
-            spit(odir + nm, v.data(), v.size());
-        }
     }
     return 0;
 }

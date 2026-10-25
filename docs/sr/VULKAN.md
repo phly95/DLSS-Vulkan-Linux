@@ -1,97 +1,81 @@
-# DLSS-SR in Vulkan Compute (RDNA4 GFX1201)
+# SR in Vulkan: kernel RE notes and port status
 
-Implementation of NeuralHub v0.8.0 DLSS Super Resolution compute shaders in Vulkan for AMD RDNA4 (RX 9070 XT), running natively via RADV with zero spills.
+Status (2026-10-25): **no shader yet.** `k_sr_stage<64,2,0,96,2,false>` is being read from its ISA
+(`tools/re/fn.sh sr <symbol>`, `tools/re/slice.py`); what is established is below, what is not is listed
+as open. Accuracy of every kernel: **pending oracle dump** (`tools/gpu/collect_oracle.sh` on the card,
+then `tools/verify/diffdump.py`). Nothing here has been compiled, run or compared.
 
-## Kernel Implementation & Verification Progress
+## k_sr_stage<64,2,0,96,2,false> (encoder stage)
 
-| Kernel | Shaders / Pipelines | Precision | Wave Size | Spills (SGPR / VGPR) | Scratch | Max Diff vs Oracle | Status |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `k_sr_stage` (encoder st 0) | `sr_stage.comp` (`sr_stage.spv`) | FP8 / FP16 / FP32 | Wave32 (64 thd WG) | 0 / 0 | 0 bytes | verified | PASS |
-| `k_sr_tube_split` (bottleneck st 2..7) | `sr_tube.comp` (`sr_tube.spv`) | FP8 / FP16 | Wave32 (64 thd WG) | 0 / 0 | 0 bytes | verified | PASS |
-| `k_sr_enc0` | `sr_enc0.comp` (`sr_enc0.spv`) | FP16 / FP8 | Wave32 (32 thd WG) | 0 / 0 | 0 bytes | verified | PASS |
-| `k_sr_dec0` | `sr_dec0.comp` (`sr_dec0.spv`) | FP16 / FP8 | Wave32 (32 thd WG) | 0 / 0 | 0 bytes | verified | PASS |
-| `k_sr_post` | `sr_post.comp` (`sr_post.spv`) | FP16 / FP32 | Wave32 (256 thd WG) | 0 / 0 | 0 bytes | verified | PASS |
-| `k_sr_downsample` | `sr_downsample.comp` (`sr_downsample.spv`) | FP16 / FP32 | Wave32 (256 thd WG) | 0 / 0 | 0 bytes | verified | PASS |
-| `k_sr_gather` | `sr_gather.comp` (`sr_gather.spv`) | FP16 / FP32 | Wave32 (256 thd WG) | 0 / 0 | 0 bytes | verified | PASS |
-| `k_sr_exposure` | `sr_exposure.comp` (`sr_exposure.spv`) | FP16 / FP32 | Wave32 (64 thd WG) | 0 / 0 | 0 bytes | verified | PASS |
+Code object statistics (from the code object's metadata): kernarg 56 B, 64 threads (2 waves of 32),
+4096 B LDS, 176 VGPRs, 0 scratch. Instruction counts in the ISA: 152 `v_wmma_f32_16x16x16_fp8_fp8`,
+8 `v_wmma_f32_16x16x16_f16`, 180 fp8 conversions, 2 `s_barrier`.
 
-## `k_sr_stage` Details (st 0: `k_sr_stage<64, 2, 0, 96, 2, false>`)
-- Grid: `((L1w + shift_x + 7) >> 3, (L1h + shift_y + 7) >> 3)` workgroups of 64 threads.
-- Coverage: 8x8 pixel tile with mirror-padding.
-- RMSNorm 1: f16 sum of squares + $2^{-14}$ epsilon, rsqrt scaling by $s1b0$.
-- First projection $w210$ ($64 \times 128$) with group spatial/channel mixing via $v258$ polynomial.
-- Second projection $w1f0$ ($128 \to 64$) + bias $v270$ + residual addition.
-- RMSNorm 2 scaling by $s198$.
-- FFWD MLP expansion $w180$ ($64 \to 256$) + bias $v228$ + non-linear polynomial activation.
-- FFWD MLP contraction $w1d0$ ($256 \to 64$) + bias $v240$ + residual addition.
-- Skip output $t1$ store to `[C/32][H][W][32]` planar-blocked memory.
-- Down-projection $w168$ ($64 \to 96$) + bias $v210$ stride-2 downsampled store to $t2$.
-- Measured RADV GFX1201 ACO stats:
-  - SGPRs: 108
-  - VGPRs: 216
-  - Spilled SGPRs: 0
-  - Spilled VGPRs: 0
-  - Scratch size: 0 bytes
+### Arguments (`StageArgs`)
 
-## `k_sr_tube_split` Details (stages 2..7: `k_sr_tube_split<128, 4, false>`)
-- Grid: `((L3w + shift_x + 3) >> 2, (L3h + shift_y + 3) >> 2)` workgroups of 64 threads.
-- Coverage: 4x4 pixel tile (16 pixels x 128 channels).
-- 4 threads per pixel, each processing 32 channels.
-- RMSNorm 1: f16 sum of squares across 128 channels via subgroup shuffle reduction + $2^{-14}$ epsilon.
-- Group projections $w210$ ($4 \times (64 \times 128)$) with non-linear polynomial mixing.
-- Group projections $w1f0$ ($4 \times (128 \times 32)$) + bias $v270$ + residual addition.
-- RMSNorm 2 scaling by $s198$.
-- FFWD MLP expansion $w180$ ($128 \to 512$) + bias $v228$ + polynomial activation.
-- FFWD MLP contraction $w1d0$ ($512 \to 128$) + bias $v240$ + residual addition.
-- Output store to ping-pong bottleneck tensors $t5$ / $t6$.
-- Measured RADV GFX1201 ACO stats:
-  - SGPRs: 108
-  - VGPRs: 120 (well below 256 limit)
-  - Spilled SGPRs: 0
-  - Spilled VGPRs: 0
-  - Scratch size: 0 bytes
+| offset | ISA register | meaning |
+| --- | --- | --- |
+| 0x00 | s[12:13] | packed stage weights (`sr_pack.py` `stageN.bin`) |
+| 0x08 | s[14:15] | input activations |
+| 0x18 | s[4:5] | output activations |
+| 0x20 | s[6:7] | second output (projection to the next stage's width, Cnext = 96) |
+| 0x28 | s8, s9 | W, H |
+| 0x30 | s10, s11 | tile shift x, y |
 
-## `k_sr_enc0` Details
-- Grid: `(W0/8, H0/8)` workgroups of 32 threads.
-- Computes 128 input features across 2x2 render pixels (color, depth, motion vectors, dither table).
-- Linear projection by matrix $w_{200}$ ($64 \times 128$ fp8) + bias $v_{210}$ to produce $t_0$ ($C=64$ at level 1).
-- Stored in planar-blocked `[C/32][H][W][32]` layout.
-- Measured RADV GFX1201 stats: 108 SGPRs, 72 VGPRs, 0 spills, 0 scratch bytes.
+### Threads, tile, borders
 
-## `k_sr_dec0` Details
-- Grid: `(W0/8, H0/8)` workgroups of 32 threads.
-- Linear projection of $t_8$ ($C=64$) by matrix $w_{f40}$ ($128 \times 64$ fp8) + bias $v_{f50}$ ($128$ f16).
-- Decodes `gates` (RGBA8), `factors` (RGBA8), `aniso` (RGBA16F, scaled by $s_0$), and `hidden` state.
-- Measured RADV GFX1201 stats: 108 SGPRs, 96 VGPRs, 0 spills, 0 scratch bytes.
+- A workgroup covers an 8x8 pixel tile at (group*8 - shift). Lane mapping: x = lane & 3 (set A) and
+  x + 4 (set B); y = wave*4 + ((lane >> 2) & 3). Out-of-image pixels are mirror-padded (reflect-101:
+  `v_max_i32` with the negated coordinate, `v_min3` with dim - 1).
+- Activations are `[C/32][H][W][32]` fp8; per 32-channel group a lane loads 8 bytes at storage
+  position 8*(lane>>4 & 1) and again at +16.
+- Storage position p holds logical channel P(p): P(0..15) = 0,1,16,17,2,3,18,19,4,5,20,21,6,7,22,23;
+  P(16+i) = P(i) + 8 (the host's channel permutation, `docs/sr/HOST-RE.md`).
 
-## `k_sr_post` Details
-- Grid: `((W15+15)>>4, (H15+15)>>4)` workgroups of 256 threads.
-- Subpixel bicubic Catmull-Rom reconstruction of `g_col` with exact jitter alignment.
-- Reprojection and bilinear sampling of previous history `ihist[p]` guided by motion vectors.
-- Adaptive blending using network-predicted `gates`.
-- Writes full-resolution intermediate `full15` in 32-bit packed `R11G11B10_FLOAT` and updates ping-pong history `ihist[p^1]`.
-- Measured RADV GFX1201 stats: 108 SGPRs, 96 VGPRs, 0 spills, 0 scratch bytes.
+### RMSNorm 1 (rounding points in order)
 
-## `k_sr_downsample` Details
-- Grid: `((oW+15)>>4, (oH+15)>>4)` workgroups of 256 threads.
-- Bicubic sampling of `full15` from 1.5x history resolution to final target output resolution.
-- Exposure normalization: applies `1.0 / expo`.
-- Preserves alpha channel from input colour pass.
-- Outputs final anti-aliased RGBA32F frame buffer.
-- Measured RADV GFX1201 stats: 108 SGPRs, 96 VGPRs, 0 spills, 0 scratch bytes.
+1. q = x*x in f16 (`v_pk_mul_f16` on the f16-widened fp8 values).
+2. A fixed packed f16 add tree over the 16 pair-sums of a lane:
+   a=q0+q1 b=q2+q3 c=q4+q5 d=q6+q7 e=q8+q9 g=q10+q11 f=q12+q13 h=q14+q15;
+   s1=a+e, s3=c+f, s2=b+g, s4=d+h; s1+=s3; s2+=s4; s=s1+s2 (each an f16 rounding).
+3. s += the lane^16 partner's s (`ds_bpermute_b32`), then t = s.lo + s.hi (f16), then t += 0x0800 (f16 bits, 2^-14).
+4. rs = `g_sr_lut[t]` (u16 table indexed by the f16 bit pattern; the second table is at +0x20000 bytes).
+5. y = fp8(f16(x * f16(rs * gain))), gain = the f16 block at offset 0 of the stage weights (128 B, in
+   storage-position order).
 
-## `k_sr_gather` Details
-- Grid: `((W+15)>>4, (H+15)>>4)` workgroups of 256 threads.
-- Format conversion for game-supplied inputs:
-  - RGBA16F / RG16F / R32F (format code 0): bit-identical pass-through.
-  - R8G8B8A8_UNORM (format code 5): normalized colour conversion.
-  - D24_UNORM_S8_UINT (format code 16) and D16_UNORM (format code 9): hardware depth conversion.
-  - R16G16_UNORM (format code 18): motion vector normalization.
-  - High-res output motion vectors (`k_sr_gather_mv`): converts output-resolution MVs to `g_mvhi`.
-- Measured RADV GFX1201 stats: 108 SGPRs, 24 VGPRs, 0 spills, 0 scratch bytes.
+### GEMM 1 (64x64)
 
-## `k_sr_exposure` Details
-- Grid: 1 workgroup of 64 threads.
-- Computes fixed exposure or parallel log-luminance reduction for auto-exposure.
-- Measured RADV GFX1201 stats: 108 SGPRs, 96 VGPRs, 0 spills, 0 scratch bytes.
+- Weights: A operand, 256-byte fragments, lane l holds bytes l*8..l*8+7: lane l byte c =
+  Wpos[l%16][8*(l/16)+c], which is Mesa's GFX12 A-fragment layout, so a row-major `coopMatLoad` of the
+  position-ordered weight matrix gives the same registers.
+- Activations: B operand, built with `v_cvt_pk_fp8_f32` (n = pixel, k = position within a 16-chunk).
+- Fragment f: output block f//4 (0: group 0 positions 0-15, 1: group 0 16-31, 2: group 1 0-15, 3: group 1
+  16-31), input block f%4 in the same order. Weight fragment offsets 128, 384, 640, ...
+- K = 64 is two K=32 chains; their f32 accumulators are combined through f16 (`v_fma_mixlo/hi_f16`
+  with the per-stage scale in s11).
 
+### Seen but not yet decoded (open)
+
+- From ~0x1a20: a second normalisation: f16 mul by 0x2466, clamp to [0xb873, 0x3873], then
+  y*(0x3b6b - y*y) via `v_pk_fma_f16` and a second fma with 0x3d80, `<<5`, `+0x8000`, byte permutes into
+  fp8 positions, `ds_bpermute` reductions and a lookup in the second LUT. The function this computes
+  and where each rounding happens is **open**; it must be read exactly, not approximated (R5).
+  Lead (from reading 0x2440-0x2850, **not yet confirmed** across the whole block): the input h is a
+  GEMM 1 output (two K=32 chains added through f16); y = clamp(f16(h * 0x2466), 0xb873, 0x3873),
+  p = y*(0x3b6b - y*y) + 0x3d80 (two `v_pk_fma_f16`), so p stays in [1, 2) and q = (bits(p) << 5) + 0x8000
+  (16-bit) equals mantissa(p) << 5: reinterpreted as f16, q ~ exp2(32*(p - 1) - 15), a bit-built exp2 of a
+  soft-clamped logit. The q of a lane and its lane^16 partner are added (`ds_bpermute`, `v_pk_add_f16`),
+  summed further, and the sum indexes the second table of `g_sr_lut`, which is 1/h (`docs/sr/HOST-RE.md`):
+  a softmax denominator. Still open: over which elements the sum runs, the add order, and how 1/sum is
+  applied.
+- ~0x2d14-0x3420: the eight f16 WMMAs (a residual / diagonal term?) — **open**.
+- fp8 WMMAs with weight offsets 2176..17600: the 4C expansion and contraction — operand wiring **open**.
+- After the barrier at 0x5cfc: the Cnext = 96 projection, weights staged through LDS
+  (`ds_load_2addr_b64`), offsets from 47104 — **open**.
+- Output stores (`global_store_b64` near 0x57e4, 0x5c88, 0x6350): layout and which of out / out2 —
+  **open**.
+
+## Remaining kernels (HANDOFF order)
+
+`k_sr_tube_split<128,4,false>`, decoder stages, `k_sr_enc0`, `k_sr_dec0`, `k_sr_post`,
+`k_sr_downsample`, exposure, then preset L's `k_sr_enc0L_in`, `k_sr_l0`: not started.

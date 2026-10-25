@@ -13,8 +13,14 @@ RX 9070 XT under ROCm.
     podman run --rm --device /dev/kfd --device /dev/dri --group-add keep-groups --security-opt label=disable \
         -v $PWD:/w docker.io/rocm/dev-ubuntu-24.04:7.2.4 bash -c 'cd /w && \
         hipcc -O2 -std=c++17 tools/rr/rrref/rrref.cpp -o build/rr/rrref && \
-        build/rr/rrref build/nh/rr.gfx1201.co build/rr/packed build/rr/frames build/rr/out [--dump]'
+        build/rr/rrref build/nh/rr.gfx1201.co build/rr/packed build/rr/frames build/rr/out [--dump DIR [--dump-frames a,b]]'
     build/venv/bin/python -I tools/rr/eval_rr.py picture.png build/rr/frames build/rr/out
+
+The frames directory format (format codes, `normals_unorm`) is `tools/verify/README.md`'s; a missing or
+wrongly sized input is an error, and only the inputs it supplies are non-null (so F's "present" flags
+for the specular MV, DoF guide, masks and per-pixel jitter stay 0). `--dump` writes every launch's
+changed buffers by engine index (`E0c06` ...; `tools/verify/oracle_dump.hpp`); each frame prints
+`GPU_FRAME_MS <i> <ms>`.
 
 `rr_weights.py` needs `build/re/weights/dither.bin` from `tools/sr/sr_weights.py` (the same 4096-byte table
 is in both DLLs). `RRREF_SYNC=1` synchronises after every launch (finds a faulting kernel).
@@ -128,8 +134,16 @@ of enc0 and dec0_0 run (the gfx11 check `DAT_181a1b929` is false), with 32-threa
 | 0xc4 | MV format is not RG16F; 0xc5: per-pixel jitter present; 0xc6-0xc8: transparency layer / + opacity / + MVs |
 | 0xc9-0xcb | alpha upscaling / alpha input / alpha output |
 
-Inputs (slot: name, format codes NeuralHub accepts; codes from the DXGI table at 0x1801b58d0, e.g. 0 =
-RGBA16F, 2 = RG16F, 3 = R32F, 4 = R16F, 5 = RGBA8, 7 = RGB10A2, 10 = RG32F, 11 = RGBA32F): 0 colour,
+Format codes: the table at 0x1801b58d0 is indexed by DXGI format - 1 (`FUN_1800316e0`; -1 = refused):
+0 RGBA16F (DXGI 9, 10), 1 R11G11B10F (26), 2 RG16F (33, 34), 3 R32F (19-21 D32S8, 39-41 D32F / R32F),
+4 R16F (53, 54), 5 RGBA8 UNORM (27-29, sRGB included), 6 BGRA8 (87, 90, 91), 7 RGB10A2 (23, 24), 8 R8
+UNORM (60, 61), 9 R16 UNORM (55 D16, 56), 10 RG32F (15, 16), 11 RGBA32F (1, 2), 12 RGB9E5 (67), 13 RGBA8
+SNORM (31), 14 RGBA16 UNORM (11), 15 RGBA16 SNORM (13), 16 D24S8 (44-46), 17 BGRX8 (88, 92, 93), 18 RG16
+UNORM (35), 19 RG16 SNORM (37), 20 RG8 UNORM (49), 21 RG8 SNORM (51), 22 R16 SNORM (58), 23 R8 SNORM (63).
+k_rr_gather decodes each slot by code (its constants 255, 1023, 65535, 16777215 are UNORM scales).
+UNORM normals are a job flag (F+0x9a, job +0x58), not a code. Texel sizes: `tools/verify/texfmt.py`.
+
+Inputs (slot: name): 0 colour,
 1 motion vectors, 2 depth, 3 normals, 4 diffuse albedo, 5 specular albedo, 6 hit distance, 7 SSS guide,
 8 roughness (null when roughness is in normals.w), 9 specular MV, 10 DoF guide, 11 colour before
 transparency, 12 disocclusion mask, 13 responsivity mask, 14 transparency layer, 15 transparency opacity,
