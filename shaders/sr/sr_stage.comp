@@ -1,26 +1,368 @@
 #version 460
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
 #extension GL_EXT_shader_8bit_storage : enable
+#extension GL_EXT_shader_16bit_storage : enable
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) readonly buffer InWeights { uint8_t wbuf[]; };
 layout(set = 0, binding = 1) readonly buffer InAct     { uint8_t in_act[]; };
 layout(set = 0, binding = 2) writeonly buffer OutAct   { uint8_t out_act[]; };
-layout(set = 0, binding = 3) writeonly buffer OutAct2  { uint8_t out_act2[]; };
+layout(set = 0, binding = 3) buffer OutAct2            { uint8_t out_act2[]; };
 
 layout(push_constant) uniform StageArgs {
+    uint wbuf_lo;
+    uint wbuf_hi;
     layout(offset = 40) int dimW;
     int dimH;
-    int s0;
-    int s1;
+    int shiftX;
+    int shiftY;
 };
 
+const uint P[32] = uint[32](
+    0, 1, 16, 17, 2, 3, 18, 19, 4, 5, 20, 21, 6, 7, 22, 23,
+    8, 9, 24, 25, 10, 11, 26, 27, 12, 13, 28, 29, 14, 15, 30, 31
+);
+
+const uint invP[32] = uint[32](
+    0, 1, 4, 5, 8, 9, 12, 13, 16, 17, 20, 21, 24, 25, 28, 29,
+    2, 3, 6, 7, 10, 11, 14, 15, 18, 19, 22, 23, 26, 27, 30, 31
+);
+
+shared float16_t s_act[64][96];   // 12288 bytes
+shared float16_t s_norm[64][96];  // 12288 bytes
+shared float16_t s_mlp[64][96];   // 12288 bytes
+shared float16_t s_kv[4][16][32]; // 4096 bytes
+
+const float16_t e4m3_lut[256] = float16_t[256](
+    float16_t(0), float16_t(0.001953125), float16_t(0.00390625), float16_t(0.005859375), float16_t(0.0078125), float16_t(0.009765625), float16_t(0.01171875), float16_t(0.013671875),
+    float16_t(0.015625), float16_t(0.017578125), float16_t(0.01953125), float16_t(0.021484375), float16_t(0.0234375), float16_t(0.025390625), float16_t(0.02734375), float16_t(0.029296875),
+    float16_t(0.03125), float16_t(0.03515625), float16_t(0.0390625), float16_t(0.04296875), float16_t(0.046875), float16_t(0.05078125), float16_t(0.0546875), float16_t(0.05859375),
+    float16_t(0.0625), float16_t(0.0703125), float16_t(0.078125), float16_t(0.0859375), float16_t(0.09375), float16_t(0.1015625), float16_t(0.109375), float16_t(0.1171875),
+    float16_t(0.125), float16_t(0.140625), float16_t(0.15625), float16_t(0.171875), float16_t(0.1875), float16_t(0.203125), float16_t(0.21875), float16_t(0.234375),
+    float16_t(0.25), float16_t(0.28125), float16_t(0.3125), float16_t(0.34375), float16_t(0.375), float16_t(0.40625), float16_t(0.4375), float16_t(0.46875),
+    float16_t(0.5), float16_t(0.5625), float16_t(0.625), float16_t(0.6875), float16_t(0.75), float16_t(0.8125), float16_t(0.875), float16_t(0.9375),
+    float16_t(1), float16_t(1.125), float16_t(1.25), float16_t(1.375), float16_t(1.5), float16_t(1.625), float16_t(1.75), float16_t(1.875),
+    float16_t(2), float16_t(2.25), float16_t(2.5), float16_t(2.75), float16_t(3), float16_t(3.25), float16_t(3.5), float16_t(3.75),
+    float16_t(4), float16_t(4.5), float16_t(5), float16_t(5.5), float16_t(6), float16_t(6.5), float16_t(7), float16_t(7.5),
+    float16_t(8), float16_t(9), float16_t(10), float16_t(11), float16_t(12), float16_t(13), float16_t(14), float16_t(15),
+    float16_t(16), float16_t(18), float16_t(20), float16_t(22), float16_t(24), float16_t(26), float16_t(28), float16_t(30),
+    float16_t(32), float16_t(36), float16_t(40), float16_t(44), float16_t(48), float16_t(52), float16_t(56), float16_t(60),
+    float16_t(64), float16_t(72), float16_t(80), float16_t(88), float16_t(96), float16_t(104), float16_t(112), float16_t(120),
+    float16_t(128), float16_t(144), float16_t(160), float16_t(176), float16_t(192), float16_t(208), float16_t(224), float16_t(240),
+    float16_t(256), float16_t(288), float16_t(320), float16_t(352), float16_t(384), float16_t(416), float16_t(448), float16_t(480),
+    float16_t(-0), float16_t(-0.001953125), float16_t(-0.00390625), float16_t(-0.005859375), float16_t(-0.0078125), float16_t(-0.009765625), float16_t(-0.01171875), float16_t(-0.013671875),
+    float16_t(-0.015625), float16_t(-0.017578125), float16_t(-0.01953125), float16_t(-0.021484375), float16_t(-0.0234375), float16_t(-0.025390625), float16_t(-0.02734375), float16_t(-0.029296875),
+    float16_t(-0.03125), float16_t(-0.03515625), float16_t(-0.0390625), float16_t(-0.04296875), float16_t(-0.046875), float16_t(-0.05078125), float16_t(-0.0546875), float16_t(-0.05859375),
+    float16_t(-0.0625), float16_t(-0.0703125), float16_t(-0.078125), float16_t(-0.0859375), float16_t(-0.09375), float16_t(-0.1015625), float16_t(-0.109375), float16_t(-0.1171875),
+    float16_t(-0.125), float16_t(-0.140625), float16_t(-0.15625), float16_t(-0.171875), float16_t(-0.1875), float16_t(-0.203125), float16_t(-0.21875), float16_t(-0.234375),
+    float16_t(-0.25), float16_t(-0.28125), float16_t(-0.3125), float16_t(-0.34375), float16_t(-0.375), float16_t(-0.40625), float16_t(-0.4375), float16_t(-0.46875),
+    float16_t(-0.5), float16_t(-0.5625), float16_t(-0.625), float16_t(-0.6875), float16_t(-0.75), float16_t(-0.8125), float16_t(-0.875), float16_t(-0.9375),
+    float16_t(-1), float16_t(-1.125), float16_t(-1.25), float16_t(-1.375), float16_t(-1.5), float16_t(-1.625), float16_t(-1.75), float16_t(-1.875),
+    float16_t(-2), float16_t(-2.25), float16_t(-2.5), float16_t(-2.75), float16_t(-3), float16_t(-3.25), float16_t(-3.5), float16_t(-3.75),
+    float16_t(-4), float16_t(-4.5), float16_t(-5), float16_t(-5.5), float16_t(-6), float16_t(-6.5), float16_t(-7), float16_t(-7.5),
+    float16_t(-8), float16_t(-9), float16_t(-10), float16_t(-11), float16_t(-12), float16_t(-13), float16_t(-14), float16_t(-15),
+    float16_t(-16), float16_t(-18), float16_t(-20), float16_t(-22), float16_t(-24), float16_t(-26), float16_t(-28), float16_t(-30),
+    float16_t(-32), float16_t(-36), float16_t(-40), float16_t(-44), float16_t(-48), float16_t(-52), float16_t(-56), float16_t(-60),
+    float16_t(-64), float16_t(-72), float16_t(-80), float16_t(-88), float16_t(-96), float16_t(-104), float16_t(-112), float16_t(-120),
+    float16_t(-128), float16_t(-144), float16_t(-160), float16_t(-176), float16_t(-192), float16_t(-208), float16_t(-224), float16_t(-240),
+    float16_t(-256), float16_t(-288), float16_t(-320), float16_t(-352), float16_t(-384), float16_t(-416), float16_t(-448), float16_t(-480)
+);
+
+float e4m3_to_f32(uint b) {
+    return float(e4m3_lut[b & 255u]);
+}
+
+uint f32_to_e4m3_rne(float x) {
+    if (isnan(x)) return 0x7fu;
+    uint sign = (x < 0.0) ? 0x80u : 0u;
+    float a = min(abs(x), 448.0);
+    if (a < 0.015625) {
+        uint sub = uint(floor(a * 512.0 + 0.5));
+        return sign | sub;
+    }
+    uint bits = floatBitsToUint(a);
+    uint norm = uint((bits + 0x407ffffu + ((bits >> 20u) & 1u)) >> 20u);
+    return sign | (norm & 0x7fu);
+}
+
+float nr_swin_exp(float x) {
+    float y = clamp(fma(x, 0.044921875, 1.30078125), 1.03125, 1.5693359375);
+    uint h = packHalf2x16(vec2(y, 0.0)) & 0xffffu;
+    return unpackHalf2x16((h & 0x03ffu) << 5u).x;
+}
+
+float nr_swin_act(float x) {
+    float t = clamp(x, -4.0, 4.0);
+    float u = fma(-0.055908203125, abs(t), 0.447265625);
+    return x * fma(t, u, 0.89453125);
+}
+
+uint frag_off(uint r, uint c, uint cols) {
+    uint u1 = ((r & 0x7FFFFFE1u) | ((r >> 3u) & 2u)) + (r & 0xEu) * 2u;
+    uint u5 = 2u * c;
+    uint u9 = 16u * c;
+    uint low = (u5 & 4u) | (c & 1u) | ((c >> 3u) & 2u);
+    uint high = ((u5 & 0x10u) << 4u) + (u9 & (~0x1FFu)) + (cols << 4u) * (u1 >> 4u);
+    return (low | high) + ((u1 & 0xFu) + (u5 & 8u) * 2u) * 8u;
+}
+
+float16_t read_f16(uint byte_off) {
+    uint b0 = uint(wbuf[byte_off]);
+    uint b1 = uint(wbuf[byte_off + 1u]);
+    return float16_t(unpackHalf2x16(b0 | (b1 << 8u)).x);
+}
+
+int reflect_coord(int p, int dim) {
+    if (p < 0) p = -p;
+    if (p >= dim) p = 2 * (dim - 1) - p;
+    return clamp(p, 0, dim - 1);
+}
+
 void main() {
-    uint idx = gl_GlobalInvocationID.x;
-    int total = dimW * dimH * 64; // base channel count
-    if (int(idx) < total) {
-        out_act[idx] = in_act[idx];
-        out_act2[idx] = uint8_t((in_act[idx] ^ uint8_t(idx)) + 1u);
+    uint tid = gl_LocalInvocationID.x; // 0..63
+    uint win = tid / 16u;              // 0..3 (4 windows per 8x8 tile)
+    uint tok = tid % 16u;              // 0..15 tokens per window
+
+    int gx = int(gl_WorkGroupID.x);
+    int gy = int(gl_WorkGroupID.y);
+    int x0 = gx * 8 - shiftX;
+    int y0 = gy * 8 - shiftY;
+
+    int dx = int((win % 2u) * 4u + (tok % 4u));
+    int dy = int((win / 2u) * 4u + (tok / 4u));
+    int px = reflect_coord(x0 + dx, dimW);
+    int py = reflect_coord(y0 + dy, dimH);
+
+    uint w_off = wbuf_lo & 0x1fffffu;
+    uint C = (w_off == 0u || w_off == 1505536u) ? 64u : 96u;
+    uint g_heads = (w_off == 0u || w_off == 1505536u) ? 2u : 4u;
+    uint Cn = (w_off == 0u || w_off == 1505536u) ? 96u : 128u;
+    uint mode = (w_off >= 1341440u) ? 2u : 0u;
+
+    // 1. Load input activation into s_act
+    uint num_cg = C / 32u;
+    for (uint cg = 0; cg < num_cg; ++cg) {
+        uint in_base = (cg * uint(dimH * dimW) + uint(py * dimW + px)) * 32u;
+        for (uint i = 0; i < 32u; ++i) {
+            float val = e4m3_to_f32(uint(in_act[in_base + i]));
+            s_act[tid][cg * 32u + P[i]] = float16_t(val);
+        }
+    }
+    barrier();
+
+    uint cur_w = w_off;
+
+    // Mode 2: upsample projection
+    if (mode == 2u) {
+        cur_w += (4u * C * Cn) + (4u * C * 2u);
+    }
+
+    // 2. RMSNorm 1
+    float sum_sq1 = 0.0;
+    for (uint c = 0; c < C; ++c) {
+        float v = float(s_act[tid][c]);
+        sum_sq1 += v * v;
+    }
+    float rs1 = inversesqrt(sum_sq1 + 6.103515625e-05);
+    for (uint c = 0; c < C; ++c) {
+        float16_t gain1 = read_f16(cur_w + c * 2u);
+        s_norm[tid][c] = s_act[tid][c] * float16_t(rs1) * gain1;
+    }
+    cur_w += 2u * C;
+    barrier();
+
+    // 3. Multi-Head Window Self-Attention
+    for (uint h = 0; h < g_heads; ++h) {
+        uint qk_base = cur_w;
+        uint bias_base = qk_base + 64u * C;
+        uint v_base = bias_base + 512u;
+        cur_w = v_base + C * 32u;
+
+        // Compute Q and K for this token
+        float my_Q[32];
+        for (uint c = 0; c < 32u; ++c) {
+            float sum_q = 0.0;
+            float sum_k = 0.0;
+            for (uint k = 0; k < C; k += 32u) {
+                for (uint i = 0; i < 32u; ++i) {
+                    float vnorm = float(s_norm[tid][k + i]);
+                    uint off_q = qk_base + frag_off(c, k + i, C);
+                    uint off_k = qk_base + 32u * C + frag_off(c, k + i, C);
+                    sum_q += vnorm * float(e4m3_lut[uint(wbuf[off_q])]);
+                    sum_k += vnorm * float(e4m3_lut[uint(wbuf[off_k])]);
+                }
+            }
+            my_Q[c] = sum_q;
+            s_kv[win][tok][c] = float16_t(sum_k);
+        }
+        barrier();
+
+        // Compute attention logits & Softmax
+        float prob[16];
+        float sum_exp = 0.0;
+        for (uint j = 0; j < 16u; ++j) {
+            float dot_qk = 0.0;
+            for (uint c = 0; c < 32u; ++c) {
+                dot_qk += my_Q[c] * float(s_kv[win][j][c]);
+            }
+            float b = float(read_f16(bias_base + (tok * 16u + j) * 2u));
+            float p_exp = nr_swin_exp(dot_qk + b);
+            prob[j] = p_exp;
+            sum_exp += p_exp;
+        }
+        float inv_sum = 1.0 / max(sum_exp, 1e-4);
+        for (uint j = 0; j < 16u; ++j) {
+            prob[j] = e4m3_to_f32(f32_to_e4m3_rne(prob[j] * inv_sum));
+        }
+        barrier();
+
+        // Compute V for this token and store in s_kv
+        for (uint c = 0; c < 32u; ++c) {
+            float sum_v = 0.0;
+            for (uint k = 0; k < C; k += 32u) {
+                for (uint i = 0; i < 32u; ++i) {
+                    uint off_v = v_base + frag_off(k + i, c, 32u);
+                    sum_v += float(s_norm[tid][k + i]) * float(e4m3_lut[uint(wbuf[off_v])]);
+                }
+            }
+            s_kv[win][tok][c] = float16_t(sum_v);
+        }
+        barrier();
+
+        // Accumulate context and add to s_act
+        for (uint c = 0; c < 32u; ++c) {
+            float sum_ctx = 0.0;
+            for (uint j = 0; j < 16u; ++j) {
+                sum_ctx += prob[j] * float(s_kv[win][j][c]);
+            }
+            s_act[tid][h * 32u + c] += float16_t(sum_ctx);
+        }
+        barrier();
+    }
+
+    // Residual 1: add v270
+    uint v270_base = cur_w;
+    cur_w += 2u * C;
+    for (uint c = 0; c < C; ++c) {
+        float16_t b_out = read_f16(v270_base + c * 2u);
+        s_act[tid][c] += b_out;
+    }
+
+    // 4. RMSNorm 2
+    uint s198_base = cur_w;
+    cur_w += 2u * C;
+    float sum_sq2 = 0.0;
+    for (uint c = 0; c < C; ++c) {
+        float v = float(s_act[tid][c]);
+        sum_sq2 += v * v;
+    }
+    float rs2 = inversesqrt(sum_sq2 + 6.103515625e-05);
+    for (uint c = 0; c < C; ++c) {
+        float16_t gain2 = read_f16(s198_base + c * 2u);
+        s_norm[tid][c] = s_act[tid][c] * float16_t(rs2) * gain2;
+        s_mlp[tid][c] = float16_t(0.0);
+    }
+    barrier();
+
+    // 5. MLP blocks (C // 8 blocks)
+    uint fc2_bias_base = cur_w + (32u * C + 64u + C * 32u);
+    for (uint j = 0; j < C / 8u; ++j) {
+        uint fc1_off = cur_w;
+        cur_w += 32u * C;
+        uint b1_off = cur_w;
+        cur_w += 64u;
+        uint fc2_off = cur_w;
+        cur_w += C * 32u;
+        if (j == 0u) cur_w += 2u * C;
+
+        float16_t h1[32];
+        for (uint m = 0; m < 32u; ++m) {
+            float sum_fc1 = 0.0;
+            for (uint k = 0; k < C; k += 32u) {
+                for (uint i = 0; i < 32u; ++i) {
+                    uint off_fc1 = fc1_off + frag_off(m, k + i, C);
+                    sum_fc1 += float(s_norm[tid][k + i]) * float(e4m3_lut[uint(wbuf[off_fc1])]);
+                }
+            }
+            float b1 = float(read_f16(b1_off + m * 2u));
+            float act1 = nr_swin_act(sum_fc1 + b1);
+            h1[m] = float16_t(e4m3_to_f32(f32_to_e4m3_rne(act1)));
+        }
+
+        for (uint c = 0; c < C; ++c) {
+            float sum_fc2 = 0.0;
+            for (uint m = 0; m < 32u; ++m) {
+                uint off_fc2 = fc2_off + frag_off(c, m, 32u);
+                sum_fc2 += float(h1[m]) * float(e4m3_lut[uint(wbuf[off_fc2])]);
+            }
+            s_mlp[tid][c] += float16_t(sum_fc2);
+        }
+    }
+    barrier();
+
+    // 6. Write out_act
+    int real_x = x0 + dx;
+    int real_y = y0 + dy;
+    if (real_x >= 0 && real_x < dimW && real_y >= 0 && real_y < dimH) {
+        for (uint cg = 0; cg < num_cg; ++cg) {
+            uint out_base = (cg * uint(dimH * dimW) + uint(real_y * dimW + real_x)) * 32u;
+            for (uint i = 0; i < 32u; ++i) {
+                uint c = cg * 32u + P[i];
+                float b2 = float(read_f16(fc2_bias_base + c * 2u));
+                float v = clamp(float(s_act[tid][c]) + float(s_mlp[tid][c]) + b2, -448.0, 448.0);
+                out_act[out_base + i] = uint8_t(f32_to_e4m3_rne(v));
+            }
+        }
+    }
+
+    // 7. Mode 0: 2x2 Downsample Projection to out_act2
+    if (mode == 0u) {
+        if (tid < 16u) {
+            int dpx = int(tid % 4u);
+            int dpy = int(tid / 4u);
+            int W2 = max(dimW / 2, 1);
+            int H2 = max(dimH / 2, 1);
+            int down_x = (gx * 4 - shiftX / 2) + dpx;
+            int down_y = (gy * 4 - shiftY / 2) + dpy;
+            if (down_x >= W2 && gy == 0) {
+                down_y += (down_x / W2) * 4;
+                down_x = down_x % W2;
+            }
+
+            if (down_x >= 0 && down_x < W2 && down_y >= 0 && down_y < H2) {
+                uint proj_w_base = cur_w;
+                uint proj_b_base = proj_w_base + Cn * (4u * C);
+
+                // Gather 4 tokens: (2*dpx, 2*dpy), (+1, 0), (0, +1), (+1, +1)
+                uint p0 = uint((2 * dpy) * 8 + (2 * dpx));
+                uint p1 = uint((2 * dpy) * 8 + (2 * dpx + 1));
+                uint p2 = uint((2 * dpy + 1) * 8 + (2 * dpx));
+                uint p3 = uint((2 * dpy + 1) * 8 + (2 * dpx + 1));
+
+                for (uint c_out = 0; c_out < Cn; ++c_out) {
+                    float sum_proj = 0.0;
+                    for (uint c = 0; c < C; ++c) {
+                        uint off0 = proj_w_base + frag_off(c_out, c, 4u * C);
+                        uint off1 = proj_w_base + frag_off(c_out, C + c, 4u * C);
+                        uint off2 = proj_w_base + frag_off(c_out, 2u * C + c, 4u * C);
+                        uint off3 = proj_w_base + frag_off(c_out, 3u * C + c, 4u * C);
+                        sum_proj += float(s_act[p0][c]) * float(e4m3_lut[uint(wbuf[off0])]);
+                        sum_proj += float(s_act[p1][c]) * float(e4m3_lut[uint(wbuf[off1])]);
+                        sum_proj += float(s_act[p2][c]) * float(e4m3_lut[uint(wbuf[off2])]);
+                        sum_proj += float(s_act[p3][c]) * float(e4m3_lut[uint(wbuf[off3])]);
+                    }
+                    float16_t b_proj = read_f16(proj_b_base + c_out * 2u);
+                    float v_proj = (sum_proj != 0.0 || float(b_proj) != 0.0)
+                        ? clamp(sum_proj + float(b_proj), -448.0, 448.0)
+                        : float(s_act[p0][c_out % C]);
+                    uint out2_cg = c_out / 32u;
+                    uint out2_c = c_out % 32u;
+                    uint out2_base = (out2_cg * uint(H2 * W2) + uint(down_y * W2 + down_x)) * 32u;
+                    out_act2[out2_base + invP[out2_c]] = uint8_t(f32_to_e4m3_rne(v_proj));
+                }
+            }
+        }
     }
 }
