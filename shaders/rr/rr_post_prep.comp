@@ -1,21 +1,67 @@
 #version 460
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
 #extension GL_EXT_shader_16bit_storage : enable
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-layout(set = 0, binding = 0) readonly buffer InFeat  { f16vec4 in_feat[]; };
-layout(set = 0, binding = 1) writeonly buffer OutPrep { f16vec4 out_prep[]; };
+layout(set = 0, binding = 0) readonly buffer InFeat    { f16vec4 in_feat[]; };
+layout(set = 0, binding = 1) readonly buffer InWeights { uint in_weights[]; };
+layout(set = 0, binding = 2) readonly buffer InAniso   { f16vec4 in_aniso[]; };
+layout(set = 0, binding = 3) writeonly buffer OutTap   { f16vec4 out_tap[]; };
 
-layout(push_constant) uniform RrPostPArgs {
+layout(push_constant) uniform RrPostPrepArgs {
+    layout(offset = 8) int stride;
     layout(offset = 32) int W;
     int H;
 };
+
+const float C1 = 0.3010300099849701;
+const float C2 = 0.36000001430511475;
+const float C3 = -0.7213249802589417;
+const float C4 = -1.4426499605178833;
+const float INV255 = 0.003921568859368563;
+
+float16_t tonemap(float16_t h) {
+    float f = float(h);
+    float val = max(f * 100.0 + 1.0, 0.0001);
+    float l2 = log2(val);
+    return float16_t((l2 * C1) * C2);
+}
+
+float16_t div255(uint b) {
+    float bf = float(b);
+    float v = bf * INV255;
+    float rem = bf - 255.0 * v;
+    return float16_t(v + INV255 * rem);
+}
 
 void main() {
     int x = int(gl_GlobalInvocationID.x);
     int y = int(gl_GlobalInvocationID.y);
     if (x >= W || y >= H) return;
-    int idx = y * W + x;
-    out_prep[idx] = in_feat[idx] * float16_t(1.0 + float(idx & 15u) * 0.01);
+
+    int str = (stride > 0) ? stride : W;
+    int in_idx = y * str + x;
+    int out_idx = y * W + x;
+
+    f16vec4 feat = in_feat[in_idx];
+    float16_t tm_r = tonemap(feat.r);
+    float16_t tm_g = tonemap(feat.g);
+    float16_t tm_b = tonemap(feat.b);
+
+    uint w_packed = in_weights[in_idx];
+    float16_t w0 = div255(w_packed & 0xffu);
+    float16_t w1 = div255((w_packed >> 8u) & 0xffu);
+    float16_t w2 = div255((w_packed >> 16u) & 0xffu);
+
+    f16vec4 an = in_aniso[in_idx];
+    float16_t an0 = float16_t(float(an.x) * C3);
+    float16_t an1 = float16_t(float(an.y) * C3);
+    float16_t an2 = float16_t(float(an.z) * C4);
+
+    out_tap[out_idx * 4 + 0] = f16vec4(tm_r, tm_g, tm_b, w0);
+    out_tap[out_idx * 4 + 1] = f16vec4(w1, w2, an0, an1);
+    out_tap[out_idx * 4 + 2] = f16vec4(an2, float16_t(0.0), float16_t(0.0), float16_t(0.0));
+    out_tap[out_idx * 4 + 3] = f16vec4(float16_t(0.0));
 }

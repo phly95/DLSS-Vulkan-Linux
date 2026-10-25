@@ -342,15 +342,22 @@ def make_test(name, out_dir):
         }
     elif name == "rr_post_prep":
         col = np.linspace(0.1, 1.0, n_pix * 4, dtype=np.float16).tobytes()
+        weights = np.full(n_pix, 0x80808080, dtype=np.uint32).tobytes()
+        aniso = np.zeros(n_pix * 4, dtype=np.float16).tobytes()
         open(os.path.join(out_dir, "in_feat.bin"), "wb").write(col)
+        open(os.path.join(out_dir, "in_weights.bin"), "wb").write(weights)
+        open(os.path.join(out_dir, "in_aniso.bin"), "wb").write(aniso)
         push = bytearray(40)
+        struct.pack_into("<i", push, 8, w)
         struct.pack_into("<2i", push, 32, w, h)
         cfg = {
             "groups": [(w + 15) // 16, (h + 15) // 16, 1],
             "push": push.hex(),
             "bindings": [
                 {"binding": 0, "file": "in_feat.bin"},
-                {"binding": 1, "bytes": n_pix * 8, "output": "out_prep", "type": "f16"}
+                {"binding": 1, "file": "in_weights.bin"},
+                {"binding": 2, "file": "in_aniso.bin"},
+                {"binding": 3, "bytes": n_pix * 32, "output": "out_prep", "type": "f16"}
             ]
         }
     elif name == "rr_post":

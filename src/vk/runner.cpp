@@ -312,7 +312,7 @@ int main(int argc, char** argv) {
         add_pipe("rr_ae_final", 2, 0);
         add_pipe("rr_enc0_feat", 2, 16);
         add_pipe("rr_level", 3, 16);
-        add_pipe("rr_post_prep", 2, 40);
+        add_pipe("rr_post_prep", 4, 40);
         add_pipe("rr_post", 2, 120);
         add_pipe("rr_downsample", 4, 48);
         add_pipe("rr_pooled2", 2, 32);
@@ -369,6 +369,7 @@ int main(int argc, char** argv) {
     Buffer aniso = create_buffer(dev, picked_phys, size_t(W) * H * 8, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer dhist = create_buffer(dev, picked_phys, size_t(hW15) * hH15 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer full15 = create_buffer(dev, picked_phys, size_t(W15) * H15 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    Buffer cf2 = create_buffer(dev, picked_phys, size_t(W) * H * 32, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer cf6 = create_buffer(dev, picked_phys, size_t(W15) * H15 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer cfa = create_buffer(dev, picked_phys, size_t(W15) * H15 * 2, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer ihist[2] = {
@@ -622,8 +623,9 @@ int main(int argc, char** argv) {
             // 5. Post prep
             {
                 uint8_t push[40] = {0};
+                std::memcpy(push + 8, &W, 4);
                 std::memcpy(push + 32, &W, 4); std::memcpy(push + 36, &H, 4);
-                dispatch("rr_post_prep", {&g_col, &g_mv}, push, 40, (W + 15) / 16, (H + 15) / 16, 1);
+                dispatch("rr_post_prep", {&t_act[0], &gates, &aniso, &cf2}, push, 40, (W + 15) / 16, (H + 15) / 16, 1);
             }
             // 6. Post
             {
@@ -693,6 +695,7 @@ int main(int argc, char** argv) {
     destroy_buffer(dev, aniso);
     destroy_buffer(dev, dhist);
     destroy_buffer(dev, full15);
+    destroy_buffer(dev, cf2);
     destroy_buffer(dev, ihist[0]);
     destroy_buffer(dev, ihist[1]);
     for (int i = 0; i < 9; ++i) destroy_buffer(dev, t_act[i]);
