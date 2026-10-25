@@ -31,6 +31,8 @@ layout(push_constant) uniform Enc0Args {
     layout(offset = 136) int parity;
     float jitX;
     float jitY;
+    layout(offset = 216) uint reset;
+    uint fc;
 };
 
 uint f32_to_e4m3_rne(float x) {

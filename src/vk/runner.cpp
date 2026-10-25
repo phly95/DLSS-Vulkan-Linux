@@ -308,10 +308,10 @@ int main(int argc, char** argv) {
         add_pipe("sr_ae_luma", 2, 48);
         add_pipe("sr_ae_reduce", 2, 32);
         add_pipe("sr_ae_copy", 2, 24);
-        add_pipe("sr_enc0", 11, 148);
+        add_pipe("sr_enc0", 11, 240);
         add_pipe("sr_stage", 4, 56);
         add_pipe("sr_tube_split", 3, 56);
-        add_pipe("sr_dec0", 8, 96);
+        add_pipe("sr_dec0", 8, 160);
         add_pipe("sr_post", 12, 220);
         add_pipe("sr_downsample", 4, 88);
         add_pipe("sr_unorm8_table", 1, 0);
@@ -417,6 +417,40 @@ int main(int argc, char** argv) {
     Buffer out = create_buffer(dev, picked_phys, size_t(oW) * oH * 16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer wbuf = create_buffer(dev, picked_phys, 16 * 1024 * 1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
+    float dec0_s0 = 8.0f, dec0_f0 = 0.078633f, dec0_f1 = 0.0f;
+    if (!wdir.empty()) {
+        if (mode == "sr") {
+            std::vector<std::vector<uint8_t>> blob;
+            for (int i = 0; i < 10; ++i) blob.push_back(slurp(wdir + "/stage" + std::to_string(i) + ".bin"));
+            blob.push_back(slurp(wdir + "/enc0.bin"));
+            blob.push_back(slurp(wdir + "/dec0.bin"));
+            std::vector<size_t> woff;
+            size_t tot = 0;
+            for (auto& b : blob) { woff.push_back(tot); tot += (b.size() + 255) & ~size_t(255); }
+            for (size_t i = 0; i < blob.size(); ++i) {
+                if (!blob[i].empty() && woff[i] + blob[i].size() <= wbuf.size) {
+                    std::memcpy(static_cast<uint8_t*>(wbuf.mapped) + woff[i], blob[i].data(), blob[i].size());
+                }
+            }
+            auto pj_raw = slurp(wdir + "/params.json");
+            if (!pj_raw.empty()) {
+                std::string pj(pj_raw.begin(), pj_raw.end());
+                auto s0_vec = jget(pj, "dec0_s0"); if (!s0_vec.empty()) dec0_s0 = float(s0_vec[0]);
+                auto f0_vec = jget(pj, "dec0_f0"); if (!f0_vec.empty()) dec0_f0 = float(f0_vec[0]);
+                auto f1_vec = jget(pj, "dec0_f1"); if (!f1_vec.empty()) dec0_f1 = float(f1_vec[0]);
+            }
+        } else {
+            size_t offset = 0;
+            for (int u = 0; u < 16; ++u) {
+                auto b = slurp(wdir + "/blob" + std::to_string(u) + ".bin");
+                if (!b.empty() && offset + b.size() <= wbuf.size) {
+                    std::memcpy(static_cast<uint8_t*>(wbuf.mapped) + offset, b.data(), b.size());
+                    offset += (b.size() + 255) & ~size_t(255);
+                }
+            }
+        }
+    }
+
     // Helper to dispatch a pipeline with buffers and push constants
     auto dispatch = [&](const std::string& name, const std::vector<Buffer*>& bufs, const void* push, size_t push_size, uint32_t gx, uint32_t gy, uint32_t gz) {
         auto it = pipelines.find(name);
@@ -470,6 +504,14 @@ int main(int argc, char** argv) {
         float exposure_val = float(jget(pf, "exposure").empty() ? 1.0 : jget(pf, "exposure")[0]);
         float pre_val = float(jget(pf, "pre_exposure").empty() ? 1.0 : jget(pf, "pre_exposure")[0]);
         int reset = jint(pf, "reset");
+        if (reset) {
+            std::memset(prev_mvec[0].mapped, 0, prev_mvec[0].size);
+            std::memset(prev_mvec[1].mapped, 0, prev_mvec[1].size);
+            std::memset(hidden[0].mapped, 0, hidden[0].size);
+            std::memset(hidden[1].mapped, 0, hidden[1].size);
+            std::memset(ihist[0].mapped, 0, ihist[0].size);
+            std::memset(ihist[1].mapped, 0, ihist[1].size);
+        }
         auto jit = jget(pf, "jitter");
         float jx = float(jit.size() > 0 ? jit[0] : 0.0);
         float jy = float(jit.size() > 1 ? jit[1] : 0.0);
@@ -554,19 +596,23 @@ int main(int argc, char** argv) {
 
             // 3. Enc0
             {
-                uint8_t push[148] = {0};
+                uint8_t push[240] = {0};
                 std::memcpy(push + 88, &W, 4); std::memcpy(push + 92, &H, 4);
                 std::memcpy(push + 104, &W0, 4); std::memcpy(push + 108, &H0, 4);
                 std::memcpy(push + 112, &W15, 4); std::memcpy(push + 116, &H15, 4);
                 std::memcpy(push + 120, &hW15, 4); std::memcpy(push + 124, &hH15, 4);
                 std::memcpy(push + 136, &p, 4);
+                std::memcpy(push + 140, &jx, 4);
+                std::memcpy(push + 144, &jy, 4);
+                std::memcpy(push + 216, &reset, 4);
+                std::memcpy(push + 220, &fc, 4);
                 if (preset == "L") {
                     dispatch("sr_enc0L_in", {&g_col, &g_dep, mvhi ? &g_mvhi : &g_mv, &prev_mvec[p], &dhist, &hidden[p],
-                                             &prev_mvec[p ^ 1], &mv_ero, &mv_nondil, &t_act[0], &wbuf}, push, 148, (W * H + 63) / 64, 1, 1);
+                                             &prev_mvec[p ^ 1], &mv_ero, &mv_nondil, &t_act[0], &wbuf}, push, 240, (W * H + 63) / 64, 1, 1);
                     dispatch("sr_l0", {&wbuf, &t_act[0], &t_act[1]}, nullptr, 0, 32, 1, 1);
                 } else {
                     dispatch("sr_enc0", {&g_col, &g_dep, mvhi ? &g_mvhi : &g_mv, &prev_mvec[p], &dhist, &hidden[p],
-                                         &prev_mvec[p ^ 1], &mv_ero, &mv_nondil, &t_act[0], &wbuf}, push, 148, W0 / 8, H0 / 8, 1);
+                                         &prev_mvec[p ^ 1], &mv_ero, &mv_nondil, &t_act[0], &wbuf}, push, 240, W0 / 8, H0 / 8, 1);
                 }
             }
 
@@ -609,11 +655,14 @@ int main(int argc, char** argv) {
 
             // 5. Dec0
             {
-                uint8_t push[96] = {0};
+                uint8_t push[160] = {0};
                 std::memcpy(push + 64, &W, 4); std::memcpy(push + 68, &H, 4);
+                std::memcpy(push + 72, &W, 4); std::memcpy(push + 76, &H, 4);
                 std::memcpy(push + 80, &W0, 4); std::memcpy(push + 84, &H0, 4);
                 std::memcpy(push + 88, &W15, 4); std::memcpy(push + 92, &H15, 4);
-                dispatch("sr_dec0", {&t_act[8], &prev_mvec[p ^ 1], &hidden[p], &gates, &factors, &aniso, &hidden[p ^ 1], &wbuf}, push, 96, W0 / 8, H0 / 8, 1);
+                std::memcpy(push + 96, &dec0_s0, 4);
+                std::memcpy(push + 100, &dec0_f0, 4);
+                dispatch("sr_dec0", {&t_act[8], &prev_mvec[p ^ 1], &hidden[p], &gates, &factors, &aniso, &hidden[p ^ 1], &wbuf}, push, 160, W0 / 8, H0 / 8, 1);
             }
 
             // 6. Post
@@ -623,6 +672,7 @@ int main(int argc, char** argv) {
                 std::memcpy(push + 136, &W, 4); std::memcpy(push + 140, &H, 4);
                 std::memcpy(push + 152, &W15, 4); std::memcpy(push + 156, &H15, 4);
                 std::memcpy(push + 160, &hW15, 4); std::memcpy(push + 164, &hH15, 4);
+                std::memcpy(push + 168, &dec0_f1, 4);
                 float sx15 = float(W) / float(W15);
                 float sy15 = float(H) / float(H15);
                 std::memcpy(push + 172, &sx15, 4);
@@ -643,6 +693,7 @@ int main(int argc, char** argv) {
                 std::memcpy(push + 56, &oW, 4); std::memcpy(push + 60, &oH, 4);
                 float sx = float(W) / float((oW + 1) & ~1), sy = float(H) / float((oH + 1) & ~1);
                 std::memcpy(push + 64, &sx, 4); std::memcpy(push + 68, &sy, 4);
+                std::memcpy(push + 72, &jx, 4); std::memcpy(push + 76, &jy, 4);
                 uint32_t log210 = 0x40549a78;
                 std::memcpy(push + 80, &log210, 4);
                 std::memcpy(push + 84, &ldr, 4);

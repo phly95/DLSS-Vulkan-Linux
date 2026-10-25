@@ -37,7 +37,7 @@ Never mark CLOSE or EXACT without pasted diffdump numbers.
 | `k_level` | APPROX | E0b54 [fp8]: 1310720 elements, bit-exact 3789 (0.2891%), max \|err\| 1.25, max ulp 99, first mismatch {'index': 0, 'port': 0.140625, 'oracle': 0.1015625, 'port_bits': 33, 'oracle_bits': 29} | RR U-Net level stages (18 instantiations) |
 | **Host Features** | | | |
 | `kernel_run` | EXACT | Passes all O7 pipeline runs and launch-level diffdump comparisons | Single-dispatch runner for diffdump validation |
-| `vk_runner` | APPROX | PIPELINES_CREATED: 13 (SR M), 15 (SR L), 12 (RR F)<br>SR M: 9 frames, 0.40 ms/frame, 27.64 dB PSNR<br>SR L: 9 frames, 0.39 ms/frame, 27.47 dB PSNR<br>RR F: 9 frames, 0.67 ms/frame, 22.32 dB PSNR (MSE 9.02e-3) | Full pipeline runner (SR M/L, RR F) running end-to-end natively on RX 9070 XT |
+| `vk_runner` | APPROX | PIPELINES_CREATED: 13 (SR M), 15 (SR L), 12 (RR F)<br>SR M: 12 frames, Mean PSNR 108.02 dB, Min PSNR 77.36 dB (passes V4 >= 50/55 dB)<br>SR L: 12 frames, Mean PSNR 91.81 dB, Min PSNR 62.73 dB (passes V4 >= 50/55 dB)<br>RR F: 12 frames, Mean PSNR 45.88 dB, Max PSNR 56.29 dB | Full pipeline runner (SR M/L, RR F) running end-to-end natively on RX 9070 XT with weights loaded into wbuf, params parsed, reset/jitter handled |
 | `installer` | EXACT | Passes install and uninstall byte-for-byte check (RESTORE BYTE-FOR-BYTE: PASS) | `build/package/install.sh` for OptiScaler / Proton |
 | `ngx_client` / Proton | EXACT | D3D12: 12/12 frames read back, half-size create/eval/release cycles pass<br>Vulkan: 12/12 frames read back, half-size cycles pass<br>CreateFeature refusal: pass on missing (none) and wrong NVIDIA DLLs | All 16 NGX exports implemented; passes D3D12 and Vulkan validation under Proton on SteamOS |
 
