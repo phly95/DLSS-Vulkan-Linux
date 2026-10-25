@@ -76,10 +76,84 @@ vec3 sample_input(int x, int y) {
     float sx = (scaleX != 0.0) ? scaleX : (float(W) / float(W15));
     float sy = (scaleY != 0.0) ? scaleY : (float(H) / float(H15));
     float rx_f = (float(x) + 0.5) * sx + jitterX - 0.5;
-    int rx = clamp(int(floor(rx_f)), 0, W - 1);
     float ry_f = (float(y) + 0.5) * sy + jitterY - 0.5;
-    int ry = clamp(int(floor(ry_f)), 0, H - 1);
-    return vec3(g_col[ry * W + rx].rgb);
+
+    int x0 = clamp(int(floor(rx_f)), 0, W - 1);
+    int x1 = clamp(x0 + 1, 0, W - 1);
+    int y0 = clamp(int(floor(ry_f)), 0, H - 1);
+    int y1 = clamp(y0 + 1, 0, H - 1);
+
+    float fx = clamp(rx_f - float(x0), 0.0, 1.0);
+    float fy = clamp(ry_f - float(y0), 0.0, 1.0);
+
+    vec3 c00 = vec3(g_col[y0 * W + x0].rgb);
+    vec3 c10 = vec3(g_col[y0 * W + x1].rgb);
+    vec3 c01 = vec3(g_col[y1 * W + x0].rgb);
+    vec3 c11 = vec3(g_col[y1 * W + x1].rgb);
+
+    return mix(mix(c00, c10, fx), mix(c01, c11, fx), fy);
+}
+
+vec3 sample_history(float px, float py) {
+    int x0 = clamp(int(floor(px)), 0, W15 - 1);
+    int x1 = clamp(x0 + 1, 0, W15 - 1);
+    int y0 = clamp(int(floor(py)), 0, H15 - 1);
+    int y1 = clamp(y0 + 1, 0, H15 - 1);
+
+    float fx = clamp(px - float(x0), 0.0, 1.0);
+    float fy = clamp(py - float(y0), 0.0, 1.0);
+
+    vec3 h00 = vec3(in_ihist[y0 * W15 + x0].rgb);
+    vec3 h10 = vec3(in_ihist[y0 * W15 + x1].rgb);
+    vec3 h01 = vec3(in_ihist[y1 * W15 + x0].rgb);
+    vec3 h11 = vec3(in_ihist[y1 * W15 + x1].rgb);
+
+    return mix(mix(h00, h10, fx), mix(h01, h11, fx), fy);
+}
+
+uint pack_from_tonemapped(vec3 t) {
+    if (ldr != 0u) {
+        vec3 c = max(pow(vec3(10.0), t / 0.36) - 1.0, vec3(0.0)) / 100.0;
+        uint ur = uint(clamp(round(c.r * 2047.0), 0.0, 2047.0));
+        uint ug = uint(clamp(round(c.g * 2047.0), 0.0, 2047.0));
+        uint ub = uint(clamp(round(c.b * 1023.0), 0.0, 1023.0));
+        return ur | (ug << 11u) | (ub << 22u);
+    } else {
+        vec3 v = t * (1.0 / 2.45);
+        uint ur = uint(clamp(floor(v.r * 2047.0 + 0.5), 0.0, 2047.0));
+        uint ug = uint(clamp(floor(v.g * 2047.0 + 0.5), 0.0, 2047.0));
+        uint ub = uint(clamp(floor(v.b * 1023.0 + 0.5), 0.0, 1023.0));
+        return ur | (ug << 11u) | (ub << 22u);
+    }
+}
+
+vec3 process_pixel(int x, int y, float e) {
+    vec3 c = sample_input(x, y);
+    vec3 t_curr = get_tonemapped(c, e);
+
+    float sx = (scaleX != 0.0) ? scaleX : (float(W) / float(W15));
+    float sy = (scaleY != 0.0) ? scaleY : (float(H) / float(H15));
+    float rx_f = (float(x) + 0.5) * sx + jitterX - 0.5;
+    float ry_f = (float(y) + 0.5) * sy + jitterY - 0.5;
+    int ix = clamp(int(floor(rx_f + 0.5)), 0, W - 1);
+    int iy = clamp(int(floor(ry_f + 0.5)), 0, H - 1);
+    uint in_idx = uint(iy * W + ix);
+
+    f16vec2 mv = in_mv_nondil[in_idx];
+    float px = float(x) + float(mv.x);
+    float py = float(y) + float(mv.y);
+
+    if (px >= 0.0 && px <= float(W15 - 1) && py >= 0.0 && py <= float(H15 - 1)) {
+        vec3 t_hist = sample_history(px, py);
+        if (dot(t_hist, t_hist) > 1e-6) {
+            vec3 diff = abs(t_hist - t_curr);
+            float max_diff = max(max(diff.r, diff.g), diff.b);
+            float h_weight = clamp(0.88 - max_diff * 0.8, 0.25, 0.88);
+            return mix(t_curr, t_hist, h_weight);
+        }
+    }
+
+    return t_curr;
 }
 
 void main() {
@@ -96,20 +170,23 @@ void main() {
     int y0 = gy + ly;
     int y1 = y0 + 1;
 
+    vec3 t0 = vec3(0.0);
+    vec3 t1 = vec3(0.0);
+
     // Pixel 0 (x, y0)
     if (x < W15 && y0 < H15) {
-        vec3 c0 = sample_input(x, y0);
+        t0 = process_pixel(x, y0, e);
         uint idx0 = uint(y0 * W15 + x);
-        full15[idx0] = pack_r11g11b10(c0, e);
-        out_ihist[idx0] = f16vec4(f16vec3(get_tonemapped(c0, e)), float16_t(0.0));
+        full15[idx0] = pack_from_tonemapped(t0);
+        out_ihist[idx0] = f16vec4(f16vec3(t0), float16_t(0.0));
     }
 
     // Pixel 1 (x, y1)
     if (x < W15 && y1 < H15) {
-        vec3 c1 = sample_input(x, y1);
+        t1 = process_pixel(x, y1, e);
         uint idx1 = uint(y1 * W15 + x);
-        full15[idx1] = pack_r11g11b10(c1, e);
-        out_ihist[idx1] = f16vec4(f16vec3(get_tonemapped(c1, e)), float16_t(0.0));
+        full15[idx1] = pack_from_tonemapped(t1);
+        out_ihist[idx1] = f16vec4(f16vec3(t1), float16_t(0.0));
     }
 
     // Downsampled history 384x216 (half of 768x432)
@@ -117,12 +194,12 @@ void main() {
         int x_d = x >> 1;
         int y_d = y0 >> 1;
         if (x_d < hW15 && y_d < hH15) {
-            vec3 c00 = sample_input(x, y0);
-            vec3 c10 = sample_input(min(x + 1, W15 - 1), y0);
-            vec3 c01 = sample_input(x, min(y1, H15 - 1));
-            vec3 c11 = sample_input(min(x + 1, W15 - 1), min(y1, H15 - 1));
-            vec3 c_avg = 0.25 * (c00 + c10 + c01 + c11);
-            out_dhist[y_d * hW15 + x_d] = pack_dhist(c_avg, e);
+            vec3 t_avg = 0.5 * (t0 + t1);
+            vec3 vd = t_avg * (1.0 / 2.45);
+            uint ur = uint(clamp(floor(vd.r * 1023.0 + 0.5), 0.0, 1023.0));
+            uint ug = uint(clamp(floor(vd.g * 1023.0 + 0.5), 0.0, 1023.0));
+            uint ub = uint(clamp(floor(vd.b * 1023.0 + 0.5), 0.0, 1023.0));
+            out_dhist[y_d * hW15 + x_d] = ur | (ug << 10u) | (ub << 20u);
         }
     }
 }

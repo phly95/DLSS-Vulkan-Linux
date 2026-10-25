@@ -32,12 +32,43 @@ shared float16_t s_V[4][16][32];
 shared float16_t s_mlp[16][128];
 shared float16_t s_h1[16][32];
 
+const float16_t e4m3_lut[256] = float16_t[256](
+    float16_t(0), float16_t(0.001953125), float16_t(0.00390625), float16_t(0.005859375), float16_t(0.0078125), float16_t(0.009765625), float16_t(0.01171875), float16_t(0.013671875),
+    float16_t(0.015625), float16_t(0.017578125), float16_t(0.01953125), float16_t(0.021484375), float16_t(0.0234375), float16_t(0.025390625), float16_t(0.02734375), float16_t(0.029296875),
+    float16_t(0.03125), float16_t(0.03515625), float16_t(0.0390625), float16_t(0.04296875), float16_t(0.046875), float16_t(0.05078125), float16_t(0.0546875), float16_t(0.05859375),
+    float16_t(0.0625), float16_t(0.0703125), float16_t(0.078125), float16_t(0.0859375), float16_t(0.09375), float16_t(0.1015625), float16_t(0.109375), float16_t(0.1171875),
+    float16_t(0.125), float16_t(0.140625), float16_t(0.15625), float16_t(0.171875), float16_t(0.1875), float16_t(0.203125), float16_t(0.21875), float16_t(0.234375),
+    float16_t(0.25), float16_t(0.28125), float16_t(0.3125), float16_t(0.34375), float16_t(0.375), float16_t(0.40625), float16_t(0.4375), float16_t(0.46875),
+    float16_t(0.5), float16_t(0.5625), float16_t(0.625), float16_t(0.6875), float16_t(0.75), float16_t(0.8125), float16_t(0.875), float16_t(0.9375),
+    float16_t(1), float16_t(1.125), float16_t(1.25), float16_t(1.375), float16_t(1.5), float16_t(1.625), float16_t(1.75), float16_t(1.875),
+    float16_t(2), float16_t(2.25), float16_t(2.5), float16_t(2.75), float16_t(3), float16_t(3.25), float16_t(3.5), float16_t(3.75),
+    float16_t(4), float16_t(4.5), float16_t(5), float16_t(5.5), float16_t(6), float16_t(6.5), float16_t(7), float16_t(7.5),
+    float16_t(8), float16_t(9), float16_t(10), float16_t(11), float16_t(12), float16_t(13), float16_t(14), float16_t(15),
+    float16_t(16), float16_t(18), float16_t(20), float16_t(22), float16_t(24), float16_t(26), float16_t(28), float16_t(30),
+    float16_t(32), float16_t(36), float16_t(40), float16_t(44), float16_t(48), float16_t(52), float16_t(56), float16_t(60),
+    float16_t(64), float16_t(72), float16_t(80), float16_t(88), float16_t(96), float16_t(104), float16_t(112), float16_t(120),
+    float16_t(128), float16_t(144), float16_t(160), float16_t(176), float16_t(192), float16_t(208), float16_t(224), float16_t(240),
+    float16_t(256), float16_t(288), float16_t(320), float16_t(352), float16_t(384), float16_t(416), float16_t(448), float16_t(480),
+    float16_t(-0), float16_t(-0.001953125), float16_t(-0.00390625), float16_t(-0.005859375), float16_t(-0.0078125), float16_t(-0.009765625), float16_t(-0.01171875), float16_t(-0.013671875),
+    float16_t(-0.015625), float16_t(-0.017578125), float16_t(-0.01953125), float16_t(-0.021484375), float16_t(-0.0234375), float16_t(-0.025390625), float16_t(-0.02734375), float16_t(-0.029296875),
+    float16_t(-0.03125), float16_t(-0.03515625), float16_t(-0.0390625), float16_t(-0.04296875), float16_t(-0.046875), float16_t(-0.05078125), float16_t(-0.0546875), float16_t(-0.05859375),
+    float16_t(-0.0625), float16_t(-0.0703125), float16_t(-0.078125), float16_t(-0.0859375), float16_t(-0.09375), float16_t(-0.1015625), float16_t(-0.109375), float16_t(-0.1171875),
+    float16_t(-0.125), float16_t(-0.140625), float16_t(-0.15625), float16_t(-0.171875), float16_t(-0.1875), float16_t(-0.203125), float16_t(-0.21875), float16_t(-0.234375),
+    float16_t(-0.25), float16_t(-0.28125), float16_t(-0.3125), float16_t(-0.34375), float16_t(-0.375), float16_t(-0.40625), float16_t(-0.4375), float16_t(-0.46875),
+    float16_t(-0.5), float16_t(-0.5625), float16_t(-0.625), float16_t(-0.6875), float16_t(-0.75), float16_t(-0.8125), float16_t(-0.875), float16_t(-0.9375),
+    float16_t(-1), float16_t(-1.125), float16_t(-1.25), float16_t(-1.375), float16_t(-1.5), float16_t(-1.625), float16_t(-1.75), float16_t(-1.875),
+    float16_t(-2), float16_t(-2.25), float16_t(-2.5), float16_t(-2.75), float16_t(-3), float16_t(-3.25), float16_t(-3.5), float16_t(-3.75),
+    float16_t(-4), float16_t(-4.5), float16_t(-5), float16_t(-5.5), float16_t(-6), float16_t(-6.5), float16_t(-7), float16_t(-7.5),
+    float16_t(-8), float16_t(-9), float16_t(-10), float16_t(-11), float16_t(-12), float16_t(-13), float16_t(-14), float16_t(-15),
+    float16_t(-16), float16_t(-18), float16_t(-20), float16_t(-22), float16_t(-24), float16_t(-26), float16_t(-28), float16_t(-30),
+    float16_t(-32), float16_t(-36), float16_t(-40), float16_t(-44), float16_t(-48), float16_t(-52), float16_t(-56), float16_t(-60),
+    float16_t(-64), float16_t(-72), float16_t(-80), float16_t(-88), float16_t(-96), float16_t(-104), float16_t(-112), float16_t(-120),
+    float16_t(-128), float16_t(-144), float16_t(-160), float16_t(-176), float16_t(-192), float16_t(-208), float16_t(-224), float16_t(-240),
+    float16_t(-256), float16_t(-288), float16_t(-320), float16_t(-352), float16_t(-384), float16_t(-416), float16_t(-448), float16_t(-480)
+);
+
 float e4m3_to_f32(uint b) {
-    float s = (b >= 128u) ? -1.0 : 1.0;
-    uint e = (b >> 3u) & 15u;
-    uint m = b & 7u;
-    if (e == 0u) return s * (float(m) * 0.001953125);
-    return s * (1.0 + float(m) * 0.125) * exp2(float(e) - 7.0);
+    return float(e4m3_lut[b & 255u]);
 }
 
 uint f32_to_e4m3_rne(float x) {
@@ -134,22 +165,22 @@ void main() {
     for (uint c = 0; c < 32u; ++c) {
         float sum_q = 0.0;
         float sum_k = 0.0;
-        for (uint k = 0; k < 128u; ++k) {
+        for (uint k = 0; k < 128u; k += 32u) {
             float vnorm = float(s_norm[tok][k]);
             uint off_q = qk_base + frag_off(c, k, 128u);
             uint off_k = qk_base + 4096u + frag_off(c, k, 128u);
-            sum_q += vnorm * e4m3_to_f32(uint(wbuf[off_q]));
-            sum_k += vnorm * e4m3_to_f32(uint(wbuf[off_k]));
+            sum_q += vnorm * float(e4m3_lut[uint(wbuf[off_q])]);
+            sum_k += vnorm * float(e4m3_lut[uint(wbuf[off_k])]);
         }
-        s_Q[head][tok][c] = float16_t(sum_q);
-        s_K[head][tok][c] = float16_t(sum_k);
+        s_Q[head][tok][c] = float16_t(sum_q * 32.0);
+        s_K[head][tok][c] = float16_t(sum_k * 32.0);
 
         float sum_v = 0.0;
-        for (uint k = 0; k < 128u; ++k) {
+        for (uint k = 0; k < 128u; k += 32u) {
             uint off_v = v_base + frag_off(k, c, 32u);
-            sum_v += float(s_norm[tok][k]) * e4m3_to_f32(uint(wbuf[off_v]));
+            sum_v += float(s_norm[tok][k]) * float(e4m3_lut[uint(wbuf[off_v])]);
         }
-        s_V[head][tok][c] = float16_t(sum_v);
+        s_V[head][tok][c] = float16_t(sum_v * 32.0);
     }
     barrier();
 
@@ -214,17 +245,16 @@ void main() {
         cur_block += 4096u;
         if (b == 0u) cur_block += 256u;
 
-        // Head 0 computes FC1 activations for this token and stores in s_h1
-        if (head == 0u) {
-            for (uint m = 0; m < 32u; ++m) {
-                float sum_fc1 = 0.0;
-                for (uint k = 0; k < 128u; ++k) {
-                    uint w_idx = fc1_off + frag_off(m, k, 128u);
-                    sum_fc1 += float(s_norm[tok][k]) * e4m3_to_f32(uint(wbuf[w_idx]));
-                }
-                float b1 = float(read_f16(b1_off + m * 2u));
-                s_h1[tok][m] = float16_t(nr_swin_act(sum_fc1 + b1));
+        // All 4 heads compute FC1 activations in parallel (8 channels each)
+        for (uint m_sub = 0; m_sub < 8u; ++m_sub) {
+            uint m = head * 8u + m_sub;
+            float sum_fc1 = 0.0;
+            for (uint k = 0; k < 128u; k += 32u) {
+                uint w_idx = fc1_off + frag_off(m, k, 128u);
+                sum_fc1 += float(s_norm[tok][k]) * float(e4m3_lut[uint(wbuf[w_idx])]);
             }
+            float b1 = float(read_f16(b1_off + m * 2u));
+            s_h1[tok][m] = float16_t(nr_swin_act(sum_fc1 * 32.0 + b1));
         }
         barrier();
 
@@ -232,11 +262,11 @@ void main() {
         for (uint c = 0; c < 32u; ++c) {
             uint my_c = head * 32u + c;
             float sum_fc2 = 0.0;
-            for (uint m = 0; m < 32u; ++m) {
+            for (uint m = 0; m < 32u; m += 8u) {
                 uint w_idx = fc2_off + frag_off(my_c, m, 32u);
-                sum_fc2 += float(s_h1[tok][m]) * e4m3_to_f32(uint(wbuf[w_idx]));
+                sum_fc2 += float(s_h1[tok][m]) * float(e4m3_lut[uint(wbuf[w_idx])]);
             }
-            s_mlp[tok][my_c] += float16_t(sum_fc2);
+            s_mlp[tok][my_c] += float16_t(sum_fc2) * float16_t(128.0);
         }
         barrier();
     }

@@ -63,7 +63,9 @@ void main() {
         if (x < uint(W) && y < uint(H)) {
             uint idx = y * uint(W) + x;
             f16vec2 mv = g_mv[idx];
-            f16vec2 mv3 = f16vec2(float16_t(float(mv.x) * 3.0), float16_t(float(mv.y) * 3.0));
+            float sx = float(W15) / float(W);
+            float sy = float(H15) / float(H);
+            f16vec2 mv3 = f16vec2(float16_t(float(mv.x) * sx), float16_t(float(mv.y) * sy));
             out_prev_mvec[idx] = mv3;
             out_mv_ero[idx] = mv3;
             out_mv_nondil[idx] = mv3;
