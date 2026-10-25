@@ -1,14 +1,16 @@
 #version 460
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
 #extension GL_EXT_shader_16bit_storage : enable
+#extension GL_EXT_shader_8bit_storage : enable
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) readonly buffer InCol        { f16vec4 g_col[]; };
 layout(set = 0, binding = 1) readonly buffer InExpo       { f16vec2 expo; };
-layout(set = 0, binding = 2) readonly buffer InGates      { f16vec2 gates[]; };
-layout(set = 0, binding = 3) readonly buffer InFactors    { f16vec2 factors[]; };
+layout(set = 0, binding = 2) readonly buffer InGates      { u8vec4 gates[]; };
+layout(set = 0, binding = 3) readonly buffer InFactors    { u8vec4 factors[]; };
 layout(set = 0, binding = 4) readonly buffer InAniso      { f16vec4 aniso[]; };
 layout(set = 0, binding = 5) readonly buffer InIhist      { f16vec4 in_ihist[]; };
 layout(set = 0, binding = 6) readonly buffer InPrevMv     { f16vec2 in_prev_mv[]; };
@@ -44,35 +46,9 @@ layout(push_constant) uniform PostArgs {
     float mvoffy;
 };
 
-uint pack_r11g11b10(vec3 c, float e) {
-    if (ldr != 0u) {
-        uint ur = uint(clamp(round(c.r * 2047.0), 0.0, 2047.0));
-        uint ug = uint(clamp(round(c.g * 2047.0), 0.0, 2047.0));
-        uint ub = uint(clamp(round(c.b * 1023.0), 0.0, 1023.0));
-        return ur | (ug << 11u) | (ub << 22u);
-    } else {
-        vec3 p = log2(max(1.0 + 100.0 * c * e, vec3(0.0001))) * 0.3010299956639812;
-        vec3 t = p * 0.36;
-        vec3 v = t * (1.0 / 2.45);
-        uint ur = uint(clamp(floor(v.r * 2047.0 + 0.5), 0.0, 2047.0));
-        uint ug = uint(clamp(floor(v.g * 2047.0 + 0.5), 0.0, 2047.0));
-        uint ub = uint(clamp(floor(v.b * 1023.0 + 0.5), 0.0, 1023.0));
-        return ur | (ug << 11u) | (ub << 22u);
-    }
-}
-
 vec3 get_tonemapped(vec3 c, float e) {
     vec3 p = log2(max(1.0 + 100.0 * c * e, vec3(0.0001))) * 0.3010299956639812;
     return p * 0.36;
-}
-
-uint pack_dhist(vec3 c, float e) {
-    vec3 t = get_tonemapped(c, e);
-    vec3 v = t * (1.0 / 2.45);
-    uint ur = uint(clamp(floor(v.r * 1023.0 + 0.5), 0.0, 1023.0));
-    uint ug = uint(clamp(floor(v.g * 1023.0 + 0.5), 0.0, 1023.0));
-    uint ub = uint(clamp(floor(v.b * 1023.0 + 0.5), 0.0, 1023.0));
-    return ur | (ug << 10u) | (ub << 20u);
 }
 
 vec3 sample_history(float px, float py) {
@@ -111,56 +87,82 @@ uint pack_from_tonemapped(vec3 t) {
 vec3 process_pixel(int x, int y, float e) {
     float sx = (scaleX != 0.0) ? scaleX : (float(W) / float(W15));
     float sy = (scaleY != 0.0) ? scaleY : (float(H) / float(H15));
-    float rx_f = (float(x) + 0.5) * sx + jitterX - 0.5;
-    float ry_f = (float(y) + 0.5) * sy + jitterY - 0.5;
 
-    int x0 = clamp(int(floor(rx_f)), 0, W - 1);
-    int x1 = clamp(x0 + 1, 0, W - 1);
-    int y0 = clamp(int(floor(ry_f)), 0, H - 1);
-    int y1 = clamp(y0 + 1, 0, H - 1);
+    float s3x = (float(x) + 0.5) * sx + jitterX;
+    float s4y = (float(y) + 0.5) * sy + jitterY;
 
-    float fx = clamp(rx_f - float(x0), 0.0, 1.0);
-    float fy = clamp(ry_f - float(y0), 0.0, 1.0);
+    int aniso_x = clamp(int(floor(s3x)), 0, W - 1);
+    int aniso_y = clamp(int(floor(s4y)), 0, H - 1);
+    uint aniso_idx = uint(aniso_y * W + aniso_x);
 
-    vec3 c00 = clamp(vec3(g_col[y0 * W + x0].rgb), vec3(0.0), vec3(32752.0));
-    vec3 c10 = clamp(vec3(g_col[y0 * W + x1].rgb), vec3(0.0), vec3(32752.0));
-    vec3 c01 = clamp(vec3(g_col[y1 * W + x0].rgb), vec3(0.0), vec3(32752.0));
-    vec3 c11 = clamp(vec3(g_col[y1 * W + x1].rgb), vec3(0.0), vec3(32752.0));
+    // 1. 9-tap anisotropic spatial reconstruction
+    f16vec4 A = aniso[aniso_idx];
+    float Axx = float(A.x);
+    float Ayy = float(A.y);
+    float Axy = float(A.z);
 
-    vec3 t00 = get_tonemapped(c00, e);
-    vec3 t10 = get_tonemapped(c10, e);
-    vec3 t01 = get_tonemapped(c01, e);
-    vec3 t11 = get_tonemapped(c11, e);
+    int fx = int(floor(s3x - 0.5));
+    int fy = int(floor(s4y - 0.5));
 
-    vec3 t_curr = mix(mix(t00, t10, fx), mix(t01, t11, fx), fy);
+    vec3 num = vec3(0.0);
+    float den = 0.0;
+    vec3 cmin = vec3(1e9);
+    vec3 cmax = vec3(-1e9);
 
-    // Bilinear motion vector interpolation across continuous coordinate
-    vec2 mv00 = vec2(in_mv_nondil[y0 * W + x0]);
-    vec2 mv10 = vec2(in_mv_nondil[y0 * W + x1]);
-    vec2 mv01 = vec2(in_mv_nondil[y1 * W + x0]);
-    vec2 mv11 = vec2(in_mv_nondil[y1 * W + x1]);
-    vec2 mv = mix(mix(mv00, mv10, fx), mix(mv01, mv11, fx), fy);
+    for (int dy = 0; dy < 3; ++dy) {
+        int in_y = clamp(fy + dy, 0, H - 1);
+        float ddy = (float(fy + dy) + 0.5) - s4y;
+        for (int dx = 0; dx < 3; ++dx) {
+            int in_x = clamp(fx + dx, 0, W - 1);
+            float ddx = (float(fx + dx) + 0.5) - s3x;
 
-    // Reprojected pixel coordinate in history buffer (including subpixel jitter delta)
-    float px = float(x) + mv.x + mvoffx;
-    float py = float(y) + mv.y + mvoffy;
+            float dist = -(Axx * (ddx * ddx) + 2.0 * Axy * ddx * ddy + Ayy * (ddy * ddy));
+            float w = exp(dist);
 
-    // Color gamut bounding box to prevent ghosting
-    vec3 cmin = min(min(t00, t10), min(t01, t11));
-    vec3 cmax = max(max(t00, t10), max(t01, t11));
+            vec3 c = clamp(vec3(g_col[in_y * W + in_x].rgb), vec3(0.0), vec3(32752.0));
+            num += w * c;
+            den += w;
 
-    if (reset_flag == 0u && px >= 0.0 && px <= float(W15 - 1) && py >= 0.0 && py <= float(H15 - 1)) {
-        vec3 t_hist = sample_history(px, py);
-        if (dot(t_hist, t_hist) > 1e-6) {
-            vec3 t_hist_clamped = clamp(t_hist, cmin, cmax);
-            vec3 diff = abs(t_hist - t_curr);
-            float max_diff = max(max(diff.r, diff.g), diff.b);
-            float h_weight = clamp(0.90 - max_diff * 2.0, 0.0, 0.90);
-            return mix(t_curr, t_hist_clamped, h_weight);
+            vec3 tc = get_tonemapped(c, e);
+            cmin = min(cmin, tc);
+            cmax = max(cmax, tc);
         }
     }
 
-    return t_curr;
+    vec3 c_spatial = num / max(den, 1e-6);
+    vec3 t_spatial = get_tonemapped(c_spatial, e);
+
+    // Color gamut box expanded by 10%
+    cmin = max(1.1 * cmin - vec3(0.05), vec3(0.0));
+    cmax = 1.1 * cmax + vec3(0.05);
+
+    // 2. Motion vector & history reprojection
+    vec2 mv = vec2(in_mv_nondil[aniso_idx]);
+    float px = float(x) + mv.x + mvoffx;
+    float py = float(y) + mv.y + mvoffy;
+
+    if (reset_flag != 0u || px < 0.0 || px > float(W15 - 1) || py < 0.0 || py > float(H15 - 1)) {
+        return t_spatial;
+    }
+
+    vec3 t_hist = sample_history(px, py);
+    if (dot(t_hist, t_hist) < 1e-6) {
+        return t_spatial;
+    }
+
+    vec3 t_clamped = clamp(t_hist, cmin, cmax);
+
+    // 3. Temporal gating and 3-way factor blending
+    u8vec4 u_gate = gates[aniso_idx];
+    u8vec4 u_fact = factors[aniso_idx];
+
+    vec3 g = vec3(float(u_gate.x), float(u_gate.y), float(u_gate.z)) * (1.0 / 255.0);
+    float f0 = float(u_fact.x) * (1.0 / 255.0);
+    float f1 = float(u_fact.y) * (1.0 / 255.0);
+    float f2 = float(u_fact.z) * (1.0 / 255.0);
+
+    vec3 t_cand = f0 * t_spatial + f1 * t_hist + f2 * t_clamped;
+    return mix(t_spatial, t_cand, g);
 }
 
 void main() {

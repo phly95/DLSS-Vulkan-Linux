@@ -8,33 +8,208 @@ layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) readonly buffer InT8       { uint8_t in_t8[]; };
 layout(set = 0, binding = 1) readonly buffer InPrevMv   { f16vec2 in_prev_mv[]; };
-layout(set = 0, binding = 2) readonly buffer InHidden   { f16vec2 in_hidden[]; };
+layout(set = 0, binding = 2) readonly buffer InHidden   { u8vec4 in_hidden[]; };
 
-layout(set = 0, binding = 3) writeonly buffer OutGates   { f16vec2 out_gates[]; };
-layout(set = 0, binding = 4) writeonly buffer OutFactors { f16vec2 out_factors[]; };
+layout(set = 0, binding = 3) writeonly buffer OutGates   { u8vec4 out_gates[]; };
+layout(set = 0, binding = 4) writeonly buffer OutFactors { u8vec4 out_factors[]; };
 layout(set = 0, binding = 5) writeonly buffer OutAniso   { f16vec4 out_aniso[]; };
-layout(set = 0, binding = 6) writeonly buffer OutHidden  { f16vec2 out_hidden[]; };
+layout(set = 0, binding = 6) writeonly buffer OutHidden  { u8vec4 out_hidden[]; };
 layout(set = 0, binding = 7) readonly buffer InDec0W    { uint8_t dec0_w[]; };
 
 layout(push_constant) uniform Dec0Args {
     layout(offset = 64) int W;
     int H;
-    layout(offset = 80) int W0;
+    int pad0;
+    int pad1;
+    int W0;
     int H0;
-    layout(offset = 88) int W15;
+    int W15;
     int H15;
-    layout(offset = 96) float dec0_s0;
+    float dec0_s0;
     float dec0_f0;
+    float F20x;
+    float F20y;
+    float F28x;
+    float F28y;
+    float r15x;
+    float r15y;
+    float invW;
+    float invH;
+    uint depinv;
+    float inv15x;
+    float inv15y;
+    float f28rx;
+    float f28ry;
 };
 
+const float16_t e4m3_lut[256] = float16_t[256](
+    float16_t(0), float16_t(0.001953125), float16_t(0.00390625), float16_t(0.005859375), float16_t(0.0078125), float16_t(0.009765625), float16_t(0.01171875), float16_t(0.013671875),
+    float16_t(0.015625), float16_t(0.017578125), float16_t(0.01953125), float16_t(0.021484375), float16_t(0.0234375), float16_t(0.025390625), float16_t(0.02734375), float16_t(0.029296875),
+    float16_t(0.03125), float16_t(0.03515625), float16_t(0.0390625), float16_t(0.04296875), float16_t(0.046875), float16_t(0.05078125), float16_t(0.0546875), float16_t(0.05859375),
+    float16_t(0.0625), float16_t(0.0703125), float16_t(0.078125), float16_t(0.0859375), float16_t(0.09375), float16_t(0.1015625), float16_t(0.109375), float16_t(0.1171875),
+    float16_t(0.125), float16_t(0.140625), float16_t(0.15625), float16_t(0.171875), float16_t(0.1875), float16_t(0.203125), float16_t(0.21875), float16_t(0.234375),
+    float16_t(0.25), float16_t(0.28125), float16_t(0.3125), float16_t(0.34375), float16_t(0.375), float16_t(0.40625), float16_t(0.4375), float16_t(0.46875),
+    float16_t(0.5), float16_t(0.5625), float16_t(0.625), float16_t(0.6875), float16_t(0.75), float16_t(0.8125), float16_t(0.875), float16_t(0.9375),
+    float16_t(1), float16_t(1.125), float16_t(1.25), float16_t(1.375), float16_t(1.5), float16_t(1.625), float16_t(1.75), float16_t(1.875),
+    float16_t(2), float16_t(2.25), float16_t(2.5), float16_t(2.75), float16_t(3), float16_t(3.25), float16_t(3.5), float16_t(3.75),
+    float16_t(4), float16_t(4.5), float16_t(5), float16_t(5.5), float16_t(6), float16_t(6.5), float16_t(7), float16_t(7.5),
+    float16_t(8), float16_t(9), float16_t(10), float16_t(11), float16_t(12), float16_t(13), float16_t(14), float16_t(15),
+    float16_t(16), float16_t(18), float16_t(20), float16_t(22), float16_t(24), float16_t(26), float16_t(28), float16_t(30),
+    float16_t(32), float16_t(36), float16_t(40), float16_t(44), float16_t(48), float16_t(52), float16_t(56), float16_t(60),
+    float16_t(64), float16_t(72), float16_t(80), float16_t(88), float16_t(96), float16_t(104), float16_t(112), float16_t(120),
+    float16_t(128), float16_t(144), float16_t(160), float16_t(176), float16_t(192), float16_t(208), float16_t(224), float16_t(240),
+    float16_t(256), float16_t(288), float16_t(320), float16_t(352), float16_t(384), float16_t(416), float16_t(448), float16_t(480),
+    float16_t(-0), float16_t(-0.001953125), float16_t(-0.00390625), float16_t(-0.005859375), float16_t(-0.0078125), float16_t(-0.009765625), float16_t(-0.01171875), float16_t(-0.013671875),
+    float16_t(-0.015625), float16_t(-0.017578125), float16_t(-0.01953125), float16_t(-0.021484375), float16_t(-0.0234375), float16_t(-0.025390625), float16_t(-0.02734375), float16_t(-0.029296875),
+    float16_t(-0.03125), float16_t(-0.03515625), float16_t(-0.0390625), float16_t(-0.04296875), float16_t(-0.046875), float16_t(-0.05078125), float16_t(-0.0546875), float16_t(-0.05859375),
+    float16_t(-0.0625), float16_t(-0.0703125), float16_t(-0.078125), float16_t(-0.0859375), float16_t(-0.09375), float16_t(-0.1015625), float16_t(-0.109375), float16_t(-0.1171875),
+    float16_t(-0.125), float16_t(-0.140625), float16_t(-0.15625), float16_t(-0.171875), float16_t(-0.1875), float16_t(-0.203125), float16_t(-0.21875), float16_t(-0.234375),
+    float16_t(-0.25), float16_t(-0.28125), float16_t(-0.3125), float16_t(-0.34375), float16_t(-0.375), float16_t(-0.40625), float16_t(-0.4375), float16_t(-0.46875),
+    float16_t(-0.5), float16_t(-0.5625), float16_t(-0.625), float16_t(-0.6875), float16_t(-0.75), float16_t(-0.8125), float16_t(-0.875), float16_t(-0.9375),
+    float16_t(-1), float16_t(-1.125), float16_t(-1.25), float16_t(-1.375), float16_t(-1.5), float16_t(-1.625), float16_t(-1.75), float16_t(-1.875),
+    float16_t(-2), float16_t(-2.25), float16_t(-2.5), float16_t(-2.75), float16_t(-3), float16_t(-3.25), float16_t(-3.5), float16_t(-3.75),
+    float16_t(-4), float16_t(-4.5), float16_t(-5), float16_t(-5.5), float16_t(-6), float16_t(-6.5), float16_t(-7), float16_t(-7.5),
+    float16_t(-8), float16_t(-9), float16_t(-10), float16_t(-11), float16_t(-12), float16_t(-13), float16_t(-14), float16_t(-15),
+    float16_t(-16), float16_t(-18), float16_t(-20), float16_t(-22), float16_t(-24), float16_t(-26), float16_t(-28), float16_t(-30),
+    float16_t(-32), float16_t(-36), float16_t(-40), float16_t(-44), float16_t(-48), float16_t(-52), float16_t(-56), float16_t(-60),
+    float16_t(-64), float16_t(-72), float16_t(-80), float16_t(-88), float16_t(-96), float16_t(-104), float16_t(-112), float16_t(-120),
+    float16_t(-128), float16_t(-144), float16_t(-160), float16_t(-176), float16_t(-192), float16_t(-208), float16_t(-224), float16_t(-240),
+    float16_t(-256), float16_t(-288), float16_t(-320), float16_t(-352), float16_t(-384), float16_t(-416), float16_t(-448), float16_t(-480)
+);
+
+shared float16_t s_feat[16][128];
+
+float sigm(float x) {
+    return 1.0 / (1.0 + exp(-x));
+}
+
+vec4 sample_hidden(float px, float py) {
+    int x0 = clamp(int(floor(px)), 0, W - 1);
+    int x1 = clamp(x0 + 1, 0, W - 1);
+    int y0 = clamp(int(floor(py)), 0, H - 1);
+    int y1 = clamp(y0 + 1, 0, H - 1);
+    float fx = clamp(px - float(x0), 0.0, 1.0);
+    float fy = clamp(py - float(y0), 0.0, 1.0);
+
+    vec4 h00 = vec4(in_hidden[y0 * W + x0]);
+    vec4 h10 = vec4(in_hidden[y0 * W + x1]);
+    vec4 h01 = vec4(in_hidden[y1 * W + x0]);
+    vec4 h11 = vec4(in_hidden[y1 * W + x1]);
+
+    return mix(mix(h00, h10, fx), mix(h01, h11, fx), fy);
+}
+
 void main() {
-    uint idx = gl_GlobalInvocationID.x;
-    int total_pixels = W * H;
-    if (int(idx) < total_pixels) {
-        float16_t g = float16_t(0.5 + float(idx & 31u) * 0.01);
-        out_gates[idx] = f16vec2(g, g);
-        out_factors[idx] = f16vec2(g, g);
-        out_aniso[idx] = f16vec4(float16_t(1.0), float16_t(0.0), float16_t(0.0), float16_t(1.0));
-        out_hidden[idx] = in_hidden[idx];
+    uint tid = gl_LocalInvocationIndex;
+    uint wg_x = gl_WorkGroupID.x * 8u;
+    uint wg_y = gl_WorkGroupID.y * 8u;
+    uint w_base = (dec0_w.length() > 20000u) ? 1590272u : 0u;
+    uint bias_base = w_base + 8192u;
+
+    uint w_half = uint(W0) / 2u;
+    uint h_half = uint(H0) / 2u;
+
+    // Step 1: Compute s_feat[16][128] collaboratively
+    for (uint i = tid; i < 2048u; i += 32u) {
+        uint p_idx = i / 128u;
+        uint c = i % 128u;
+
+        uint lx_in = p_idx & 3u;
+        uint ly_in = p_idx >> 2u;
+        uint tx = (gl_WorkGroupID.x * 4u) + lx_in;
+        uint ty = (gl_WorkGroupID.y * 4u) + ly_in;
+
+        uint t8_off0 = (ty * w_half + tx) * 32u;
+        uint t8_off1 = (h_half * w_half + ty * w_half + tx) * 32u;
+
+        uint b0 = uint(dec0_w[bias_base + c * 2u]);
+        uint b1 = uint(dec0_w[bias_base + c * 2u + 1u]);
+        float dot_val = unpackHalf2x16(b0 | (b1 << 8u)).x;
+
+        uint n_blk = c / 16u;
+        uint r = c % 16u;
+
+        for (uint kb = 0u; kb < 4u; ++kb) {
+            uint blk_idx = (n_blk * 4u + kb) * 256u;
+            uint t8_base = (kb < 2u) ? (t8_off0 + kb * 16u) : (t8_off1 + (kb - 2u) * 16u);
+            for (uint col = 0u; col < 16u; ++col) {
+                uint w_idx = w_base + blk_idx + r * 16u + col;
+                float w_val = float(e4m3_lut[uint(dec0_w[w_idx])]);
+                float in_val = float(e4m3_lut[uint(in_t8[t8_base + col])]);
+                dot_val += w_val * in_val;
+            }
+        }
+        s_feat[p_idx][c] = float16_t(clamp(dot_val, -448.0, 448.0));
+    }
+
+    barrier();
+
+    // Step 2: Output pixels
+    for (uint i = 0u; i < 2u; ++i) {
+        uint p = tid + i * 32u;
+        uint lx = p & 7u;
+        uint ly = p >> 3u;
+        uint x = wg_x + lx;
+        uint y = wg_y + ly;
+
+        if (x >= uint(W) || y >= uint(H)) continue;
+        uint idx = y * uint(W) + x;
+
+        uint p_in_t8 = (ly / 2u) * 4u + (lx / 2u);
+        uint sub = ((ly & 1u) << 1u) | (lx & 1u);
+        uint c_base = sub * 32u;
+
+        // 1. Gates (channels 24, 8, 20)
+        float g0 = sigm(float(s_feat[p_in_t8][c_base + 24u]));
+        float g1 = sigm(float(s_feat[p_in_t8][c_base + 8u]));
+        float g2 = sigm(float(s_feat[p_in_t8][c_base + 20u]));
+        uint ug0 = uint(clamp(round(g0 * 255.0), 0.0, 255.0));
+        uint ug1 = uint(clamp(round(g1 * 255.0), 0.0, 255.0));
+        uint ug2 = uint(clamp(round(g2 * 255.0), 0.0, 255.0));
+        out_gates[idx] = u8vec4(uint8_t(ug0), uint8_t(ug1), uint8_t(ug2), uint8_t(0));
+
+        // 2. Factors (channels 27, 5, 29 softmax)
+        float f27 = float(s_feat[p_in_t8][c_base + 27u]);
+        float f5  = float(s_feat[p_in_t8][c_base + 5u]);
+        float f29 = float(s_feat[p_in_t8][c_base + 29u]);
+        float f_max = max(max(f27, f5), f29);
+        float e0 = exp(f27 - f_max);
+        float e1 = exp(f5 - f_max);
+        float e2 = exp(f29 - f_max);
+        float esum = e0 + e1 + e2;
+        uint uf0 = uint(clamp(round((e0 / esum) * 255.0), 0.0, 255.0));
+        uint uf1 = uint(clamp(round((e1 / esum) * 255.0), 0.0, 255.0));
+        uint uf2 = uint(clamp(round((e2 / esum) * 255.0), 0.0, 255.0));
+        out_factors[idx] = u8vec4(uint8_t(uf0), uint8_t(uf1), uint8_t(uf2), uint8_t(0));
+
+        // 3. Aniso (channels 28, 25, 4 float16)
+        float a28 = float(s_feat[p_in_t8][c_base + 28u]);
+        float a25 = float(s_feat[p_in_t8][c_base + 25u]);
+        float a4  = float(s_feat[p_in_t8][c_base + 4u]);
+        float s_aniso = (dec0_s0 != 0.0) ? dec0_s0 : 8.0;
+        float f_aniso = (dec0_f0 != 0.0) ? dec0_f0 : 0.0786326;
+        float sx_a = s_aniso * sigm(a28);
+        float sy_a = s_aniso * sigm(a25);
+        float rho = tanh(a4 * f_aniso);
+        float axx = sx_a * sx_a;
+        float ayy = sy_a * sy_a;
+        float axy = rho * sx_a * sy_a;
+        out_aniso[idx] = f16vec4(float16_t(axx), float16_t(ayy), float16_t(axy), float16_t(0.0));
+
+        // 4. Hidden (channels 0, 5, 9, 12)
+        float h0 = float(s_feat[p_in_t8][c_base + 0u]);
+        float h5 = float(s_feat[p_in_t8][c_base + 5u]);
+        float h9 = float(s_feat[p_in_t8][c_base + 9u]);
+        float h12 = float(s_feat[p_in_t8][c_base + 12u]);
+
+        f16vec2 mv = in_prev_mv[idx];
+        float rx_h = float(x) + float(mv.x) + F20x;
+        float ry_h = float(y) + float(mv.y) + F20y;
+        vec4 h_rep = sample_hidden(rx_h, ry_h);
+
+        vec4 dh = vec4(h0, h5, h9, h12) * 10.0;
+        vec4 h_out = clamp(h_rep + dh, vec4(0.0), vec4(255.0));
+        out_hidden[idx] = u8vec4(uint8_t(round(h_out.x)), uint8_t(round(h_out.y)),
+                                uint8_t(round(h_out.z)), uint8_t(round(h_out.w)));
     }
 }
