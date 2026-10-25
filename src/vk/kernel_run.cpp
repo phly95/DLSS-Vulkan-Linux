@@ -345,7 +345,7 @@ int main(int argc, char** argv) {
     pcr.offset = 0;
     uint32_t push_size = (uint32_t)cfg.push_data.size();
     if (push_size % 4 != 0) push_size += 4 - (push_size % 4);
-    if (push_size == 0) push_size = 128;
+    if (push_size < 256) push_size = 256;
     pcr.size = push_size;
 
     VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};

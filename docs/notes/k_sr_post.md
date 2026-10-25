@@ -24,3 +24,23 @@
 - **Result**: Complete coverage of 768x432 output and 384x216 dhist output.
 - **Pipestats**: 108 SGPRs, 24 VGPRs, 0 spilled SGPRs, 0 spilled VGPRs, 0 scratch size.
 
+### Attempt 4
+- **Hypothesis**: In GFX1201 ISA (`tools/re/fn.sh sr _ZN2sr2io9k_sr_postILb0ELi12ELi16ELb0ELb0EEEvNS0_8PostArgsE` 0x7738-0x77A8), each `g_col` input sample is individually tonemapped into logarithmic space ($0.36 \times \log_{10}(1.0 + 100.0 \times c \times \text{expo})$) before spatial reconstruction filtering. Doing bilinear interpolation in raw linear HDR space caused specular fireflies (e.g. 3,460.0) to smear into neighboring pixels (1,730+ vs ref max 13.75). Clamping to FP16 finite range (32752.0) and tonemapping each corner pixel before bilinear blending compresses specular peaks and prevents HDR smearing.
+- **Result**:
+  - `full15 [u8]`: bit-exact increased from 18.12% to 32.49% (431,169 / 1,327,104).
+  - `dhist [u8]`: bit-exact increased from 25.60% to 40.63% (134,807 / 331,776). First mismatch index 1: port 30456887, oracle 30456888 (1 LSB off).
+  - `ihist1 [u8]`: bit-exact increased from 46.88% to 56.52% (1,500,149 / 2,654,208).
+
+### Attempt 5
+- **Hypothesis**: History reprojection on moving frames suffered from four compounding errors:
+  1. Jitter offset delta between frames: the reprojected history position must undo camera subpixel jitter `(jitter_prev - jitter) * (W15 / W)`. In `runner.cpp`, `jitter_prev` was omitted from push constants. Passing `mvoffx = (jpx - jx) * (W15 / W)` and `mvoffy = (jpy - jy) * (H15 / H)` in push constants (offset 248) eliminates subpixel jitter misalignment.
+  2. Motion vectors were sampled with nearest-neighbor lookup, causing warping discontinuities. Bilinear interpolation of `in_mv_nondil` across continuous subpixel coordinates produces smooth warping.
+  3. Disocclusion handling: previous shader clamped temporal weight to minimum 0.25, forcing 25% ghosting on disoccluded pixels. Lowering the clamp floor to 0.0 allows newly visible surfaces to discard invalid history.
+  4. Local color bounding box clamping (`clamp(t_hist, cmin, cmax)`): restricts history samples to the local neighborhood color gamut, preventing ghosting artifacts.
+- **Result**:
+  - Minimum PSNR across `sr_M_seq` moving frames jumped by **+8.4 dB** (from 32.46 dB to 40.87 dB, with mean PSNR 42.40 dB).
+  - Frames 3, 5, 6, and 9 achieved $|PSNR(\text{port}, GT) - PSNR(\text{ref}, GT)| \le 0.013 - 0.096\text{ dB}$, satisfying the referee's $\le 0.100\text{ dB}$ ground-truth delta threshold!
+  - `sr_L_seq` achieves 42.67 dB mean PSNR (min 41.03 dB).
+  - All 27 pipelines pass offline verification (O1..O7 clean).
+  - Mesa `shaderstats` confirmed: 48 VGPRs, 108 SGPRs, 0 spilled SGPRs, 0 spilled VGPRs, 0 scratch size.
+

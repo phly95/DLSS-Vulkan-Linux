@@ -312,7 +312,7 @@ int main(int argc, char** argv) {
         add_pipe("sr_stage", 4, 56);
         add_pipe("sr_tube_split", 3, 56);
         add_pipe("sr_dec0", 8, 160);
-        add_pipe("sr_post", 12, 220);
+        add_pipe("sr_post", 12, 256);
         add_pipe("sr_downsample", 4, 88);
         add_pipe("sr_unorm8_table", 1, 0);
         if (preset == "L") {
@@ -515,6 +515,9 @@ int main(int argc, char** argv) {
         auto jit = jget(pf, "jitter");
         float jx = float(jit.size() > 0 ? jit[0] : 0.0);
         float jy = float(jit.size() > 1 ? jit[1] : 0.0);
+        auto jitp = jget(pf, "jitter_prev");
+        float jpx = float(jitp.size() > 0 ? jitp[0] : 0.0);
+        float jpy = float(jitp.size() > 1 ? jitp[1] : 0.0);
 
         // Load frame textures
         std::string c_ext = (fmt_col == 0) ? ".f16" : (".c" + std::to_string(fmt_col));
@@ -667,7 +670,7 @@ int main(int argc, char** argv) {
 
             // 6. Post
             {
-                uint8_t push[220] = {0};
+                uint8_t push[256] = {0};
                 std::memcpy(push + 16, &p, 4);
                 std::memcpy(push + 136, &W, 4); std::memcpy(push + 140, &H, 4);
                 std::memcpy(push + 152, &W15, 4); std::memcpy(push + 156, &H15, 4);
@@ -679,9 +682,14 @@ int main(int argc, char** argv) {
                 std::memcpy(push + 176, &sy15, 4);
                 std::memcpy(push + 180, &jx, 4);
                 std::memcpy(push + 184, &jy, 4);
+                std::memcpy(push + 208, &reset, 4);
                 std::memcpy(push + 212, &ldr, 4); std::memcpy(push + 216, &mvhi, 4);
+                float mvoffx = (jpx - jx) * (float(W15) / float(W));
+                float mvoffy = (jpy - jy) * (float(H15) / float(H));
+                std::memcpy(push + 248, &mvoffx, 4);
+                std::memcpy(push + 252, &mvoffy, 4);
                 dispatch("sr_post", {&g_col, &expo, &gates, &factors, &aniso, &ihist[p], &prev_mvec[p ^ 1], &mv_ero, &mv_nondil,
-                                     &ihist[p ^ 1], &full15, &dhist}, push, 220, (W15 + 15) / 16, (hH15 + 15) / 16, 1);
+                                     &ihist[p ^ 1], &full15, &dhist}, push, 256, (W15 + 15) / 16, (hH15 + 15) / 16, 1);
             }
 
             // 7. Downsample
