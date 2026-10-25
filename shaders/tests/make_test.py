@@ -314,16 +314,43 @@ def make_test(name, out_dir):
             ]
         }
     elif name == "rr_enc0_feat":
+        w0 = ((w + 15) // 16) * 16
+        h0 = ((h + 15) // 16) * 16
         col = np.linspace(0.1, 1.0, n_pix * 4, dtype=np.float16).tobytes()
-        open(os.path.join(out_dir, "in_feat.bin"), "wb").write(col)
+        mv = np.linspace(0.01, 0.5, n_pix * 2, dtype=np.float16).tobytes()
+        dep = np.linspace(0.1, 100.0, n_pix, dtype=np.float32).tobytes()
+        norm = np.linspace(0.1, 1.0, n_pix * 4, dtype=np.float16).tobytes()
+        alb = np.linspace(0.1, 1.0, n_pix * 4, dtype=np.float32).tobytes()
+        spa = np.linspace(0.1, 1.0, n_pix * 4, dtype=np.float32).tobytes()
+        rgh = np.linspace(0.1, 1.0, n_pix, dtype=np.float32).tobytes()
+        expo = np.array([1.0, 1.0, 1.0, 0.0], dtype=np.float32).tobytes()
+        open(os.path.join(out_dir, "in_col.bin"), "wb").write(col)
+        open(os.path.join(out_dir, "in_mv.bin"), "wb").write(mv)
+        open(os.path.join(out_dir, "in_dep.bin"), "wb").write(dep)
+        open(os.path.join(out_dir, "in_nrm.bin"), "wb").write(norm)
+        open(os.path.join(out_dir, "in_alb.bin"), "wb").write(alb)
+        open(os.path.join(out_dir, "in_spa.bin"), "wb").write(spa)
+        open(os.path.join(out_dir, "in_rgh.bin"), "wb").write(rgh)
+        open(os.path.join(out_dir, "in_expo.bin"), "wb").write(expo)
         push = bytearray(16)
-        struct.pack_into("<2i", push, 8, w, h)
+        struct.pack_into("<4i", push, 0, w0, h0, w, h)
         cfg = {
-            "groups": [(w + 15) // 16, (h + 15) // 16, 1],
+            "groups": [(w0 + 15) // 16, (h0 + 15) // 16, 1],
             "push": push.hex(),
             "bindings": [
-                {"binding": 0, "file": "in_feat.bin"},
-                {"binding": 1, "bytes": n_pix * 16, "output": "out_act", "type": "u8"}
+                {"binding": 0, "file": "in_col.bin"},
+                {"binding": 1, "file": "in_mv.bin"},
+                {"binding": 2, "file": "in_dep.bin"},
+                {"binding": 3, "file": "in_nrm.bin"},
+                {"binding": 4, "file": "in_alb.bin"},
+                {"binding": 5, "file": "in_spa.bin"},
+                {"binding": 6, "file": "in_rgh.bin"},
+                {"binding": 7, "file": "in_expo.bin"},
+                {"binding": 8, "bytes": w0 * h0 * 64, "output": "out_be8", "type": "u8"},
+                {"binding": 9, "bytes": w0 * h0 * 8, "output": "out_bec", "type": "f16"},
+                {"binding": 10, "bytes": n_pix * 8, "output": "out_bf6", "type": "f16"},
+                {"binding": 11, "bytes": n_pix * 4, "output": "out_bfa", "type": "f16"},
+                {"binding": 12, "bytes": n_pix * 4, "output": "out_bfe", "type": "f16"}
             ]
         }
     elif name == "rr_pooled2":

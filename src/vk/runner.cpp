@@ -310,7 +310,7 @@ int main(int argc, char** argv) {
         add_pipe("rr_gather", 14, 8);
         add_pipe("rr_ae_block", 2, 16);
         add_pipe("rr_ae_final", 2, 0);
-        add_pipe("rr_enc0_feat", 2, 16);
+        add_pipe("rr_enc0_feat", 13, 16);
         add_pipe("rr_level", 3, 16);
         add_pipe("rr_post_prep", 4, 40);
         add_pipe("rr_post", 2, 120);
@@ -372,13 +372,18 @@ int main(int argc, char** argv) {
     Buffer cf2 = create_buffer(dev, picked_phys, size_t(W) * H * 32, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer cf6 = create_buffer(dev, picked_phys, size_t(W15) * H15 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer cfa = create_buffer(dev, picked_phys, size_t(W15) * H15 * 2, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    Buffer bfa = create_buffer(dev, picked_phys, size_t(W) * H * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    Buffer bfe = create_buffer(dev, picked_phys, size_t(W) * H * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    Buffer bf6 = create_buffer(dev, picked_phys, size_t(W) * H * 8, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    Buffer bec = create_buffer(dev, picked_phys, size_t(W0) * H0 * 8, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer ihist[2] = {
         create_buffer(dev, picked_phys, size_t(W15) * H15 * 8, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
         create_buffer(dev, picked_phys, size_t(W15) * H15 * 8, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)
     };
 
+    size_t t0_sz = std::max(size_t(W0) * H0 * 64, size_t(L1w) * L1h * 64);
     Buffer t_act[9] = {
-        create_buffer(dev, picked_phys, size_t(L1w) * L1h * 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
+        create_buffer(dev, picked_phys, t0_sz, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
         create_buffer(dev, picked_phys, size_t(L1w) * L1h * 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
         create_buffer(dev, picked_phys, size_t(L2w) * L2h * 96, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
         create_buffer(dev, picked_phys, size_t(L2w) * L2h * 96, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
@@ -611,8 +616,10 @@ int main(int argc, char** argv) {
             // 3. Enc0 feat
             {
                 uint8_t push[16] = {0};
+                std::memcpy(push + 0, &W0, 4); std::memcpy(push + 4, &H0, 4);
                 std::memcpy(push + 8, &W, 4); std::memcpy(push + 12, &H, 4);
-                dispatch("rr_enc0_feat", {&g_col, &t_act[0]}, push, 16, (W + 15) / 16, (H + 15) / 16, 1);
+                dispatch("rr_enc0_feat", {&g_col, &g_mv, &g_dep, &in_norm, &out_alb, &out_spa, &in_rough, &expo,
+                                         &t_act[0], &bec, &bf6, &bfa, &bfe}, push, 16, (W0 + 15) / 16, (H0 + 15) / 16, 1);
             }
             // 4. Levels (U-Net)
             {
@@ -696,6 +703,10 @@ int main(int argc, char** argv) {
     destroy_buffer(dev, dhist);
     destroy_buffer(dev, full15);
     destroy_buffer(dev, cf2);
+    destroy_buffer(dev, bfa);
+    destroy_buffer(dev, bfe);
+    destroy_buffer(dev, bf6);
+    destroy_buffer(dev, bec);
     destroy_buffer(dev, ihist[0]);
     destroy_buffer(dev, ihist[1]);
     for (int i = 0; i < 9; ++i) destroy_buffer(dev, t_act[i]);

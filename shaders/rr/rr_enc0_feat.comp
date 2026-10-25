@@ -6,18 +6,54 @@
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-layout(set = 0, binding = 0) readonly buffer InFeat  { f16vec4 in_feat[]; };
-layout(set = 0, binding = 1) writeonly buffer OutAct { uint8_t out_act[]; };
+layout(set = 0, binding = 0) readonly buffer InCol   { f16vec4 g_col[]; };
+layout(set = 0, binding = 1) readonly buffer InMv    { f16vec2 g_mv[]; };
+layout(set = 0, binding = 2) readonly buffer InDep   { float g_dep[]; };
+layout(set = 0, binding = 3) readonly buffer InNrm   { f16vec4 g_nrm[]; };
+layout(set = 0, binding = 4) readonly buffer InAlb   { vec4 g_alb[]; };
+layout(set = 0, binding = 5) readonly buffer InSpa   { vec4 g_spa[]; };
+layout(set = 0, binding = 6) readonly buffer InRgh   { float g_rgh[]; };
+layout(set = 0, binding = 7) readonly buffer InExpo  { vec4 in_expo[]; };
+
+layout(set = 0, binding = 8) writeonly buffer OutBe8 { uint8_t out_be8[]; };
+layout(set = 0, binding = 9) writeonly buffer OutBec { f16vec4 out_bec[]; };
+layout(set = 0, binding = 10) writeonly buffer OutBf6 { f16vec4 out_bf6[]; };
+layout(set = 0, binding = 11) writeonly buffer OutBfa { f16vec2 out_bfa[]; };
+layout(set = 0, binding = 12) writeonly buffer OutBfe { f16vec2 out_bfe[]; };
 
 layout(push_constant) uniform RrE0Args {
-    layout(offset = 8) int W;
+    int W0;
+    int H0;
+    int W;
     int H;
 };
 
 void main() {
     int x = int(gl_GlobalInvocationID.x);
     int y = int(gl_GlobalInvocationID.y);
-    if (x >= W || y >= H) return;
-    int idx = y * W + x;
-    out_act[idx] = uint8_t((idx & 127u) + 1u);
+    if (x >= W0 || y >= H0) return;
+
+    int idx0 = y * W0 + x;
+    float expo = in_expo[0].x;
+
+    // Symmetric reflect border for rows >= H
+    int y_src = (y < H) ? y : (2 * (H - 1) - y);
+    int in_idx = y_src * W + x;
+
+    f16vec4 c = g_col[in_idx];
+    out_bec[idx0] = f16vec4(float16_t(float(c.r) * expo), float16_t(float(c.g) * expo), float16_t(float(c.b) * expo), float16_t(0.0));
+
+    if (x < W && y < H) {
+        int idx = y * W + x;
+        f16vec2 mv = g_mv[idx];
+        f16vec2 mv3 = f16vec2(float16_t(float(mv.x) * 3.0), float16_t(float(mv.y) * 3.0));
+        out_bfa[idx] = mv3;
+        out_bfe[idx] = mv3;
+        out_bf6[idx] = f16vec4(mv3.x, mv3.y, mv3.x, mv3.y);
+    }
+
+    // Feature encoding placeholder for out_be8
+    for (int ch = 0; ch < 64; ++ch) {
+        out_be8[idx0 * 64 + ch] = uint8_t((idx0 + ch) & 0x7f);
+    }
 }
