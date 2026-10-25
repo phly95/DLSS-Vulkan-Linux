@@ -23,7 +23,8 @@ Never mark CLOSE or EXACT without pasted diffdump numbers.
 | `k_sr_enc0` | APPROX | prev_mvec1 [f16]: 73728/73728 (100.0000%), max \|err\| 0, max ulp 0<br>mv_ero [f16]: 73728/73728 (100.0000%), max \|err\| 0, max ulp 0<br>mv_nondil [f16]: 73728/73728 (100.0000%), max \|err\| 0, max ulp 0<br>t0 [u8]: 655360 elements, bit-exact 1509 (0.2303%), max \|err\| 192 | 3 of 4 output buffers 100% bit-exact (prev_mvec1, mv_ero, mv_nondil mv*3); t0 feature map approximate |
 | `k_sr_dec0` | APPROX | Offline verification O7 passed | Level-0 decoder |
 | `k_sr_stage` | APPROX | Offline verification O7 passed | 18 instantiations, open softmax / second norm |
-| `k_sr_enc0L_in` / `l0` | APPROX | Offline verification O7 passed | Preset L encoder / decoder level 0 |
+| `k_sr_enc0L_in` | APPROX | prev_mvec1 [f16]: 73728/73728 (100.0000%), max \|err\| 0, max ulp 0<br>mv_ero [f16]: 73728/73728 (100.0000%), max \|err\| 0, max ulp 0<br>mv_nondil [f16]: 73728/73728 (100.0000%), max \|err\| 0, max ulp 0<br>l0_in [u8]: 1419264 elements, bit-exact 1203069 (84.7671%), max \|err\| 128 | 3 of 4 output buffers 100% bit-exact (prev_mvec1, mv_ero, mv_nondil mv*3); l0_in 84.77% bit-exact |
+| `k_sr_l0` | APPROX | Offline verification O7 passed | Preset L level-0 decoder/skip |
 | `k_sr_unorm8_table` | APPROX | Offline verification O7 passed | Unorm8 table generator |
 | **RR Kernels** | | | |
 | `k_rr_gather` | EXACT | E0c6e [f16]: 147456/147456 (100.0000%), max \|err\| 0, max ulp 0<br>E0c72 [f32]: 36864/36864 (100.0000%), max \|err\| 0, max ulp 0<br>E0c76 [f16]: 73728/73728 (100.0000%), max \|err\| 0, max ulp 0<br>E0c7a [f16]: 147456/147456 (100.0000%), max \|err\| 0, max ulp 0<br>E0c7e [f32]: 147456/147456 (100.0000%), max \|err\| 0, max ulp 0<br>E0c82 [f32]: 147456/147456 (100.0000%), max \|err\| 0, max ulp 0<br>E0c8e [f32]: 36864/36864 (100.0000%), max \|err\| 0, max ulp 0 | Bit-exact across all seven output buffers against launch 0 |

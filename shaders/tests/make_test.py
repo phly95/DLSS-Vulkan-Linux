@@ -239,20 +239,49 @@ def make_test(name, out_dir):
             "push": push.hex(),
             "bindings": bindings
         }
-    elif name in ("sr_enc0L_in", "sr_l0"):
+    elif name == "sr_enc0L_in":
+        w0 = ((w + 7) // 8) * 8
+        h0 = ((h + 7) // 8) * 8
+        b_col = np.linspace(0.1, 1.0, n_pix * 4, dtype=np.float16).tobytes()
+        b_dep = np.linspace(0.1, 100.0, n_pix, dtype=np.float32).tobytes()
+        b_mv = np.linspace(0.01, 0.5, n_pix * 2, dtype=np.float16).tobytes()
+        open(os.path.join(out_dir, "g_col.bin"), "wb").write(b_col)
+        open(os.path.join(out_dir, "g_dep.bin"), "wb").write(b_dep)
+        open(os.path.join(out_dir, "g_mv.bin"), "wb").write(b_mv)
+        open(os.path.join(out_dir, "prev_mv.bin"), "wb").write(b_mv)
+        open(os.path.join(out_dir, "dhist.bin"), "wb").write(np.zeros(n_pix, dtype=np.uint32).tobytes())
+        open(os.path.join(out_dir, "hidden.bin"), "wb").write(b_mv)
+        open(os.path.join(out_dir, "wbuf.bin"), "wb").write(np.zeros(4096, dtype=np.uint8).tobytes())
+        push = bytearray(148)
+        struct.pack_into("<8i", push, 88, w, h, w0, h0, w, h, w, h)
+        struct.pack_into("<i2f", push, 136, 0, 0.0, 0.0)
+        total_l0 = (w0 + 8) * (h0 + 8) * 32
+        cfg = {
+            "groups": [(w * h + 63) // 64, 1, 1],
+            "push": push.hex(),
+            "bindings": [
+                {"binding": 0, "file": "g_col.bin"},
+                {"binding": 1, "file": "g_dep.bin"},
+                {"binding": 2, "file": "g_mv.bin"},
+                {"binding": 3, "file": "prev_mv.bin"},
+                {"binding": 4, "file": "dhist.bin"},
+                {"binding": 5, "file": "hidden.bin"},
+                {"binding": 6, "bytes": n_pix * 4, "output": "prev_mv_out", "type": "f16"},
+                {"binding": 7, "bytes": n_pix * 4, "output": "mv_ero", "type": "f16"},
+                {"binding": 8, "bytes": n_pix * 4, "output": "mv_nondil", "type": "f16"},
+                {"binding": 9, "bytes": total_l0, "output": "out_act", "type": "u8"},
+                {"binding": 10, "file": "wbuf.bin"}
+            ]
+        }
+    elif name == "sr_l0":
         open(os.path.join(out_dir, "wbuf.bin"), "wb").write(np.zeros(4096, dtype=np.uint8).tobytes())
         in_data = np.linspace(1, 250, 2048, dtype=np.uint8).tobytes()
         open(os.path.join(out_dir, "in_act.bin"), "wb").write(in_data)
         bindings = [
             {"binding": 0, "file": "wbuf.bin"},
-            {"binding": 1, "bytes": 2048, "output": "out_act", "type": "u8"}
+            {"binding": 1, "file": "in_act.bin"},
+            {"binding": 2, "bytes": 2048, "output": "out_act", "type": "u8"}
         ]
-        if name == "sr_l0":
-            bindings = [
-                {"binding": 0, "file": "wbuf.bin"},
-                {"binding": 1, "file": "in_act.bin"},
-                {"binding": 2, "bytes": 2048, "output": "out_act", "type": "u8"}
-            ]
         cfg = {
             "groups": [32, 1, 1],
             "push": "",

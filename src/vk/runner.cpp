@@ -303,7 +303,7 @@ int main(int argc, char** argv) {
         add_pipe("sr_downsample", 4, 88);
         add_pipe("sr_unorm8_table", 1, 0);
         if (preset == "L") {
-            add_pipe("sr_enc0L_in", 2, 0);
+            add_pipe("sr_enc0L_in", 11, 148);
             add_pipe("sr_l0", 3, 0);
         }
     } else {
@@ -527,8 +527,14 @@ int main(int argc, char** argv) {
                 std::memcpy(push + 112, &W15, 4); std::memcpy(push + 116, &H15, 4);
                 std::memcpy(push + 120, &hW15, 4); std::memcpy(push + 124, &hH15, 4);
                 std::memcpy(push + 136, &p, 4);
-                dispatch("sr_enc0", {&g_col, &g_dep, mvhi ? &g_mvhi : &g_mv, &prev_mvec[p], &dhist, &hidden[p],
-                                     &prev_mvec[p ^ 1], &mv_ero, &mv_nondil, &t_act[0], &wbuf}, push, 148, W0 / 8, H0 / 8, 1);
+                if (preset == "L") {
+                    dispatch("sr_enc0L_in", {&g_col, &g_dep, mvhi ? &g_mvhi : &g_mv, &prev_mvec[p], &dhist, &hidden[p],
+                                             &prev_mvec[p ^ 1], &mv_ero, &mv_nondil, &t_act[0], &wbuf}, push, 148, (W * H + 63) / 64, 1, 1);
+                    dispatch("sr_l0", {&wbuf, &t_act[0], &t_act[1]}, nullptr, 0, 32, 1, 1);
+                } else {
+                    dispatch("sr_enc0", {&g_col, &g_dep, mvhi ? &g_mvhi : &g_mv, &prev_mvec[p], &dhist, &hidden[p],
+                                         &prev_mvec[p ^ 1], &mv_ero, &mv_nondil, &t_act[0], &wbuf}, push, 148, W0 / 8, H0 / 8, 1);
+                }
             }
 
             // 4. Stages 0..9
