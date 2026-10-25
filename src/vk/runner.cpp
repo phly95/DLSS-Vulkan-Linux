@@ -309,11 +309,11 @@ int main(int argc, char** argv) {
     } else {
         add_pipe("rr_gather", 14, 8);
         add_pipe("rr_ae_block", 2, 16);
-        add_pipe("rr_ae_final", 2, 0);
+        add_pipe("rr_ae_final", 2, 8);
         add_pipe("rr_enc0_feat", 13, 16);
         add_pipe("rr_level", 3, 16);
         add_pipe("rr_post_prep", 4, 40);
-        add_pipe("rr_post", 2, 120);
+        add_pipe("rr_post", 5, 120);
         add_pipe("rr_downsample", 4, 48);
         add_pipe("rr_pooled2", 2, 32);
         add_pipe("rr_avg2x2", 2, 8);
@@ -344,15 +344,17 @@ int main(int argc, char** argv) {
     Buffer in_spa = create_buffer(dev, picked_phys, size_t(W) * H * 8, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer out_alb = create_buffer(dev, picked_phys, size_t(W) * H * 16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer out_spa = create_buffer(dev, picked_phys, size_t(W) * H * 16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    Buffer out_norm = create_buffer(dev, picked_phys, size_t(W) * H * 8, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    Buffer out_rough = create_buffer(dev, picked_phys, size_t(W) * H * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
     Buffer g_col = create_buffer(dev, picked_phys, size_t(W) * H * 8, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer g_dep = create_buffer(dev, picked_phys, size_t(W) * H * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer g_mv  = create_buffer(dev, picked_phys, size_t(W) * H * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer g_mvhi = create_buffer(dev, picked_phys, size_t(oW) * oH * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
-    Buffer expo = create_buffer(dev, picked_phys, 8, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    uint32_t one_expo = 0x3c003c00;
-    std::memcpy(expo.mapped, &one_expo, 4);
+    Buffer expo = create_buffer(dev, picked_phys, 16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    float exp_init[4] = { 1.0f, 1.0f, 1.0f, 0.0f };
+    std::memcpy(expo.mapped, exp_init, 16);
 
     Buffer prev_mvec[2] = {
         create_buffer(dev, picked_phys, size_t(W) * H * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
@@ -450,6 +452,9 @@ int main(int argc, char** argv) {
         float exposure_val = float(jget(pf, "exposure").empty() ? 1.0 : jget(pf, "exposure")[0]);
         float pre_val = float(jget(pf, "pre_exposure").empty() ? 1.0 : jget(pf, "pre_exposure")[0]);
         int reset = jint(pf, "reset");
+        auto jit = jget(pf, "jitter");
+        float jx = float(jit.size() > 0 ? jit[0] : 0.0);
+        float jy = float(jit.size() > 1 ? jit[1] : 0.0);
 
         // Load frame textures
         std::string c_ext = (fmt_col == 0) ? ".f16" : (".c" + std::to_string(fmt_col));
@@ -465,12 +470,18 @@ int main(int argc, char** argv) {
         if (!d_raw.empty()) std::memcpy(in_dep.mapped, d_raw.data(), std::min(in_dep.size, d_raw.size()));
 
         if (mode == "rr") {
-            auto n_raw = slurp(fdir + "/norm" + sfx + ".f16");
+            auto n_raw = slurp(fdir + "/nrm" + sfx + ".f16");
+            if (n_raw.empty()) n_raw = slurp(fdir + "/norm" + sfx + ".f16");
             auto r_raw = slurp(fdir + "/rgh" + sfx + ".f32");
             auto a_raw = slurp(fdir + "/alb" + sfx + ".f16");
+            auto s_raw = slurp(fdir + "/spa" + sfx + ".f16");
             if (!n_raw.empty()) std::memcpy(in_norm.mapped, n_raw.data(), std::min(in_norm.size, n_raw.size()));
             if (!r_raw.empty()) std::memcpy(in_rough.mapped, r_raw.data(), std::min(in_rough.size, r_raw.size()));
             if (!a_raw.empty()) std::memcpy(in_alb.mapped, a_raw.data(), std::min(in_alb.size, a_raw.size()));
+            if (!s_raw.empty()) std::memcpy(in_spa.mapped, s_raw.data(), std::min(in_spa.size, s_raw.size()));
+
+            float exp_data[4] = { exposure_val, pre_val, 1.0f / std::max(exposure_val, 1e-4f), 0.0f };
+            std::memcpy(expo.mapped, exp_data, 16);
         }
 
         // Record commands
@@ -585,6 +596,12 @@ int main(int argc, char** argv) {
                 std::memcpy(push + 136, &W, 4); std::memcpy(push + 140, &H, 4);
                 std::memcpy(push + 152, &W15, 4); std::memcpy(push + 156, &H15, 4);
                 std::memcpy(push + 160, &hW15, 4); std::memcpy(push + 164, &hH15, 4);
+                float sx15 = float(W) / float(W15);
+                float sy15 = float(H) / float(H15);
+                std::memcpy(push + 172, &sx15, 4);
+                std::memcpy(push + 176, &sy15, 4);
+                std::memcpy(push + 180, &jx, 4);
+                std::memcpy(push + 184, &jy, 4);
                 std::memcpy(push + 212, &ldr, 4); std::memcpy(push + 216, &mvhi, 4);
                 dispatch("sr_post", {&g_col, &expo, &gates, &factors, &aniso, &ihist[p], &prev_mvec[p ^ 1], &mv_ero, &mv_nondil,
                                      &ihist[p ^ 1], &full15, &dhist}, push, 220, (W15 + 15) / 16, (H15 + 15) / 16, 1);
@@ -610,21 +627,23 @@ int main(int argc, char** argv) {
             {
                 uint8_t push[8] = {0};
                 std::memcpy(push + 0, &W, 4); std::memcpy(push + 4, &H, 4);
-                dispatch("rr_gather", {&in_col, &in_mv, &in_dep, &in_norm, &in_alb, &in_spa, &in_rough, &g_col, &g_dep, &g_mv, &in_norm, &out_alb, &out_spa, &in_rough}, push, 8, (W + 15) / 16, (H + 15) / 16, 1);
+                dispatch("rr_gather", {&in_col, &in_mv, &in_dep, &in_norm, &in_alb, &in_spa, &in_rough, &g_col, &g_dep, &g_mv, &out_norm, &out_alb, &out_spa, &out_rough}, push, 8, (W + 15) / 16, (H + 15) / 16, 1);
             }
             // 2. Auto exposure
             {
                 uint8_t push[16] = {0};
                 std::memcpy(push + 8, &W, 4); std::memcpy(push + 12, &H, 4);
                 dispatch("rr_ae_block", {&g_col, &dhist}, push, 16, (W + 15) / 16, (H + 15) / 16, 1);
-                dispatch("rr_ae_final", {&dhist, &expo}, nullptr, 0, 1, 1, 1);
+                uint8_t push_final[8] = {0};
+                std::memcpy(push_final + 0, &W, 4); std::memcpy(push_final + 4, &H, 4);
+                dispatch("rr_ae_final", {&dhist, &expo}, push_final, 8, 1, 1, 1);
             }
             // 3. Enc0 feat
             {
                 uint8_t push[16] = {0};
                 std::memcpy(push + 0, &W0, 4); std::memcpy(push + 4, &H0, 4);
                 std::memcpy(push + 8, &W, 4); std::memcpy(push + 12, &H, 4);
-                dispatch("rr_enc0_feat", {&g_col, &g_mv, &g_dep, &in_norm, &out_alb, &out_spa, &in_rough, &expo,
+                dispatch("rr_enc0_feat", {&g_col, &g_mv, &g_dep, &out_norm, &out_alb, &out_spa, &out_rough, &expo,
                                          &t_act[0], &bec, &bf6, &bfa, &bfe}, push, 16, (W0 + 15) / 16, (H0 + 15) / 16, 1);
             }
             // 4. Levels (U-Net)
@@ -643,9 +662,19 @@ int main(int argc, char** argv) {
             // 6. Post
             {
                 uint8_t push[120] = {0};
+                std::memcpy(push + 0, &W, 4);
+                std::memcpy(push + 4, &H, 4);
+                std::memcpy(push + 8, &W15, 4);
+                std::memcpy(push + 12, &H15, 4);
                 std::memcpy(push + 16, &reset, 4);
-                std::memcpy(push + 112, &W15, 4); std::memcpy(push + 116, &H15, 4);
-                dispatch("rr_post", {&g_col, &ihist[0]}, push, 120, (W15 + 15) / 16, (H15 + 15) / 16, 1);
+                float sx = float(W) / float(W15);
+                float sy = float(H) / float(H15);
+                std::memcpy(push + 20, &sx, 4);
+                std::memcpy(push + 24, &sy, 4);
+                std::memcpy(push + 28, &jx, 4);
+                std::memcpy(push + 32, &jy, 4);
+                std::memcpy(push + 36, &exposure_val, 4);
+                dispatch("rr_post", {&g_col, &expo, &cf6, &cfa, &ihist[0]}, push, 120, (W15 + 15) / 16, (H15 + 15) / 16, 1);
             }
             // 7. Downsample
             {
@@ -692,6 +721,11 @@ int main(int argc, char** argv) {
     destroy_buffer(dev, in_norm);
     destroy_buffer(dev, in_rough);
     destroy_buffer(dev, in_alb);
+    destroy_buffer(dev, in_spa);
+    destroy_buffer(dev, out_alb);
+    destroy_buffer(dev, out_spa);
+    destroy_buffer(dev, out_norm);
+    destroy_buffer(dev, out_rough);
     destroy_buffer(dev, g_col);
     destroy_buffer(dev, g_dep);
     destroy_buffer(dev, g_mv);

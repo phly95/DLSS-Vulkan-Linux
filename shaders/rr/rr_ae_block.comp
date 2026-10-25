@@ -12,13 +12,30 @@ layout(push_constant) uniform RrAEArgs {
     int H;
 };
 
+shared float s_luma[256];
+
 void main() {
     int x = int(gl_GlobalInvocationID.x);
     int y = int(gl_GlobalInvocationID.y);
-    if (x >= W || y >= H) return;
-    int idx = y * W + x;
-    f16vec4 c = in_col[idx];
-    float luma = float(0.25 * c.r + 0.5 * c.g + 0.25 * c.b);
-    uint gid = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
-    block_luma[gid] = luma;
+    uint tid = gl_LocalInvocationIndex;
+
+    float luma = 0.0;
+    if (x < W && y < H) {
+        f16vec4 c = in_col[y * W + x];
+        luma = clamp(float(0.25 * c.r + 0.5 * c.g + 0.25 * c.b), 0.0, 10000.0);
+    }
+    s_luma[tid] = luma;
+    barrier();
+
+    for (uint s = 128u; s > 0u; s >>= 1u) {
+        if (tid < s) {
+            s_luma[tid] += s_luma[tid + s];
+        }
+        barrier();
+    }
+
+    if (tid == 0u) {
+        uint gid = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+        block_luma[gid] = s_luma[0];
+    }
 }

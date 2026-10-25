@@ -4,19 +4,50 @@
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-layout(set = 0, binding = 0) readonly buffer InFeat { f16vec4 in_feat[]; };
-layout(set = 0, binding = 1) writeonly buffer OutFull { f16vec4 out_full[]; };
+layout(set = 0, binding = 0) readonly buffer InFeat   { f16vec4 in_feat[]; };
+layout(set = 0, binding = 1) readonly buffer InExpo   { vec4 in_expo; };
+layout(set = 0, binding = 2) writeonly buffer OutRG   { f16vec2 out_rg[]; };
+layout(set = 0, binding = 3) writeonly buffer OutB    { float16_t out_b[]; };
+layout(set = 0, binding = 4) writeonly buffer OutFull { f16vec4 out_full[]; };
 
 layout(push_constant) uniform RrPostArgs {
-    layout(offset = 16) int rst;
-    layout(offset = 112) int W;
+    layout(offset = 0) int W;
     int H;
+    int W15;
+    int H15;
+    int rst;
+    float scaleX;
+    float scaleY;
+    float jitterX;
+    float jitterY;
+    float expo_val;
 };
 
+vec3 get_tonemapped(vec3 c, float e) {
+    vec3 p = log2(max(1.0 + 100.0 * c * e, vec3(0.0001))) * 0.3010299956639812;
+    return p * 0.36;
+}
+
 void main() {
-    int x = int(gl_GlobalInvocationID.x);
-    int y = int(gl_GlobalInvocationID.y);
-    if (x >= W || y >= H) return;
-    int idx = y * W + x;
-    out_full[idx] = in_feat[idx] * float16_t(1.0 + float(idx & 15u) * 0.01);
+    int x15 = int(gl_GlobalInvocationID.x);
+    int y15 = int(gl_GlobalInvocationID.y);
+    int targetW = (W15 > 0) ? W15 : W;
+    int targetH = (H15 > 0) ? H15 : H;
+    if (x15 >= targetW || y15 >= targetH) return;
+
+    float sx = (scaleX != 0.0) ? scaleX : (float(W) / float(targetW));
+    float sy = (scaleY != 0.0) ? scaleY : (float(H) / float(targetH));
+    float rx_f = (float(x15) + 0.5) * sx + jitterX - 0.5;
+    int rx = clamp(int(floor(rx_f)), 0, max(W - 1, 0));
+    float ry_f = (float(y15) + 0.5) * sy + jitterY - 0.5;
+    int ry = clamp(int(floor(ry_f)), 0, max(H - 1, 0));
+
+    vec3 c = vec3(in_feat[ry * W + rx].rgb);
+    float e = (in_expo.x > 0.0) ? in_expo.x : ((expo_val > 0.0) ? expo_val : 1.0);
+    vec3 t = get_tonemapped(c, e);
+
+    int idx = y15 * targetW + x15;
+    out_rg[idx] = f16vec2(float16_t(t.r), float16_t(t.g));
+    out_b[idx] = float16_t(t.b);
+    out_full[idx] = f16vec4(f16vec3(t), float16_t(0.0));
 }

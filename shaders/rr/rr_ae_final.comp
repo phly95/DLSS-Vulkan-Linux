@@ -5,11 +5,31 @@
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) readonly buffer InBlocks { float block_luma[]; };
-layout(set = 0, binding = 1) writeonly buffer OutExpo { float16_t expo[2]; };
+layout(set = 0, binding = 1) writeonly buffer OutExpo { vec4 expo; };
+
+layout(push_constant) uniform RrAEFinalArgs {
+    int W;
+    int H;
+};
 
 void main() {
-    float l = max(block_luma[0], 0.005);
-    float val = 0.23547 / l;
-    expo[0] = float16_t(val);
-    expo[1] = float16_t(val * 1.1);
+    float sum = 0.0;
+    if (W > 0 && H > 0) {
+        int bw = (W + 15) / 16;
+        int bh = (H + 15) / 16;
+        int num_blocks = bw * bh;
+        for (int i = 0; i < num_blocks; ++i) {
+            sum += block_luma[i];
+        }
+        float mean_luma = sum / float(W * H);
+        float l = max(mean_luma, 0.005);
+        float val = 0.23547000885 / l;
+        float val_f16 = float(float16_t(val));
+        expo = vec4(val_f16, 1.0, 1.0 / val_f16, 0.0);
+    } else {
+        float l = max(block_luma[0], 0.005);
+        float val = 0.23547000885 / l;
+        float val_f16 = float(float16_t(val));
+        expo = vec4(val_f16, 1.0, 1.0 / val_f16, 0.0);
+    }
 }

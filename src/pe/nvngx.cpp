@@ -256,6 +256,14 @@ __declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_ReleaseFeature(NVSDK_
     return NVSDK_NGX_Result_Success;
 }
 
+__declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* handle) {
+    return NVSDK_NGX_ReleaseFeature(handle);
+}
+
+__declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_VULKAN_ReleaseFeature(NVSDK_NGX_Handle* handle) {
+    return NVSDK_NGX_ReleaseFeature(handle);
+}
+
 __declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_D3D12_EvaluateFeature(
     ID3D12GraphicsCommandList* cmd, const NVSDK_NGX_Handle* handle,
     NVSDK_NGX_Parameter* params, void* callback) {

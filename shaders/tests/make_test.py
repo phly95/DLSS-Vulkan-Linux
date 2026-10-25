@@ -334,14 +334,16 @@ def make_test(name, out_dir):
             ]
         }
     elif name == "rr_ae_final":
-        luma = np.array([0.25], dtype=np.float32).tobytes()
+        luma = np.full(512, 0.25, dtype=np.float32).tobytes()
         open(os.path.join(out_dir, "block_luma.bin"), "wb").write(luma)
+        push = bytearray(8)
+        struct.pack_into("<2i", push, 0, w, h)
         cfg = {
             "groups": [1, 1, 1],
-            "push": "",
+            "push": push.hex(),
             "bindings": [
                 {"binding": 0, "file": "block_luma.bin"},
-                {"binding": 1, "bytes": 4, "output": "expo", "type": "f16"}
+                {"binding": 1, "bytes": 16, "output": "expo", "type": "f32"}
             ]
         }
     elif name == "rr_enc0_feat":
@@ -420,15 +422,20 @@ def make_test(name, out_dir):
         }
     elif name == "rr_post":
         col = np.linspace(0.1, 1.0, n_pix * 4, dtype=np.float16).tobytes()
+        expo = np.array([1.0, 1.0, 1.0, 0.0], dtype=np.float32).tobytes()
         open(os.path.join(out_dir, "in_feat.bin"), "wb").write(col)
+        open(os.path.join(out_dir, "in_expo.bin"), "wb").write(expo)
         push = bytearray(120)
-        struct.pack_into("<2i", push, 112, w, h)
+        struct.pack_into("<4i", push, 0, w, h, w, h)
         cfg = {
             "groups": [(w + 15) // 16, (h + 15) // 16, 1],
             "push": push.hex(),
             "bindings": [
                 {"binding": 0, "file": "in_feat.bin"},
-                {"binding": 1, "bytes": n_pix * 8, "output": "out_full", "type": "f16"}
+                {"binding": 1, "file": "in_expo.bin"},
+                {"binding": 2, "bytes": n_pix * 4, "output": "out_rg", "type": "f16"},
+                {"binding": 3, "bytes": n_pix * 2, "output": "out_b", "type": "f16"},
+                {"binding": 4, "bytes": n_pix * 8, "output": "out_full", "type": "f16"}
             ]
         }
     elif name == "rr_downsample":
