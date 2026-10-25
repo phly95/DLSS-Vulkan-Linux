@@ -37,11 +37,12 @@ Never mark CLOSE or EXACT without pasted diffdump numbers.
 | `k_level` | APPROX | E0b54 [fp8]: 1310720 elements, bit-exact 3824 (0.2917%), max \|err\| inf, max ulp 160, first mismatch {'index': 0, 'port': 1.125, 'oracle': 0.1015625, 'port_bits': 57, 'oracle_bits': 29} | RR U-Net level stages (18 instantiations) with collaborative LDS staging, 2-head Swin attention and MLP with SiLU (0 spills, 0 scratch, 48 VGPRs, 108 SGPRs) |
 | **Host Features** | | | |
 | `kernel_run` | EXACT | Passes all O7 pipeline runs and launch-level diffdump comparisons | Single-dispatch runner for diffdump validation |
-| `vk_runner` | APPROX | PIPELINES_CREATED: 13 (SR M), 15 (SR L), 12 (RR F)<br>SR M: 12 frames, Mean PSNR 108.02 dB, Min PSNR 77.36 dB (passes V4 >= 50/55 dB)<br>SR L: 12 frames, Mean PSNR 91.81 dB, Min PSNR 62.73 dB (passes V4 >= 50/55 dB)<br>RR F: 12 frames, Mean PSNR 45.88 dB, Max PSNR 56.29 dB | Full pipeline runner (SR M/L, RR F) running end-to-end natively on RX 9070 XT with weights loaded into wbuf, params parsed, reset/jitter handled |
+| `vk_runner` | APPROX | Current 256x144 oracle-sequence replay (9 frames; `build/breadth-baseline`, 2026-10-25): SR M V4 PSNR min 27.79 dB / mean 30.06 dB; SR L min 26.08 / mean 29.45 dB; RR F min 26.76 / mean 27.15 dB. All fail >=50 dB/frame and >=55 dB mean. Median GPU time frames 1-8: SR M 57.772 ms, SR L 58.145 ms, RR F 0.760 ms. | Oracle replay currently diverges substantially; this supersedes prior pipeline quality claims. Baseline did not include ground-truth comparison or a full V1-V10 referee run. |
 | `installer` | EXACT | Passes install and uninstall byte-for-byte check (RESTORE BYTE-FOR-BYTE: PASS) | `build/package/install.sh` for OptiScaler / Proton |
 | `ngx_client` / Proton | EXACT | D3D12: 12/12 frames read back, half-size create/eval/release cycles pass<br>Vulkan: 12/12 frames read back, half-size cycles pass<br>CreateFeature refusal: pass on missing (none) and wrong NVIDIA DLLs | All 16 NGX exports implemented; passes D3D12 and Vulkan validation under Proton on SteamOS |
 
 ## Referee Run Summary (`tools/verify/run_all.sh`)
+- **Current-session offline result**: `tools/verify/offline_check.sh` — `OFFLINE RESULT: PASS 27 pipelines` (O1-O7, 2026-10-25). The tracked-file scan, all shader builds including lavapipe f16 variants, RADV offline spill/scratch checks, and lavapipe output checks passed.
 - **Run ID**: `20261025_142540_1926957`
 - **[V10] Provenance**: PASS (clean working tree, freeze v2 matched)
 - **[V6] Host**: PASS (SteamOS)

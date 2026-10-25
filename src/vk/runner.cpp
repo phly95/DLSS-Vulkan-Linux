@@ -387,6 +387,23 @@ int main(int argc, char** argv) {
     Buffer gates = create_buffer(dev, picked_phys, size_t(W) * H * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer factors = create_buffer(dev, picked_phys, size_t(W) * H * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer aniso = create_buffer(dev, picked_phys, size_t(W) * H * 8, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    if (mode == "rr") {
+        uint8_t init_gates[4] = { 58, 223, 207, 0 };
+        uint8_t* g_ptr = static_cast<uint8_t*>(gates.mapped);
+        if (g_ptr) {
+            for (size_t i = 0; i < size_t(W) * H; ++i) std::memcpy(g_ptr + i * 4, init_gates, 4);
+        }
+        uint8_t init_factors[4] = { 41, 193, 19, 2 };
+        uint8_t* f_ptr = static_cast<uint8_t*>(factors.mapped);
+        if (f_ptr) {
+            for (size_t i = 0; i < size_t(W) * H; ++i) std::memcpy(f_ptr + i * 4, init_factors, 4);
+        }
+        uint16_t init_aniso[4] = { 0x4420, 0x46d5, 0xba88, 0x0000 };
+        uint16_t* a_ptr = static_cast<uint16_t*>(aniso.mapped);
+        if (a_ptr) {
+            for (size_t i = 0; i < size_t(W) * H; ++i) std::memcpy(a_ptr + i * 4, init_aniso, 8);
+        }
+    }
     Buffer dhist = create_buffer(dev, picked_phys, size_t(hW15) * hH15 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer full15 = create_buffer(dev, picked_phys, size_t(W15) * H15 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer cf2 = create_buffer(dev, picked_phys, size_t(W) * H * 32, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
@@ -749,7 +766,7 @@ int main(int argc, char** argv) {
             // 5. Post prep
             {
                 uint8_t push[40] = {0};
-                std::memcpy(push + 8, &W, 4);
+                std::memcpy(push + 8, &W0, 4);
                 std::memcpy(push + 32, &W, 4); std::memcpy(push + 36, &H, 4);
                 dispatch("rr_post_prep", {&bec, &gates, &aniso, &cf2}, push, 40, (W + 15) / 16, (H + 15) / 16, 1);
             }
