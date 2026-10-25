@@ -26,12 +26,12 @@ Never mark CLOSE or EXACT without pasted diffdump numbers.
 | `k_sr_enc0L_in` / `l0` | APPROX | Offline verification O7 passed | Preset L encoder / decoder level 0 |
 | `k_sr_unorm8_table` | APPROX | Offline verification O7 passed | Unorm8 table generator |
 | **RR Kernels** | | | |
-| `k_rr_gather` | APPROX | Offline verification O7 passed | Multi-texture gather |
+| `k_rr_gather` | EXACT | E0c6e [f16]: 147456/147456 (100.0000%), max \|err\| 0, max ulp 0<br>E0c72 [f32]: 36864/36864 (100.0000%), max \|err\| 0, max ulp 0<br>E0c76 [f16]: 73728/73728 (100.0000%), max \|err\| 0, max ulp 0<br>E0c7a [f16]: 147456/147456 (100.0000%), max \|err\| 0, max ulp 0<br>E0c7e [f32]: 147456/147456 (100.0000%), max \|err\| 0, max ulp 0<br>E0c82 [f32]: 147456/147456 (100.0000%), max \|err\| 0, max ulp 0<br>E0c8e [f32]: 36864/36864 (100.0000%), max \|err\| 0, max ulp 0 | Bit-exact across all seven output buffers against launch 0 |
 | `k_rr_gather_out` | APPROX | Offline verification O7 passed | Output gather |
-| `k_ae_block` / `k_ae_final` | APPROX | Offline verification O7 passed | RR auto-exposure |
+| `k_ae_block` / `k_ae_final` | EXACT | E0c22 [f32]: 4/4 (100.0000%), max \|err\| 0, max ulp 0<br>E0c26 [f16]: 1/1 (100.0000%), max \|err\| 0, max ulp 0<br>E0c2a [f16]: 1/1 (100.0000%), max \|err\| 0, max ulp 0<br>E0cee [u32]: 2/2 (100.0000%), max \|err\| 0, max ulp 0 | Bit-exact across all output buffers for launches 1 and 2 |
 | `k_enc0_feat` | APPROX | Offline verification O7 passed | RR input features |
 | `k_post_prep` / `k_post` | APPROX | Offline verification O7 passed | RR post-processing resolve |
-| `k_downsample` / `k_ds_*` | APPROX | Offline verification O7 passed | RR downsampling and pooling |
+| `k_downsample` / `k_ds_*` | APPROX | E0cfe [f32]: 589824 elements, bit-exact 300426 (50.9349%), max \|err\| 0.0289028, max ulp 1492358, first mismatch {'index': 1, 'port': 0.007601836696267128, 'oracle': 0.007601837161928415, 'port_bits': 1006180564, 'oracle_bits': 1006180565} | 5-tap polyphase separable FIR with inner-3 clamp and GPU tonemap inversion; first mismatch index 1 only 1 ULP off |
 | `k_level` | APPROX | Offline verification O7 passed | RR U-Net level stages (18 instantiations) |
 | **Host Features** | | | |
 | `kernel_run` | EXACT | Passes all O7 pipeline runs and launch-level diffdump comparisons | Single-dispatch runner for diffdump validation |

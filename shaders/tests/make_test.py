@@ -264,8 +264,9 @@ def make_test(name, out_dir):
         open(os.path.join(out_dir, "in_mv.bin"), "wb").write(mv)
         open(os.path.join(out_dir, "in_dep.bin"), "wb").write(dep)
         open(os.path.join(out_dir, "in_norm.bin"), "wb").write(col)
-        open(os.path.join(out_dir, "in_rough.bin"), "wb").write(dep)
         open(os.path.join(out_dir, "in_alb.bin"), "wb").write(col)
+        open(os.path.join(out_dir, "in_spa.bin"), "wb").write(col)
+        open(os.path.join(out_dir, "in_rough.bin"), "wb").write(dep)
         push = bytearray(8)
         struct.pack_into("<2i", push, 0, w, h)
         cfg = {
@@ -276,9 +277,16 @@ def make_test(name, out_dir):
                 {"binding": 1, "file": "in_mv.bin"},
                 {"binding": 2, "file": "in_dep.bin"},
                 {"binding": 3, "file": "in_norm.bin"},
-                {"binding": 4, "file": "in_rough.bin"},
-                {"binding": 5, "file": "in_alb.bin"},
-                {"binding": 6, "bytes": n_pix * 8, "output": "out_feat", "type": "f16"}
+                {"binding": 4, "file": "in_alb.bin"},
+                {"binding": 5, "file": "in_spa.bin"},
+                {"binding": 6, "file": "in_rough.bin"},
+                {"binding": 7, "bytes": n_pix * 8, "output": "out_col", "type": "f16"},
+                {"binding": 8, "bytes": n_pix * 4, "output": "out_dep", "type": "f32"},
+                {"binding": 9, "bytes": n_pix * 4, "output": "out_mv", "type": "f16"},
+                {"binding": 10, "bytes": n_pix * 8, "output": "out_norm", "type": "f16"},
+                {"binding": 11, "bytes": n_pix * 16, "output": "out_alb", "type": "f32"},
+                {"binding": 12, "bytes": n_pix * 16, "output": "out_spa", "type": "f32"},
+                {"binding": 13, "bytes": n_pix * 4, "output": "out_rough", "type": "f32"}
             ]
         }
     elif name == "rr_ae_block":
@@ -359,8 +367,12 @@ def make_test(name, out_dir):
             ]
         }
     elif name == "rr_downsample":
-        col = np.linspace(0.1, 1.0, n_pix * 4, dtype=np.float16).tobytes()
-        open(os.path.join(out_dir, "in_full.bin"), "wb").write(col)
+        rg = np.linspace(0.1, 1.0, n_pix * 2, dtype=np.float16).tobytes()
+        b = np.linspace(0.1, 1.0, n_pix, dtype=np.float16).tobytes()
+        expo = np.array([1.0, 1.0, 1.0, 0.0], dtype=np.float32).tobytes()
+        open(os.path.join(out_dir, "in_rg.bin"), "wb").write(rg)
+        open(os.path.join(out_dir, "in_b.bin"), "wb").write(b)
+        open(os.path.join(out_dir, "in_expo.bin"), "wb").write(expo)
         push = bytearray(48)
         struct.pack_into("<2i", push, 16, w, h)
         struct.pack_into("<2i", push, 40, w, h)
@@ -368,8 +380,10 @@ def make_test(name, out_dir):
             "groups": [(w + 15) // 16, (h + 15) // 16, 1],
             "push": push.hex(),
             "bindings": [
-                {"binding": 0, "file": "in_full.bin"},
-                {"binding": 1, "bytes": n_pix * 16, "output": "out_img", "type": "f32"}
+                {"binding": 0, "file": "in_rg.bin"},
+                {"binding": 1, "file": "in_b.bin"},
+                {"binding": 2, "file": "in_expo.bin"},
+                {"binding": 3, "bytes": n_pix * 16, "output": "out_img", "type": "f32"}
             ]
         }
     else:

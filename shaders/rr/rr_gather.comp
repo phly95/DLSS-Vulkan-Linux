@@ -8,10 +8,17 @@ layout(set = 0, binding = 0) readonly buffer InCol   { f16vec4 in_col[]; };
 layout(set = 0, binding = 1) readonly buffer InMv    { f16vec2 in_mv[]; };
 layout(set = 0, binding = 2) readonly buffer InDep   { float in_dep[]; };
 layout(set = 0, binding = 3) readonly buffer InNorm  { f16vec4 in_norm[]; };
-layout(set = 0, binding = 4) readonly buffer InRough { float in_rough[]; };
-layout(set = 0, binding = 5) readonly buffer InAlb   { f16vec4 in_alb[]; };
+layout(set = 0, binding = 4) readonly buffer InAlb   { f16vec4 in_alb[]; };
+layout(set = 0, binding = 5) readonly buffer InSpa   { f16vec4 in_spa[]; };
+layout(set = 0, binding = 6) readonly buffer InRough { float in_rough[]; };
 
-layout(set = 0, binding = 6) writeonly buffer OutFeat { f16vec4 out_feat[]; };
+layout(set = 0, binding = 7) writeonly buffer OutCol { f16vec4 out_col[]; };  // E0c6e
+layout(set = 0, binding = 8) writeonly buffer OutDep { float out_dep[]; };    // E0c72
+layout(set = 0, binding = 9) writeonly buffer OutMv  { f16vec2 out_mv[]; };     // E0c76
+layout(set = 0, binding = 10) writeonly buffer OutNorm { f16vec4 out_norm[]; }; // E0c7a
+layout(set = 0, binding = 11) writeonly buffer OutAlb  { vec4 out_alb[]; };     // E0c7e
+layout(set = 0, binding = 12) writeonly buffer OutSpa  { vec4 out_spa[]; };     // E0c82
+layout(set = 0, binding = 13) writeonly buffer OutRough{ float out_rough[]; };  // E0c8e
 
 layout(push_constant) uniform RrGatherArgs {
     int W;
@@ -23,5 +30,12 @@ void main() {
     int y = int(gl_GlobalInvocationID.y);
     if (x >= W || y >= H) return;
     int idx = y * W + x;
-    out_feat[idx] = in_col[idx];
+
+    out_col[idx]   = in_col[idx];
+    out_dep[idx]   = in_dep[idx];
+    out_mv[idx]    = in_mv[idx];
+    out_norm[idx]  = in_norm[idx];
+    out_alb[idx]   = vec4(in_alb[idx]);
+    out_spa[idx]   = vec4(in_spa[idx]);
+    out_rough[idx] = in_rough[idx];
 }

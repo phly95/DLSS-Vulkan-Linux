@@ -307,14 +307,14 @@ int main(int argc, char** argv) {
             add_pipe("sr_l0", 3, 0);
         }
     } else {
-        add_pipe("rr_gather", 7, 8);
+        add_pipe("rr_gather", 14, 8);
         add_pipe("rr_ae_block", 2, 16);
         add_pipe("rr_ae_final", 2, 0);
         add_pipe("rr_enc0_feat", 2, 16);
         add_pipe("rr_level", 3, 16);
         add_pipe("rr_post_prep", 2, 40);
         add_pipe("rr_post", 2, 120);
-        add_pipe("rr_downsample", 2, 48);
+        add_pipe("rr_downsample", 4, 48);
         add_pipe("rr_pooled2", 2, 32);
         add_pipe("rr_avg2x2", 2, 8);
         add_pipe("rr_ds_t", 2, 8);
@@ -341,6 +341,9 @@ int main(int argc, char** argv) {
     Buffer in_norm = create_buffer(dev, picked_phys, size_t(W) * H * 8, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer in_rough = create_buffer(dev, picked_phys, size_t(W) * H * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer in_alb = create_buffer(dev, picked_phys, size_t(W) * H * 8, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    Buffer in_spa = create_buffer(dev, picked_phys, size_t(W) * H * 8, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    Buffer out_alb = create_buffer(dev, picked_phys, size_t(W) * H * 16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    Buffer out_spa = create_buffer(dev, picked_phys, size_t(W) * H * 16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
     Buffer g_col = create_buffer(dev, picked_phys, size_t(W) * H * 8, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer g_dep = create_buffer(dev, picked_phys, size_t(W) * H * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
@@ -366,6 +369,8 @@ int main(int argc, char** argv) {
     Buffer aniso = create_buffer(dev, picked_phys, size_t(W) * H * 8, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer dhist = create_buffer(dev, picked_phys, size_t(hW15) * hH15 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer full15 = create_buffer(dev, picked_phys, size_t(W15) * H15 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    Buffer cf6 = create_buffer(dev, picked_phys, size_t(W15) * H15 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    Buffer cfa = create_buffer(dev, picked_phys, size_t(W15) * H15 * 2, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer ihist[2] = {
         create_buffer(dev, picked_phys, size_t(W15) * H15 * 8, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
         create_buffer(dev, picked_phys, size_t(W15) * H15 * 8, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)
@@ -593,7 +598,7 @@ int main(int argc, char** argv) {
             {
                 uint8_t push[8] = {0};
                 std::memcpy(push + 0, &W, 4); std::memcpy(push + 4, &H, 4);
-                dispatch("rr_gather", {&in_col, &in_mv, &in_dep, &in_norm, &in_rough, &in_alb, &g_col}, push, 8, (W + 15) / 16, (H + 15) / 16, 1);
+                dispatch("rr_gather", {&in_col, &in_mv, &in_dep, &in_norm, &in_alb, &in_spa, &in_rough, &g_col, &g_dep, &g_mv, &in_norm, &out_alb, &out_spa, &in_rough}, push, 8, (W + 15) / 16, (H + 15) / 16, 1);
             }
             // 2. Auto exposure
             {
@@ -632,7 +637,7 @@ int main(int argc, char** argv) {
                 uint8_t push[48] = {0};
                 std::memcpy(push + 16, &W15, 4); std::memcpy(push + 20, &H15, 4);
                 std::memcpy(push + 40, &oW, 4); std::memcpy(push + 44, &oH, 4);
-                dispatch("rr_downsample", {&ihist[0], &out}, push, 48, (oW + 15) / 16, (oH + 15) / 16, 1);
+                dispatch("rr_downsample", {&cf6, &cfa, &expo, &out}, push, 48, (oW + 15) / 16, (oH + 15) / 16, 1);
             }
         }
 
