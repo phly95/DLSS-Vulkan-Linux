@@ -117,8 +117,8 @@ from the host's own error and dump strings.
 | 0x96 (q0x4b) | "expo": f16x2, starts (1.0, 1.0) |
 | 0x98 | bool: out/render ratio below a threshold (`DAT_1801b6318`) |
 | 0x9a (q0x4d) / 0x9c (q0x4e) | "l0_skip" 32 B x W0 x H0 / "l0_in" 32 B x (W0+8) x (H0+8): preset L only |
-| 0x9e, 0x9f | AE grid "ae_gw", "ae_gh" = min(max(render, out) / 2, const) |
-| 0xa0 / 0xa2 | "ae_luma" 4 B per cell / "ae_tmp" (cells + 511) / 512 floats |
+| 0x9e, 0x9f | AE sample grid "ae_gw", "ae_gh" = max(max(render, out) >> 1, 256) per axis (`pcmpgtd` selects at 0x18010e940; an earlier reading said min) |
+| 0xa0 / 0xa2 | "ae_luma" 4 B per grid point / "ae_tmp" (points + 511) / 512 floats |
 | 0xa4 | the AE result pointer of the last reduce |
 | 0xa6 | the RGBA32F output, 16 B x outW x outH |
 
@@ -127,18 +127,31 @@ it is false: stages launch the `n = 2` instantiations with 64-thread workgroups 
 
 ## Per-frame parameters `F` (the second argument of every launcher)
 
-Read so far: +0x00 colour (RGBA16F, 8 B/px), +0x08 depth, +0x18 motion vectors (or +0x50 when byte
-+0x4d is set: the output-resolution "mvhi" vectors), +0x10 the game's exposure texture, +0x20 / +0x28
-two float pairs (jitter / jitter_prev, by the dump job's order), +0x2c, +0x30, +0x34, +0x38 floats,
-+0x3c a float pair, +0x44 float, bytes +0x48 auto-exposure, +0x49 "ae_exact_sum", +0x4a, +0x4b,
-+0x4c (fixed exposure: skip), +0x4d mvhi.
+Built by `FUN_180101f60` from the job and the gathered buffers: +0x00 g_col, +0x08 g_dep, +0x10 the
+game's exposure texture, +0x18 g_mv, +0x20 / +0x28 jitter / jitter_prev, +0x30 exposure, +0x34 / +0x38
+MV scale, +0x3c MV offset pair (`FUN_18010ff70`), +0x44 pre-exposure, bytes +0x48 auto exposure,
++0x49 "ae_exact_sum", +0x4a depth inverted, +0x4b reset (job bytes 0x20..0x23), +0x4c LDR colour,
++0x4d mvhi, +0x50 g_mvhi (always; DAT_181a17080, `hipMalloc(&g_mvhi, 4 * (size_t)ow * oh)`).
+
+What the two flags change (`FUN_180116c90`, `FUN_180116e70`, `FUN_180117ee0`, `FUN_180118240`):
+
+- **LDR** (+0x4c): no exposure launch at all (expo keeps its last value, (1, 1) from engine init);
+  Enc0Args +0xfc = 1; the `ldr = true` post instantiations, PostArgs +0xd4 = 1; DownArgs +0x54 = 1. The
+  host sets it for the UNORM colour codes 1-3 when the source does not state HDR (`FUN_1800386c0`).
+- **mvhi** (+0x4d): k_sr_gather leaves g_mv alone and `k_sr_gather_mv` copies the (output-size) motion
+  texture to g_mvhi; Enc0Args +0x10 = g_mvhi, +0xb4 / +0xb8 = MV scale over (oW / W15, oH / H15) in place
+  of (W / W15, H / H15), +0x100 = 1, +0x104 / +0x108 = (oW, oH) in place of (W, H); the `mvhi = true`
+  post instantiations, PostArgs +0xd8 = 1 (+0xe0 is F+0x50 either way).
 
 ## Launch details
 
 - exposure (`FUN_180116c90`): if F.+0x4c, nothing; if F.+0x48, auto-exposure (`FUN_1801184a0`):
-  `k_sr_ae_luma` on an ae_gw x ae_gh grid (8x8 groups), then `k_sr_ae_reduce` (256 threads,
-  512 values per group) repeated until one value is left, then `k_sr_ae_copy` into expo;
-  else `k_sr_exposure(F.+0x10, F.+0x30, F.+0x44, expo, E[14])` (one 32-thread group).
+  `k_sr_ae_luma(g_col, W, gw, gh, W - 1, H - 1, gw - 1, gh - 1, 1 / (gw * gh), ae_luma)` on
+  ((gw + 7) >> 3, (gh + 7) >> 3) groups of 8x8 (one thread per grid point), then
+  `k_sr_ae_reduce(in, n, out, F.+0x49)` on (n + 511) >> 9 groups of 256, ping-ponging ae_luma / ae_tmp,
+  repeated (at least once) until one value is left, then `k_sr_ae_copy(result, expo, E[14])` (one group
+  of 32); E[0xa4] keeps the result pointer. Else `k_sr_exposure(F.+0x10, F.+0x30, F.+0x44, expo, E[14])`
+  (one 32-thread group).
 - enc0 (`FUN_180116e70`): preset M runs `k_sr_enc0` on (W0/8, H0/8) groups of 32 threads; preset L
   runs `k_sr_enc0L_in` over (W0+8)(H0+8)/64 groups of 64 into l0_in, then `k_sr_l0<0,2,b>`.
   `Enc0Args` (280 B) is assembled from F, E's buffers above, the parity and derived ratios
@@ -156,8 +169,13 @@ written directly).
     podman run --rm --device /dev/kfd --device /dev/dri --group-add keep-groups --security-opt label=disable \
         -v $PWD:/w docker.io/rocm/dev-ubuntu-24.04:7.2.4 bash -c 'cd /w && \
         hipcc -O2 -std=c++17 tools/sr/srref/srref.cpp -o build/sr/srref && \
-        build/sr/srref build/nh/sr.gfx1201.co packed/M frames/ out/ [--L] [--dump]'
+        build/sr/srref build/nh/sr.gfx1201.co packed/M frames/ out/ [--L] [--dump DIR [--dump-frames a,b]]'
     build/venv/bin/python tools/sr/eval_sr.py picture.png frames/ out/
+
+The frames directory format, with the format codes, `mvhi`, `ldr` and auto-exposure parameters, is
+`tools/verify/README.md`'s. Inputs always go through NeuralHub's own gather, as in a game. `--dump`
+writes every launch's changed buffers (`tools/verify/oracle_dump.hpp`); each frame prints
+`GPU_FRAME_MS <i> <ms>` (HIP events around the frame's launches).
 
 Static 1920x1080 -> 3840x2160 sequence from the NR verification's 4K Tomb Raider frame, Halton jitter,
 PSNR against the 4K original (bicubic of the same frame: 29.0-32.8 dB):
@@ -174,15 +192,36 @@ Two facts the decompile alone got wrong, found by running it:
   zero and the output was a soft 27 dB.
 - Jitter is NGX's `Jitter.Offset` (sample at pixel centre minus jitter); the other sign gives 31 dB.
 
-## `srunit::k_sr_gather` (`srref --gather`)
+## `srunit::k_sr_gather`, `k_sr_gather_mv`
 
 Copies the game's inputs into `g_col` (RGBA16F), `g_dep` (f32), `g_mv` (RG16F). `GatherArgs` (88 B,
-FUN_180101f60): pointers colour (+0x00), motion vectors (+0x08), depth (+0x10); their row pitches in bytes
-(+0x18, +0x1c, +0x20); their format codes (+0x24, +0x28, +0x2c; 0 = RGBA16F / RG16F / R32F, a plain copy:
-`srref --gather` output is bit-identical to writing the engine buffers directly), then `g_col` (+0x30), `g_mv` (+0x38), `g_dep` (+0x40), render W, H (+0x48), mvhi flag (+0x50).
-Colour format codes seen in the ISA (`build/re/fn.sh sr _ZN6srunit11k_sr_gatherENS_10GatherArgsE`):
-5 = RGBA32F (to f16), 4 = R11G11B10F, 3 = RGB9E5, others 10:10:10:2 and 8-bit unorm; alpha is 1.0 for
-formats without one. No tone or exposure change: a plain format conversion. `k_sr_gather_mv` converts
-output-resolution motion vectors into `g_mvhi` when the game supplies them (F+0x4d).
+FUN_180101f60, from the job's {pointer, pitch, code} triples): pointers colour (+0x00), motion vectors
+(+0x08), depth (+0x10); their row pitches in bytes (+0x18, +0x1c, +0x20); their format codes (+0x24,
++0x28, +0x2c), then `g_col` (+0x30), `g_mv` (+0x38), `g_dep` (+0x40), render W, H (+0x48), mvhi (+0x50).
+Code 0 everywhere is a plain copy (bit-identical to writing the engine buffers directly, tested on the
+card). The codes, from the kernel's branches (`tools/re/fn.sh sr _ZN6srunit11k_sr_gatherENS_10GatherArgsE`)
+and the host's colour map `FUN_1800059b0` (DXGI -> code):
+
+| colour code | texel | decode | DXGI (host map) |
+| --- | --- | --- | --- |
+| 0 | RGBA16F | copy | 9, 10 |
+| 1 | RGBA8 UNORM, byte 0 = R | / 255 (`v_div` sequence) | 0x1b, 0x1c, 0x57, 0x5a (BGRA8 too: the kernel reads byte 0 as R either way) |
+| 2 | RGBA8 UNORM sRGB | / 255, then <= 0.04045 ? x / 12.92 : pow((x + 0.055) / 1.055, 2.4) (a software powf) | 0x1d, 0x5b |
+| 3 | RGB10A2 UNORM | / 1023, alpha / 3 | 0x17, 0x18 |
+| 4 | R11G11B10F | bit shifts into f16 | 0x1a |
+| 5 | RGBA32F | `v_cvt_f16_f32` | 2 |
+| 6 (the kernel's default branch) | RGB9E5 | mantissa x 2^(e - 24) through `v_fma_mixlo_f16` | 0x43 |
+
+Alpha is 1.0 for formats without one. Codes 1-3 are LDR (the host refuses them as HDR colour, and
+selects the `_ldr` kernels, F+0x4c). Motion vectors: 0 RG16F (copy), 1 RG32F (to f16), any other code an
+8-byte texel whose first two halves are copied (RGBA16F .xy); the host accepts DXGI 9/10, 15/16, 33/34
+(bitmask 0x600018600). Depth: 0 R32F (copy), any other code the low 24 bits of a 4-byte texel / 16777215
+(D24); the host accepts DXGI 0x13-0x15, 0x27-0x29, 0x2c-0x2e (bitmask 0x738000380000). The host's map for
+the MV and depth codes is behind a vtable and not located; `tools/verify` uses code 2 for RGBA16F motion
+vectors and 1 for D24, both on the kernel's paths above.
+
+`k_sr_gather_mv(src, pitch, code, g_mvhi, ow, oh)` (16x16 groups over the output size, after the gather)
+decodes the same three motion-vector codes from the same texture when F+0x4d is set; the gather then
+skips g_mv.
 
 `tools/re/fn.sh <net> <mangled>` prints one kernel's disassembly from `artifacts/neuralhub-v0.8.0/gfx1201/<net>.s.xz`.

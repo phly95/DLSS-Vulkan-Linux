@@ -1,29 +1,38 @@
-// srref: run NeuralHub v0.8.0's own DLSS-SR (preset M) GPU code on Linux through ROCm, as the
+// srref: run NeuralHub v0.8.0's own DLSS-SR (presets M and L) GPU code on Linux through ROCm, as the
 // reference the Vulkan port is checked against. Host logic transcribed from neuralhub_host.dll
 // (docs/sr/HOST-RE.md): engine layout (FUN_18010db80), frame order (FUN_180101f60) and every
 // launcher's argument struct, byte for byte.
 //
-//   srref <sr.gfx1201.co> <packed weight dir (sr_pack.py M)> <frames dir> <out dir>
+//   srref <sr.gfx1201.co> <packed weight dir (sr_pack.py)> <frames dir> <out dir> [--L]
+//         [--dump DIR [--dump-frames a,b,...]]
 //
-// <frames dir>/frame.json: {"render":[W,H],"output":[oW,oH],"frames":N}; per frame i, files
-// col_i.f16 (RGBA16F, W*H*8 B), dep_i.f32 (W*H*4 B), mv_i.f16 (RG16F, W*H*4 B) and params_i.json
-// with jitter, jitter_prev, mv_scale, exposure, pre_exposure, reset, depth_inverted.
-// By default those three buffers are written as the engine's g_col / g_dep / g_mv directly; with
-// --gather they are uploaded as the game's textures (row pitch in bytes, format code 0 = RGBA16F /
-// RG16F / R32F) and NeuralHub's srunit::k_sr_gather fills the engine buffers, as in a game.
-// Output: out_i.f32 (RGBA32F, oW*oH*16 B), plus every stage tensor of the
-// last frame with --dump.
+// <frames dir>/frame.json: {"render":[W,H],"output":[oW,oH],"frames":N}. Per frame i, params_i.json
+// (jitter, jitter_prev, mv_scale, exposure, pre_exposure, reset, depth_inverted; optional fmt_col,
+// fmt_mv, fmt_dep, mvhi, ldr, auto_exposure, ae_exact_sum, all 0 when absent) and the game's
+// textures, tightly packed: colour col_i.f16 (code 0, RGBA16F) or col_i.c<code>, motion vectors
+// mv_i.f16 (code 0, RG16F) or mv_i.c<code>, at output size when mvhi is set, depth dep_i.f32 (code 0)
+// or dep_i.c<code>. Format codes and texel sizes: tools/verify/texfmt.py. A missing or wrongly sized
+// file is an error. They are uploaded as the game's textures and NeuralHub's srunit::k_sr_gather (and
+// k_sr_gather_mv for mvhi) fills the engine buffers, as in a game.
+// Output: out_i.f32 (RGBA32F, oW*oH*16 B) and a line "GPU_FRAME_MS <i> <ms>" per frame (HIP events
+// around the frame's launches). --dump writes every launch's outputs (tools/verify/oracle_dump.hpp).
 #include <hip/hip_runtime.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <string>
 #include <vector>
+
+#include "../../verify/oracle_dump.hpp"
+
+static OracleDump g_dump;
 
 #define CK(x) do { hipError_t e_ = (x); if (e_ != hipSuccess) { \
     std::fprintf(stderr, "%s:%d %s: %s\n", __FILE__, __LINE__, #x, hipGetErrorString(e_)); std::exit(1); } } while (0)
@@ -58,6 +67,28 @@ static std::vector<double> jget(const std::string& txt, const std::string& key) 
     return v;
 }
 
+// An integer parameter that defaults to 0 when absent.
+static int jint(const std::string& txt, const std::string& key) {
+    auto v = jget(txt, key);
+    return v.empty() ? 0 : int(v[0]);
+}
+// The game's texture for one input: <name>_<i>.<ext> for format code 0, <name>_<i>.c<code> otherwise;
+// it must hold exactly w * h texels.
+static std::vector<uint8_t> texture_file(const std::string& fdir, const std::string& name, int i, int code,
+                                         const char* ext0, size_t bpp, int w, int h) {
+    const std::string p = fdir + "/" + name + "_" + std::to_string(i) + (code == 0 ? std::string(".") + ext0 : ".c" + std::to_string(code));
+    auto v = slurp(p);
+    if (v.size() != bpp * size_t(w) * h) {
+        std::fprintf(stderr, "%s: %zu bytes, expected %zu (%dx%d, %zu B/texel)\n", p.c_str(), v.size(), bpp * size_t(w) * h, w, h, bpp);
+        std::exit(1);
+    }
+    return v;
+}
+// Texel sizes of the codes srunit::k_sr_gather / k_sr_gather_mv read (docs/sr/HOST-RE.md); -1: not a code.
+static int col_bpp(int c) { static const int t[] = {8, 4, 4, 4, 4, 16, 4}; return c >= 0 && c < 7 ? t[c] : -1; }
+static int mv_bpp(int c) { return c == 0 ? 4 : c == 1 || c == 2 ? 8 : -1; }
+static int dep_bpp(int c) { return c == 0 || c == 1 ? 4 : -1; }
+
 // A kernel argument block, filled by byte offset exactly as the host lays it out.
 struct Args {
     std::vector<uint8_t> b;
@@ -80,6 +111,7 @@ struct Mod {
         size_t sz = a.b.size();
         void* cfg[] = {HIP_LAUNCH_PARAM_BUFFER_POINTER, a.b.data(), HIP_LAUNCH_PARAM_BUFFER_SIZE, &sz, HIP_LAUNCH_PARAM_END};
         CK(hipModuleLaunchKernel(get(sym), g.x, g.y, g.z, b.x, b.y, b.z, 0, nullptr, nullptr, cfg));
+        g_dump.after_launch(sym, g, b, a.b);
         if (std::getenv("SRREF_SYNC")) {
             hipError_t e = hipDeviceSynchronize();
             if (e != hipSuccess) { std::fprintf(stderr, "%s: %s\n", sym, hipGetErrorString(e)); std::exit(1); }
@@ -113,14 +145,21 @@ static float f16_to_f32(uint16_t h) {
 struct Tensor { void* d; int C, W, H; };
 
 int main(int argc, char** argv) {
-    if (argc < 5) { std::fprintf(stderr, "usage: srref <sr.gfx1201.co> <weights dir> <frames dir> <out dir> [--dump]\n"); return 2; }
-    const std::string co = argv[1], wdir = argv[2], fdir = argv[3], odir = argv[4];
-    bool dump = false, presetL = false, gather = false;
-    for (int i = 5; i < argc; ++i) {
-        if (std::string(argv[i]) == "--dump") dump = true;
-        if (std::string(argv[i]) == "--L") presetL = true;
-        if (std::string(argv[i]) == "--gather") gather = true;
+    if (argc < 5) {
+        std::fprintf(stderr, "usage: srref <sr.gfx1201.co> <weights dir> <frames dir> <out dir> [--L] [--dump DIR [--dump-frames a,b]]\n");
+        return 2;
     }
+    const std::string co = argv[1], wdir = argv[2], fdir = argv[3], odir = argv[4];
+    bool presetL = false;
+    std::string dump_dir, dump_frames;
+    for (int i = 5; i < argc; ++i) {
+        const std::string a = argv[i];
+        if (a == "--L") presetL = true;
+        else if (a == "--dump" && i + 1 < argc) dump_dir = argv[++i];
+        else if (a == "--dump-frames" && i + 1 < argc) dump_frames = argv[++i];
+        else { std::fprintf(stderr, "srref: unknown argument %s\n", a.c_str()); return 2; }
+    }
+    if (!dump_dir.empty()) g_dump.configure(dump_dir, dump_frames);
     const std::string fj(reinterpret_cast<const char*>(slurp(fdir + "/frame.json").data()), slurp(fdir + "/frame.json").size());
     const auto rd = jget(fj, "render"), od = jget(fj, "output");
     const int nframes = int(jget(fj, "frames").at(0));
@@ -226,114 +265,115 @@ int main(int argc, char** argv) {
     void* g_col = dalloc(rp * 8);
     void* g_dep = dalloc(rp * 4);
     void* g_mv = dalloc(rp * 4);
-    void* g_mvhi = dalloc(size_t(oW) * oH * 4);
-    void* in_col = dalloc(rp * 8);     // texture buffers for gather
+    void* g_mvhi = dalloc(size_t(oW) * oH * 4);         // DAT_181a17080: hipMalloc(&g_mvhi, 4 * (size_t)ow * oh)
+    // the game's textures, tightly packed (largest texel of every accepted code)
+    void* in_col = dalloc(rp * 16);
     void* in_dep = dalloc(rp * 4);
-    void* in_mv = dalloc(rp * 4);
-    void* in_mvhi = dalloc(size_t(oW) * oH * 4);
-    const int ae_gw = (W + 7) >> 3, ae_gh = (H + 7) >> 3;
-    void* ae_luma = dalloc(size_t(ae_gw) * ae_gh * sizeof(float));
-    void* ae_ping = dalloc(size_t(ae_gw) * ae_gh * sizeof(float));
+    void* in_mv = dalloc(std::max(rp, size_t(oW) * oH) * 8);
+    // auto-exposure grid (FUN_18010db80): max(max(render, output) / 2, 256) per axis
+    const int ae_gw = std::max(std::max(W, oW) >> 1, 256), ae_gh = std::max(std::max(H, oH) >> 1, 256);
+    void* ae_luma = dalloc(size_t(ae_gw) * ae_gh * 4);
+    void* ae_tmp = dalloc(size_t((ae_gw * ae_gh + 0x1ff) >> 9) * 4);
     void* enc0_w = wbuf + woff[10];
     void* dec0_w = wbuf + woff[11];
 
+    if (g_dump.enabled()) {
+        g_dump.add("wbuf", wbuf, tot);
+        for (int i = 0; i < 9; ++i) g_dump.add("t" + std::to_string(i), t[i].d, size_t(t[i].C) * t[i].W * t[i].H);
+        g_dump.add("prev_mvec0", prev_mvec[0], rp * 4); g_dump.add("prev_mvec1", prev_mvec[1], rp * 4);
+        g_dump.add("mv_ero", mv_ero, rp * 4); g_dump.add("mv_nondil", mv_nondil, size_t(H) * mvpitch * 4, size_t(mvpitch) * 4);
+        g_dump.add("hidden0", hidden[0], rp * 4); g_dump.add("hidden1", hidden[1], rp * 4);
+        g_dump.add("gates", gates, rp * 4); g_dump.add("factors", factors, rp * 4); g_dump.add("aniso", aniso, rp * 8);
+        g_dump.add("dhist", dhist, size_t(hW15) * hH15 * 4); g_dump.add("full15", full15, size_t(W15) * H15 * 4);
+        g_dump.add("out", out, size_t(oW) * oH * 16); g_dump.add("expo", expo, 4);
+        g_dump.add("ihist0", ihist[0], ihpitch * H15, ihpitch); g_dump.add("ihist1", ihist[1], ihpitch * H15, ihpitch);
+        g_dump.add_handle("ihist0", uint64_t(ihtex[0])); g_dump.add_handle("ihist1", uint64_t(ihtex[1]));
+        g_dump.add_handle("mv_nondil", uint64_t(mvntex));
+        g_dump.add("l0_skip", l0_skip, size_t(W0) * H0 * 32); g_dump.add("l0_in", l0_in, size_t(W0 + 8) * (H0 + 8) * 32);
+        g_dump.add("g_col", g_col, rp * 8); g_dump.add("g_dep", g_dep, rp * 4); g_dump.add("g_mv", g_mv, rp * 4);
+        g_dump.add("g_mvhi", g_mvhi, size_t(oW) * oH * 4);
+        g_dump.add("in_col", in_col, rp * 16); g_dump.add("in_dep", in_dep, rp * 4);
+        g_dump.add("in_mv", in_mv, std::max(rp, size_t(oW) * oH) * 8);
+        g_dump.add("ae_luma", ae_luma, size_t(ae_gw) * ae_gh * 4); g_dump.add("ae_tmp", ae_tmp, size_t((ae_gw * ae_gh + 0x1ff) >> 9) * 4);
+        g_dump.write_index();
+    }
+
     int p = 0, fc = 0;   // E[14] parity, E[15] frame counter (mod 8)
     std::vector<uint8_t> hostout(size_t(oW) * oH * 16);
+    hipEvent_t ev0, ev1; CK(hipEventCreate(&ev0)); CK(hipEventCreate(&ev1));
     for (int fi = 0; fi < nframes; ++fi) {
         const std::string sfx = "_" + std::to_string(fi);
         const std::string pf(reinterpret_cast<const char*>(slurp(fdir + "/params" + sfx + ".json").data()), slurp(fdir + "/params" + sfx + ".json").size());
         auto jit = jget(pf, "jitter"), jitp = jget(pf, "jitter_prev"), mvs = jget(pf, "mv_scale");
         const float exposure = float(jget(pf, "exposure").at(0)), pre = float(jget(pf, "pre_exposure").at(0));
         const uint8_t reset = uint8_t(jget(pf, "reset").at(0)), depinv = uint8_t(jget(pf, "depth_inverted").at(0));
-        const int fmt_col = int(jget(pf, "fmt_col").empty() ? 0 : jget(pf, "fmt_col")[0]);
-        const int fmt_mv = int(jget(pf, "fmt_mv").empty() ? 0 : jget(pf, "fmt_mv")[0]);
-        const int fmt_dep = int(jget(pf, "fmt_dep").empty() ? 0 : jget(pf, "fmt_dep")[0]);
-        const int mvhi = int(jget(pf, "mvhi").empty() ? 0 : jget(pf, "mvhi")[0]);
-        const int auto_exp = int(jget(pf, "auto_exposure").empty() ? 0 : jget(pf, "auto_exposure")[0]);
-        const bool do_gather = gather || (fmt_col != 0 || fmt_mv != 0 || fmt_dep != 0 || mvhi != 0);
-
-        // Load input textures based on format codes
-        size_t col_pitch = W * 8;
-        if (fmt_col == 5) {
-            auto col = slurp(fdir + "/col" + sfx + ".u8");
+        // F+0x48 auto exposure, +0x49 ae_exact_sum, +0x4c LDR colour (exposure skipped, the _ldr kernels),
+        // +0x4d mvhi (motion vectors at output size, k_sr_gather_mv; FUN_180101f60 builds F)
+        const int fmt_col = jint(pf, "fmt_col"), fmt_mv = jint(pf, "fmt_mv"), fmt_dep = jint(pf, "fmt_dep");
+        const uint8_t mvhi = uint8_t(jint(pf, "mvhi") != 0), ldr = uint8_t(jint(pf, "ldr") != 0);
+        const uint8_t auto_exp = uint8_t(jint(pf, "auto_exposure") != 0), ae_exact = uint8_t(jint(pf, "ae_exact_sum") != 0);
+        if (col_bpp(fmt_col) < 0 || mv_bpp(fmt_mv) < 0 || dep_bpp(fmt_dep) < 0) {
+            std::fprintf(stderr, "params%s.json: unknown format code (colour %d, mv %d, depth %d)\n", sfx.c_str(), fmt_col, fmt_mv, fmt_dep);
+            return 1;
+        }
+        const int mvw = mvhi ? oW : W, mvh = mvhi ? oH : H;
+        {
+            auto col = texture_file(fdir, "col", fi, fmt_col, "f16", col_bpp(fmt_col), W, H);
+            auto dep = texture_file(fdir, "dep", fi, fmt_dep, "f32", dep_bpp(fmt_dep), W, H);
+            auto mv = texture_file(fdir, "mv", fi, fmt_mv, "f16", mv_bpp(fmt_mv), mvw, mvh);
             CK(hipMemcpy(in_col, col.data(), col.size(), hipMemcpyHostToDevice));
-            col_pitch = W * 4;
-        } else {
-            auto col = slurp(fdir + "/col" + sfx + ".f16");
-            CK(hipMemcpy(do_gather ? in_col : g_col, col.data(), col.size(), hipMemcpyHostToDevice));
-            col_pitch = W * 8;
-        }
-
-        size_t dep_pitch = W * 4;
-        if (fmt_dep == 16) {
-            auto dep = slurp(fdir + "/dep" + sfx + ".u32");
             CK(hipMemcpy(in_dep, dep.data(), dep.size(), hipMemcpyHostToDevice));
-            dep_pitch = W * 4;
-        } else if (fmt_dep == 9) {
-            auto dep = slurp(fdir + "/dep" + sfx + ".u16");
-            CK(hipMemcpy(in_dep, dep.data(), dep.size(), hipMemcpyHostToDevice));
-            dep_pitch = W * 2;
-        } else {
-            auto dep = slurp(fdir + "/dep" + sfx + ".f32");
-            CK(hipMemcpy(do_gather ? in_dep : g_dep, dep.data(), dep.size(), hipMemcpyHostToDevice));
-            dep_pitch = W * 4;
-        }
-
-        size_t mv_pitch = W * 4;
-        if (fmt_mv == 18) {
-            auto mv = slurp(fdir + "/mv" + sfx + ".u32");
             CK(hipMemcpy(in_mv, mv.data(), mv.size(), hipMemcpyHostToDevice));
-            mv_pitch = W * 4;
-        } else {
-            auto mv = slurp(fdir + "/mv" + sfx + ".f16");
-            CK(hipMemcpy(do_gather ? in_mv : g_mv, mv.data(), mv.size(), hipMemcpyHostToDevice));
-            mv_pitch = W * 4;
         }
-
-        if (do_gather) {   // FUN_180101f60: srunit::GatherArgs, 88 bytes
+        g_dump.begin_frame(fi);
+        CK(hipEventRecord(ev0, nullptr));
+        {   // FUN_180101f60: srunit::GatherArgs, 88 bytes (with mvhi set the gather leaves g_mv alone)
             Args a(0x58);
             a.put(0x00, in_col).put(0x08, in_mv).put(0x10, in_dep);
-            a.put(0x18, int(col_pitch)).put(0x1c, int(mv_pitch)).put(0x20, int(dep_pitch));
+            a.put(0x18, W * col_bpp(fmt_col)).put(0x1c, mvw * mv_bpp(fmt_mv)).put(0x20, W * dep_bpp(fmt_dep));   // row pitches in bytes
             a.put(0x24, fmt_col).put(0x28, fmt_mv).put(0x2c, fmt_dep);
-            a.put(0x30, g_col).put(0x38, g_mv).put(0x40, g_dep).put(0x48, W).put(0x4c, H).put(0x50, mvhi);
+            a.put(0x30, g_col).put(0x38, g_mv).put(0x40, g_dep).put(0x48, W).put(0x4c, H).put(0x50, uint32_t(mvhi));
             M.launch("_ZN6srunit11k_sr_gatherENS_10GatherArgsE", dim3((W + 15) >> 4, (H + 15) >> 4), dim3(16, 16), a);
         }
-
-        if (mvhi) {
-            std::string mvhi_path = fdir + "/mvhi" + sfx + ".f16";
-            std::ifstream testf(mvhi_path);
-            if (testf) {
-                auto mvh = slurp(mvhi_path);
-                CK(hipMemcpy(in_mvhi, mvh.data(), mvh.size(), hipMemcpyHostToDevice));
-            }
-            Args gm(32);
-            gm.put(0x00, in_mvhi).put(0x08, int(oW * 4)).put(0x0c, 0).put(0x10, g_mvhi).put(0x18, oW).put(0x1c, oH);
-            M.launch("_ZN6srunit14k_sr_gather_mvEPKhjiPtii", dim3((oW + 15) >> 4, (oH + 15) >> 4), dim3(16, 16), gm);
+        if (mvhi) {   // k_sr_gather_mv(src, pitch, format, g_mvhi, ow, oh): the same texture at output size
+            Args a(0x20);
+            a.put(0x00, in_mv).put(0x08, uint32_t(mvw * mv_bpp(fmt_mv))).put(0x0c, fmt_mv).put(0x10, g_mvhi).put(0x18, oW).put(0x1c, oH);
+            M.launch("_ZN6srunit14k_sr_gather_mvEPKhjiPtii", dim3((oW + 15) >> 4, (oH + 15) >> 4), dim3(16, 16), a);
         }
-
         const float mvoffx = 0, mvoffy = 0;   // mv_offset_kernel (FUN_18010ff70): 0 for unjittered MVs
         // F, the per-frame parameter block (the launchers read it by offset)
-        // +0x48 auto_exposure=0, +0x49 ae_exact_sum=0, +0x4a depth_inverted, +0x4b reset, +0x4c ldr=0, +0x4d mvhi=0
+        // +0x48 auto_exposure, +0x49 ae_exact_sum, +0x4a depth_inverted, +0x4b reset, +0x4c ldr, +0x4d mvhi, +0x50 g_mvhi
         const float F20x = float(jit[0]), F20y = float(jit[1]), F28x = float(jitp[0]), F28y = float(jitp[1]);
         const float F30 = exposure, F34x = float(mvs[0]), F34y = float(mvs[1]), F44 = pre;
 
-        // exposure (FUN_180116c90)
-        if (auto_exp) {
-            Args al(0x30);
-            al.put(0x00, g_col).put(0x08, W).put(0x0c, H).put(0x10, W * 4)
-              .put(0x14, float(W - 1)).put(0x18, float(H - 1)).put(0x1c, float(W - 1)).put(0x20, float(H - 1))
-              .put(0x24, 1.0f / (float(W) * float(H))).put(0x28, ae_luma);
-            M.launch("_ZN2sr2io12k_sr_ae_lumaEPKtiiifffffPf", dim3(ae_gw, ae_gh), dim3(8, 8), al);
-            int count = ae_gw * ae_gh;
-            void* cur_in = ae_luma; void* cur_out = ae_ping;
-            while (count > 1) {
-                int g = (count + 511) >> 9;
-                Args ar(0x20); ar.put(0x00, cur_in).put(0x08, count).put(0x10, cur_out).put(0x18, 0);
-                M.launch("_ZN2sr2io14k_sr_ae_reduceEPKfiPfi", dim3(g), dim3(256), ar);
-                count = g; std::swap(cur_in, cur_out);
+        // exposure (FUN_180116c90): nothing for LDR colour; auto-exposure (FUN_1801184a0); else the game's
+        // value (no exposure texture here)
+        if (ldr) {
+        } else if (auto_exp) {
+            {   // k_sr_ae_luma(g_col, W, gw, gh, W - 1, H - 1, gw - 1, gh - 1, 1 / (gw * gh), ae_luma)
+                Args a(0x30);
+                a.put(0x00, g_col).put(0x08, W).put(0x0c, ae_gw).put(0x10, ae_gh)
+                 .put(0x14, float(W - 1)).put(0x18, float(H - 1)).put(0x1c, float(ae_gw - 1)).put(0x20, float(ae_gh - 1))
+                 .put(0x24, 1.0f / float(ae_gw * ae_gh)).put(0x28, ae_luma);
+                M.launch("_ZN2sr2io12k_sr_ae_lumaEPKtiiifffffPf", dim3((ae_gw + 7) >> 3, (ae_gh + 7) >> 3), dim3(8, 8), a);
             }
-            Args ac(0x18); ac.put(0x00, cur_in).put(0x08, expo).put(0x10, 1);
-            M.launch("_ZN2sr2io12k_sr_ae_copyEPKfPti", dim3(1), dim3(32), ac);
+            // k_sr_ae_reduce(in, n, out, F.ae_exact_sum), 512 values per 256-thread group, ae_luma <-> ae_tmp,
+            // repeated (at least once) until one value is left
+            void* rin = ae_luma; void* rout = ae_tmp;
+            int n = ae_gw * ae_gh;
+            do {
+                const int g = (n + 0x1ff) >> 9;
+                Args a(0x20);
+                a.put(0x00, rin).put(0x08, n).put(0x10, rout).put(0x18, uint32_t(ae_exact));
+                M.launch("_ZN2sr2io14k_sr_ae_reduceEPKfiPfi", dim3(g), dim3(256), a);
+                n = g;
+                std::swap(rin, rout);
+            } while (n > 1);
+            {   // k_sr_ae_copy(result, expo, parity)
+                Args a(0x18);
+                a.put(0x00, rin).put(0x08, expo).put(0x10, p);
+                M.launch("_ZN2sr2io12k_sr_ae_copyEPKfPti", dim3(1), dim3(32), a);
+            }
         } else {
             Args a(28); a.put(0, (void*)nullptr).put(8, F30).put(12, F44).put(16, expo).put(24, p);
             M.launch("_ZN2sr2io13k_sr_exposureEPKfffPti", dim3(1), dim3(32), a);
@@ -343,15 +383,17 @@ int main(int argc, char** argv) {
         {
             const float fW = float(W), fH = float(H), f15w = float(W15), f15h = float(H15);
             Args a(280);
-            a.put(0x00, g_col).put(0x08, g_dep).put(0x10, g_mv).put(0x18, prev_mvec[p]).put(0x20, dhist)
+            // with mvhi the motion vectors are F+0x50 (g_mvhi) and their scales are relative to the output size
+            const float mrx = mvhi ? float(oW) / f15w : fW / f15w, mry = mvhi ? float(oH) / f15h : fH / f15h;
+            a.put(0x00, g_col).put(0x08, g_dep).put(0x10, mvhi ? g_mvhi : g_mv).put(0x18, prev_mvec[p]).put(0x20, dhist)
              .put(0x28, hidden[presetL ? 0 : p]).put(0x30, prev_mvec[p ^ 1]).put(0x38, mv_ero).put(0x40, mv_nondil)
              .put(0x48, t[0].d).put(0x50, enc0_w)
              .i2(0x58, W, H).i2(0x60, W, H).i2(0x68, W0, H0).i2(0x70, W15, H15).i2(0x78, hW15, hH15)
              .put(0x80, expo).put(0x88, p).f2(0x8c, F20x, F20y).f2(0x94, F28x, F28y)
              .f2(0x9c, fW / f15w, fH / f15h).put(0xa4, f15w / fW).put(0xa8, f15h / fH).put(0xac, 1.0f / fW)
              // (1, mv_scale.x) / (H, W/W15); mv_scale.y / (H/H15)
-             .f2(0xb0, 1.0f / fH, F34x / (fW / f15w))
-             .put(0xb8, F34y / (fH / f15h))
+             .f2(0xb0, 1.0f / fH, F34x / mrx)
+             .put(0xb8, F34y / mry)
              .f2(0xbc, mvoffx, mvoffy)
              .f2(0xc4, 0.5f / float(hW15), 0.5f / float(hH15))
              .f2(0xcc, presetL ? 5.137702941894531f : 9.045065879821777f, presetL ? 0.08225896209478378f : 0.22356846928596497f)
@@ -359,7 +401,7 @@ int main(int argc, char** argv) {
              .put(0xd8, uint32_t(reset)).put(0xdc, fc).put(0xe0, uint32_t(depinv)).put(0xe4, mvpitch)
              // (4884.335, 1, 1, jitter_prev.x) / (H, W15, H15, W); jitter_prev.y / H
              .f2(0xe8, (presetL ? 2774.359619140625f : 4884.33544921875f) / fH, 1.0f / f15w).f2(0xf0, 1.0f / f15h, F28x / fW)
-             .put(0xf8, F28y / fH).put(0xfc, 0u).put(0x100, 0u).put(0x104, W).put(0x108, H)
+             .put(0xf8, F28y / fH).put(0xfc, uint32_t(ldr)).put(0x100, uint32_t(mvhi)).put(0x104, mvhi ? oW : W).put(0x108, mvhi ? oH : H)
              .f2(0x10c, float(oW) / fW, float(oH) / fH).put(0x114, 0u);
             if (!presetL) {
                 M.launch("_ZN2sr2io9k_sr_enc0ENS0_8Enc0ArgsE", dim3(W0 / 8, H0 / 8), dim3(32), a);
@@ -426,7 +468,7 @@ int main(int argc, char** argv) {
             M.launch("_ZN2sr2io9k_sr_dec0ENS0_8Dec0ArgsE", dim3(W0 / 8, H0 / 8), dim3(32), a);
         }
 
-        // post (FUN_180117ee0): PostArgs, 256 B; <isL, 12/16 or 15/27, ldr=0, mvhi>
+        // post (FUN_180117ee0): PostArgs, 256 B; k_sr_post<isL, 12/16 or 15/27, ldr, mvhi> (four launchers)
         {
             const float fW = float(W), fH = float(H), f15w = float(W15), f15h = float(H15);
             Args a(256);
@@ -437,26 +479,11 @@ int main(int argc, char** argv) {
              .i2(0x88, W, H).i2(0x90, W, H).i2(0x98, W15, H15).i2(0xa0, hW15, hH15).put(0xa8, dec0_f1)
              .f2(0xac, fW / f15w, fH / f15h).f2(0xb4, F20x, F20y)
              .f2(0xbc, 1.0f / fW, 1.0f / fH).f2(0xc4, 1.0f / f15w, 1.0f / f15h).put(0xcc, 0x40549a78u)
-             .put(0xd0, uint32_t(depinv)).put(0xd4, uint32_t(mvhi ? oW * 4 : 0)).put(0xd8, mvhi ? g_mvhi : nullptr).put(0xe0, (void*)nullptr)
+             .put(0xd0, uint32_t(depinv)).put(0xd4, uint32_t(ldr)).put(0xd8, uint64_t(mvhi)).put(0xe0, g_mvhi)
              .i2(0xe8, oW, oH).f2(0xf0, F34x / (float(oW) / f15w), F34y / (float(oH) / f15h)).f2(0xf8, mvoffx, mvoffy);
-            const char* sym = nullptr;
-            if (presetL) {
-                if (mvhi) {
-                    sym = post_3_2 ? "_ZN2sr2io9k_sr_postILb1ELi15ELi27ELb0ELb1EEEvNS0_8PostArgsE"
-                                   : "_ZN2sr2io9k_sr_postILb1ELi12ELi16ELb0ELb1EEEvNS0_8PostArgsE";
-                } else {
-                    sym = post_3_2 ? "_ZN2sr2io9k_sr_postILb1ELi15ELi27ELb0ELb0EEEvNS0_8PostArgsE"
-                                   : "_ZN2sr2io9k_sr_postILb1ELi12ELi16ELb0ELb0EEEvNS0_8PostArgsE";
-                }
-            } else {
-                if (mvhi) {
-                    sym = post_3_2 ? "_ZN2sr2io9k_sr_postILb0ELi15ELi27ELb0ELb1EEEvNS0_8PostArgsE"
-                                   : "_ZN2sr2io9k_sr_postILb0ELi12ELi16ELb0ELb1EEEvNS0_8PostArgsE";
-                } else {
-                    sym = post_3_2 ? "_ZN2sr2io9k_sr_postILb0ELi15ELi27ELb0ELb0EEEvNS0_8PostArgsE"
-                                   : "_ZN2sr2io9k_sr_postILb0ELi12ELi16ELb0ELb0EEEvNS0_8PostArgsE";
-                }
-            }
+            char sym[80];
+            std::snprintf(sym, sizeof sym, "_ZN2sr2io9k_sr_postILb%dELi%sELb%dELb%dEEEvNS0_8PostArgsE", int(presetL),
+                          post_3_2 ? "15ELi27" : "12ELi16", int(ldr), int(mvhi));
             M.launch(sym, dim3((W15 + 15) >> 4, (hH15 + 15) >> 4), dim3(256), a);
         }
 
@@ -466,43 +493,18 @@ int main(int argc, char** argv) {
             a.put(0x00, full15).put(0x08, g_col).put(0x10, expo).put(0x18, p).put(0x1c, 0u).put(0x20, out)
              .i2(0x28, W, H).i2(0x30, W15, H15).i2(0x38, oW, oH)
              .f2(0x40, float(W) / float((oW + 1) & ~1), float(H) / float((oH + 1) & ~1))
-             .f2(0x48, F20x, F20y).put(0x50, 0x40549a78u).put(0x54, 0u);
+             .f2(0x48, F20x, F20y).put(0x50, 0x40549a78u).put(0x54, uint32_t(ldr));
             M.launch("_ZN2sr2io15k_sr_downsampleENS0_8DownArgsE", dim3((oW + 15) >> 4, (oH + 15) >> 4), dim3(256), a);
         }
+        CK(hipEventRecord(ev1, nullptr));
         CK(hipDeviceSynchronize());
+        g_dump.end_frame();
+        float ms = 0; CK(hipEventElapsedTime(&ms, ev0, ev1));
         CK(hipMemcpy(hostout.data(), out, hostout.size(), hipMemcpyDeviceToHost));
         spit(odir + "/out" + sfx + ".f32", hostout.data(), hostout.size());
-        if (dump) {
-            std::vector<uint8_t> h(size_t(W15) * H15 * 8);
-            CK(hipMemcpy2D(h.data(), size_t(W15) * 8, ihist[p ^ 1], ihpitch, size_t(W15) * 8, H15, hipMemcpyDeviceToHost));
-            spit(odir + "/hist" + sfx + ".f16", h.data(), h.size());
-            std::vector<uint8_t> g(size_t(W15) * H15 * 4);
-            CK(hipMemcpy(g.data(), full15, g.size(), hipMemcpyDeviceToHost));
-            spit(odir + "/full15" + sfx + ".bin", g.data(), g.size());
-        }
-        std::printf("frame %d done (parity %d)\n", fi, p);
+        std::printf("frame %d done (parity %d)\nGPU_FRAME_MS %d %.4f\n", fi, p, fi, ms);
+        std::fflush(stdout);
         p ^= 1; fc = (fc + 1) & 7;
-    }
-    if (dump) {
-        auto dumpbuf = [&](const char* n, void* d, size_t bytes) {
-            std::vector<uint8_t> h(bytes); CK(hipMemcpy(h.data(), d, bytes, hipMemcpyDeviceToHost));
-            spit(odir + "/" + n, h.data(), bytes);
-        };
-        dumpbuf("gates.bin", gates, rp * 4); dumpbuf("factors.bin", factors, rp * 4); dumpbuf("aniso.bin", aniso, rp * 8);
-        dumpbuf("hidden0.bin", hidden[0], rp * 4); dumpbuf("hidden1.bin", hidden[1], rp * 4);
-        dumpbuf("mv_ero.bin", mv_ero, rp * 4); dumpbuf("prev_mvec0.bin", prev_mvec[0], rp * 4); dumpbuf("prev_mvec1.bin", prev_mvec[1], rp * 4);
-        dumpbuf("dhist.bin", dhist, size_t(hW15) * hH15 * 4); dumpbuf("expo.bin", expo, 4);
-        dumpbuf("g_col.f16", g_col, rp * 8); dumpbuf("g_dep.f32", g_dep, rp * 4); dumpbuf("g_mv.f16", g_mv, rp * 4);
-        dumpbuf("g_mvhi.f16", g_mvhi, size_t(oW) * oH * 4);
-        if (presetL) {
-            dumpbuf("l0_skip.bin", l0_skip, size_t(W0) * H0 * 32);
-            dumpbuf("l0_in.bin", l0_in, size_t(W0 + 8) * (H0 + 8) * 32);
-        }
-        for (int i = 0; i < 9; ++i) {
-            std::vector<uint8_t> h(size_t(t[i].C) * t[i].W * t[i].H);
-            CK(hipMemcpy(h.data(), t[i].d, h.size(), hipMemcpyDeviceToHost));
-            spit(odir + "/t" + std::to_string(i) + ".fp8", h.data(), h.size());
-        }
     }
     return 0;
 }
