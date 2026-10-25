@@ -42,16 +42,16 @@ Never mark CLOSE or EXACT without pasted diffdump numbers.
 | `ngx_client` / Proton | EXACT | D3D12: 12/12 frames read back, half-size create/eval/release cycles pass<br>Vulkan: 12/12 frames read back, half-size cycles pass<br>CreateFeature refusal: pass on missing (none) and wrong NVIDIA DLLs | All 16 NGX exports implemented; passes D3D12 and Vulkan validation under Proton on SteamOS |
 
 ## Referee Run Summary (`tools/verify/run_all.sh`)
-- **Run ID**: `20261025_113852_1520825`
+- **Run ID**: `20261025_125135_1719411`
 - **[V10] Provenance**: PASS (clean working tree, freeze v2 matched)
 - **[V6] Host**: PASS (SteamOS)
 - **[V7] Device & Compiler**: PASS (AMD Radeon RX 9070 XT GFX1201; all 13 pipelines 0 spilled SGPRs, 0 spilled VGPRs, 0 scratch size)
 - **[Setup] Weights & Oracles**: PASS (weights verified against NeuralHub fingerprints; oracles built under ROCm)
-- **[V1] Fresh Inputs**: PASS (seed 3798313669, 12 moving frames rendered via Blender Cycles on GPU)
-- **[V2] Port Matrix Execution**: PASS (all 21 test matrix cells executed)
+- **[V1] Fresh Inputs**: PASS (seed 2122730639, 12 moving frames rendered via Blender Cycles on GPU)
+- **[V2] Port Matrix Execution**: PASS (all 25 test matrix cells executed)
 - **[V5] Corruption Sensitivity**: PASS (all 7 corrupted input/weight tests properly rejected)
 - **[V9] Proton Package Execution**: PASS (all 14 tests pass: D3D12 & Vulkan on SR M/L and RR F, half-size cycles, and refusal on missing/wrong NVIDIA DLLs)
 - **[V6] Package R2 Scan**: PASS (56 files verified clean of proprietary secrets/bytes)
-- **[V2] Oracle Reference Runs**: PASS (all 21 ROCm reference cells executed)
-- **[V4] Numerical Target**: In progress — `sr_M_seq` frame 0 reached 37.51 dB vs oracle (port vs GT: 36.648 dB, oracle vs GT: 40.162 dB). Bar is >= 50 dB per frame and <= 0.1 dB diff vs oracle against GT.
+- **[V2] Oracle Reference Runs**: PASS (all 25 ROCm reference cells executed)
+- **[V4] Numerical Target**: In progress — `sr_M_seq` frame 0 reached 37.55 dB vs oracle (port vs GT: 36.714 dB, ref vs GT: 40.030 dB, |diff| 3.316 dB). Minimum bar is >= 50 dB per frame and <= 0.1 dB diff vs oracle against GT.
 
