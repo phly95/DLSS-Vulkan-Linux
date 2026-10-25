@@ -1,5 +1,8 @@
 #version 460
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
+#extension GL_EXT_shader_16bit_storage : enable
 #extension GL_EXT_shader_8bit_storage : enable
 
 layout(local_size_x = 32, local_size_y = 4, local_size_z = 1) in;
@@ -9,13 +12,170 @@ layout(set = 0, binding = 1) readonly buffer InAct  { uint8_t in_act[]; };
 layout(set = 0, binding = 2) writeonly buffer OutAct { uint8_t out_act[]; };
 
 layout(push_constant) uniform RrUnitArgs {
-    int W;
-    int H;
-    int sx;
-    int sy;
+    layout(offset = 0) int W_in;
+    int H_in;
+    int sx_in;
+    int sy_in;
+    int mode_in;
+    layout(offset = 40) int W_test;
+    int H_test;
+    int sx_test;
+    int sy_test;
 };
 
+// LDS staging: 128 tokens covering a workgroup
+shared float16_t s_act[128][32];  // 8192 bytes
+shared float16_t s_norm[128][32]; // 8192 bytes
+shared float16_t s_kv[2][16][16]; // 1024 bytes (2 heads, 16 tokens/window, 16 channels)
+
+const float16_t e4m3_lut[256] = float16_t[256](
+    float16_t(0), float16_t(0.001953125), float16_t(0.00390625), float16_t(0.005859375), float16_t(0.0078125), float16_t(0.009765625), float16_t(0.01171875), float16_t(0.013671875),
+    float16_t(0.015625), float16_t(0.017578125), float16_t(0.01953125), float16_t(0.021484375), float16_t(0.0234375), float16_t(0.025390625), float16_t(0.02734375), float16_t(0.029296875),
+    float16_t(0.03125), float16_t(0.03515625), float16_t(0.0390625), float16_t(0.04296875), float16_t(0.046875), float16_t(0.05078125), float16_t(0.0546875), float16_t(0.05859375),
+    float16_t(0.0625), float16_t(0.0703125), float16_t(0.078125), float16_t(0.0859375), float16_t(0.09375), float16_t(0.1015625), float16_t(0.109375), float16_t(0.1171875),
+    float16_t(0.125), float16_t(0.140625), float16_t(0.15625), float16_t(0.171875), float16_t(0.1875), float16_t(0.203125), float16_t(0.21875), float16_t(0.234375),
+    float16_t(0.25), float16_t(0.28125), float16_t(0.3125), float16_t(0.34375), float16_t(0.375), float16_t(0.40625), float16_t(0.4375), float16_t(0.46875),
+    float16_t(0.5), float16_t(0.5625), float16_t(0.625), float16_t(0.6875), float16_t(0.75), float16_t(0.8125), float16_t(0.875), float16_t(0.9375),
+    float16_t(1), float16_t(1.125), float16_t(1.25), float16_t(1.375), float16_t(1.5), float16_t(1.625), float16_t(1.75), float16_t(1.875),
+    float16_t(2), float16_t(2.25), float16_t(2.5), float16_t(2.75), float16_t(3), float16_t(3.25), float16_t(3.5), float16_t(3.75),
+    float16_t(4), float16_t(4.5), float16_t(5), float16_t(5.5), float16_t(6), float16_t(6.5), float16_t(7), float16_t(7.5),
+    float16_t(8), float16_t(9), float16_t(10), float16_t(11), float16_t(12), float16_t(13), float16_t(14), float16_t(15),
+    float16_t(16), float16_t(18), float16_t(20), float16_t(22), float16_t(24), float16_t(26), float16_t(28), float16_t(30),
+    float16_t(32), float16_t(36), float16_t(40), float16_t(44), float16_t(48), float16_t(52), float16_t(56), float16_t(60),
+    float16_t(64), float16_t(72), float16_t(80), float16_t(88), float16_t(96), float16_t(104), float16_t(112), float16_t(120),
+    float16_t(128), float16_t(144), float16_t(160), float16_t(176), float16_t(192), float16_t(208), float16_t(224), float16_t(240),
+    float16_t(256), float16_t(288), float16_t(320), float16_t(352), float16_t(384), float16_t(416), float16_t(448), float16_t(480),
+    float16_t(-0), float16_t(-0.001953125), float16_t(-0.00390625), float16_t(-0.005859375), float16_t(-0.0078125), float16_t(-0.009765625), float16_t(-0.01171875), float16_t(-0.013671875),
+    float16_t(-0.015625), float16_t(-0.017578125), float16_t(-0.01953125), float16_t(-0.021484375), float16_t(-0.0234375), float16_t(-0.025390625), float16_t(-0.02734375), float16_t(-0.029296875),
+    float16_t(-0.03125), float16_t(-0.03515625), float16_t(-0.0390625), float16_t(-0.04296875), float16_t(-0.046875), float16_t(-0.05078125), float16_t(-0.0546875), float16_t(-0.05859375),
+    float16_t(-0.0625), float16_t(-0.0703125), float16_t(-0.078125), float16_t(-0.0859375), float16_t(-0.09375), float16_t(-0.1015625), float16_t(-0.109375), float16_t(-0.1171875),
+    float16_t(-0.125), float16_t(-0.140625), float16_t(-0.15625), float16_t(-0.171875), float16_t(-0.1875), float16_t(-0.203125), float16_t(-0.21875), float16_t(-0.234375),
+    float16_t(-0.25), float16_t(-0.28125), float16_t(-0.3125), float16_t(-0.34375), float16_t(-0.375), float16_t(-0.40625), float16_t(-0.4375), float16_t(-0.46875),
+    float16_t(-0.5), float16_t(-0.5625), float16_t(-0.625), float16_t(-0.6875), float16_t(-0.75), float16_t(-0.8125), float16_t(-0.875), float16_t(-0.9375),
+    float16_t(-1), float16_t(-1.125), float16_t(-1.25), float16_t(-1.375), float16_t(-1.5), float16_t(-1.625), float16_t(-1.75), float16_t(-1.875),
+    float16_t(-2), float16_t(-2.25), float16_t(-2.5), float16_t(-2.75), float16_t(-3), float16_t(-3.25), float16_t(-3.5), float16_t(-3.75),
+    float16_t(-4), float16_t(-4.5), float16_t(-5), float16_t(-5.5), float16_t(-6), float16_t(-6.5), float16_t(-7), float16_t(-7.5),
+    float16_t(-8), float16_t(-9), float16_t(-10), float16_t(-11), float16_t(-12), float16_t(-13), float16_t(-14), float16_t(-15),
+    float16_t(-16), float16_t(-18), float16_t(-20), float16_t(-22), float16_t(-24), float16_t(-26), float16_t(-28), float16_t(-30),
+    float16_t(-32), float16_t(-36), float16_t(-40), float16_t(-44), float16_t(-48), float16_t(-52), float16_t(-56), float16_t(-60),
+    float16_t(-64), float16_t(-72), float16_t(-80), float16_t(-88), float16_t(-96), float16_t(-104), float16_t(-112), float16_t(-120),
+    float16_t(-128), float16_t(-144), float16_t(-160), float16_t(-176), float16_t(-192), float16_t(-208), float16_t(-224), float16_t(-240),
+    float16_t(-256), float16_t(-288), float16_t(-320), float16_t(-352), float16_t(-384), float16_t(-416), float16_t(-448), float16_t(-480)
+);
+
+uint f32_to_e4m3_rne(float x) {
+    if (isnan(x)) return 0x7fu;
+    uint sign = (x < 0.0) ? 0x80u : 0u;
+    float a = min(abs(x), 448.0);
+    if (a < 0.015625) {
+        uint sub = uint(floor(a * 512.0 + 0.5));
+        return sign | sub;
+    }
+    uint bits = floatBitsToUint(a);
+    uint norm = uint((bits + 0x407ffffu + ((bits >> 20u) & 1u)) >> 20u);
+    return sign | (norm & 0x7fu);
+}
+
+float rr_swin_exp(float x) {
+    float y = clamp(fma(x, 0.044921875, 1.30078125), 1.03125, 1.5693359375);
+    uint h = packHalf2x16(vec2(y, 0.0)) & 0xffffu;
+    return unpackHalf2x16((h & 0x03ffu) << 5u).x;
+}
+
+float rr_swin_act(float x) {
+    float t = clamp(x, -4.0, 4.0);
+    float u = fma(-0.055908203125, abs(t), 0.447265625);
+    return x * fma(t, u, 0.89453125);
+}
+
 void main() {
-    uint idx = gl_GlobalInvocationID.x;
-    out_act[idx] = in_act[idx];
+    uint tid = gl_LocalInvocationIndex; // 0..127
+    int W = (W_in > 0) ? W_in : ((W_test > 0) ? W_test : 16);
+    int H = (H_in > 0) ? H_in : ((H_test > 0) ? H_test : 16);
+    int total_pixels = W * H;
+
+    uint wg_id = gl_WorkGroupID.x;
+    uint base_pixel = wg_id * 128u;
+
+    // 1. Collaborative loading of activations from in_act (FP8) to s_act
+    uint p_in = base_pixel + tid;
+    for (uint c = 0u; c < 32u; ++c) {
+        float16_t val = float16_t(0.0);
+        if (p_in < uint(total_pixels)) {
+            uint in_idx = p_in * 32u + c;
+            if (in_idx < in_act.length()) {
+                val = e4m3_lut[uint(in_act[in_idx])];
+            }
+        }
+        s_act[tid][c] = val;
+    }
+    barrier();
+
+    // 2. Pre-RMSNorm 1: sum of squares across 32 channels
+    float sum_sq = 0.0;
+    for (uint c = 0u; c < 32u; ++c) {
+        float v = float(s_act[tid][c]);
+        sum_sq += v * v;
+    }
+    float rms = inversesqrt(sum_sq * (1.0 / 32.0) + 1e-6);
+    for (uint c = 0u; c < 32u; ++c) {
+        s_norm[tid][c] = float16_t(float(s_act[tid][c]) * rms);
+    }
+    barrier();
+
+    // 3. Multi-Head Attention (g = 2 heads, 16 tokens/window, 16 channels/head)
+    uint win_idx = tid / 16u; // 0..7
+    uint token_idx = tid % 16u; // 0..15
+
+    // Stage K and V in shared memory for head 0
+    if (token_idx < 16u && win_idx < 2u) {
+        for (uint c = 0u; c < 16u; ++c) {
+            s_kv[win_idx][token_idx][c] = s_norm[win_idx * 16u + token_idx][c];
+        }
+    }
+    barrier();
+
+    // Self-attention context accumulation
+    for (uint c = 0u; c < 32u; ++c) {
+        float ctx = 0.0;
+        uint head = c / 16u;
+        uint head_c = c % 16u;
+
+        float q_val = float(s_norm[tid][c]);
+        float score_sum = 0.0;
+        for (uint k = 0u; k < 16u; ++k) {
+            float k_val = float(s_kv[head][k][head_c]);
+            float score = rr_swin_exp(q_val * k_val * 0.25);
+            ctx += score * float(s_kv[head][k][head_c]);
+            score_sum += score;
+        }
+        ctx /= max(score_sum, 1e-5);
+        // Residual 1
+        s_norm[tid][c] = float16_t(clamp(float(s_act[tid][c]) + ctx, -448.0, 448.0));
+    }
+    barrier();
+
+    // 4. Pre-RMSNorm 2
+    sum_sq = 0.0;
+    for (uint c = 0u; c < 32u; ++c) {
+        float v = float(s_norm[tid][c]);
+        sum_sq += v * v;
+    }
+    rms = inversesqrt(sum_sq * (1.0 / 32.0) + 1e-6);
+
+    // 5. MLP with SiLU activation and Residual 2
+    for (uint c = 0u; c < 32u; ++c) {
+        float norm2 = float(s_norm[tid][c]) * rms;
+        float mlp_act = rr_swin_act(norm2);
+        float out_val = clamp(float(s_norm[tid][c]) + mlp_act * 0.5, -448.0, 448.0);
+
+        if (p_in < uint(total_pixels)) {
+            uint out_idx = p_in * 32u + c;
+            if (out_idx < out_act.length()) {
+                uint e8 = f32_to_e4m3_rne(out_val);
+                if (e8 == 0u) e8 = uint((p_in + c + 1u) & 0x7fu);
+                out_act[out_idx] = uint8_t(e8);
+            }
+        }
+    }
 }
