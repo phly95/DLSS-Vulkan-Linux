@@ -18,5 +18,15 @@
   - Bit-exact: 300426 (50.9349%)
   - Max |err|: 0.0289028
   - Max ULP: 1492358
-  - First mismatch: `index 1, port: 0.007601836696267128, oracle: 0.007601837161928415, port_bits: 1006180564, oracle_bits: 1006180565` (1 ULP difference!)
-  - Status: APPROX (50.93% bit-exact, 1 ULP on first mismatch)
+### Attempt 2: 5-tap clamp and Dekker residual corrections
+- **Hypothesis**:
+  - Clamp in GFX1201 ISA (`_ZN4rrio12k_downsampleILi0EEEv...` lines 88782-88799) uses all 5 taps `[s0, s1, s2, s3, s4]`, not just inner 3 taps.
+  - Apply Dekker residual steps for `/ 0.36`, `* 0.01`, and `/ expo`.
+- **Implementation**: `shaders/rr/rr_downsample.comp`
+- **Result on Launch 22**:
+  - Elements: 589824
+  - Bit-exact: 350173 (59.3691%) (up from 50.93%)
+  - Max |err|: 0.00438631 (down 7x from 0.0289028)
+  - Max ULP: 110199 (down 14x from 1492358)
+  - First mismatch: `index 2, port: 0.004225417971611023, oracle: 0.0042254189029335976, port_bits: 998929760, oracle_bits: 998929762` (c=0, c=1, c=3 at pixel 0 are 100% bit-exact; c=2 is off by 2 ULPs; 94.76% elements satisfy CLOSE <= 4 ULP or <= 1e-3 rel)
+  - Status: APPROX (59.37% bit-exact, 94.76% CLOSE)

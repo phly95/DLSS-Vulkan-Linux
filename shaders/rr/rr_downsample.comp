@@ -18,12 +18,28 @@ layout(push_constant) uniform DownArgs {
 
 shared f16vec3 s_patch[28][28];
 
-float inv_tonemap(float v) {
-    float c = clamp(v, 0.0001, 3.0);
-    float t = c * (1.0 / 0.36);
-    float p = t * 3.321928095;
-    float e = in_expo.x;
-    return (exp2(p) - 1.0) * (0.01 / e);
+float inv_tonemap(float v, float inv_expo) {
+    float c = clamp(v, 0.00010000000475, 3.0);
+    const float kInv036 = uintBitsToFloat(0x4031c71cu);
+    const float kNeg036 = uintBitsToFloat(0xbeb851ecu);
+    const float kLog2_10 = uintBitsToFloat(0x40549a78u);
+    const float k001 = uintBitsToFloat(0x3c23d70au);
+    const float kNeg100 = uintBitsToFloat(0xc2c80000u);
+
+    float t = c * kInv036;
+    float rem1 = fma(t, kNeg036, c);
+    t = fma(rem1, kInv036, t);
+
+    float p = t * kLog2_10;
+    float e = exp2(p) - 1.0;
+
+    float m = e * k001;
+    float rem2 = fma(m, kNeg100, e);
+    m = fma(rem2, k001, m);
+
+    float q = m * inv_expo;
+    float rem3 = fma(-q, in_expo.x, m);
+    return fma(rem3, inv_expo, q);
 }
 
 void main() {
@@ -88,18 +104,19 @@ void main() {
         f16vec3 s4 = s_patch[yk][bx + 2];
 
         f16vec3 r = s0 * wx[0] + s1 * wx[1] + s2 * wx[2] + s3 * wx[3] + s4 * wx[4];
-        f16vec3 min_val = min(min(s1, s2), s3);
-        f16vec3 max_val = max(max(s1, s2), s3);
+        f16vec3 min_val = min(min(min(s0, s1), min(s2, s3)), s4);
+        f16vec3 max_val = max(max(max(s0, s1), max(s2, s3)), s4);
         row[k] = clamp(r, min_val, max_val);
     }
 
     f16vec3 res = row[0] * wy[0] + row[1] * wy[1] + row[2] * wy[2] + row[3] * wy[3] + row[4] * wy[4];
-    f16vec3 min_row = min(min(row[1], row[2]), row[3]);
-    f16vec3 max_row = max(max(row[1], row[2]), row[3]);
+    f16vec3 min_row = min(min(min(row[0], row[1]), min(row[2], row[3])), row[4]);
+    f16vec3 max_row = max(max(max(row[0], row[1]), max(row[2], row[3])), row[4]);
     res = clamp(res, min_row, max_row);
 
-    out_color[oy * oW + ox] = vec4(inv_tonemap(float(res.r)),
-                                  inv_tonemap(float(res.g)),
-                                  inv_tonemap(float(res.b)),
+    float inv_expo = 1.0 / in_expo.x;
+    out_color[oy * oW + ox] = vec4(inv_tonemap(float(res.r), inv_expo),
+                                  inv_tonemap(float(res.g), inv_expo),
+                                  inv_tonemap(float(res.b), inv_expo),
                                   1.0);
 }

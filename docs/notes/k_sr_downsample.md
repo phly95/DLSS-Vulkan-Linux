@@ -21,4 +21,11 @@
   - Clamping: clamped to inner 3 samples `[bx - 1, bx, bx + 1]`.
   - Inverse tonemapping on GPU clamps to `[0.0001, 3.0]` and calculates `(exp2(v * (1/0.36) * log2(10)) - 1.0) * (0.01 / expo)`.
 - **Result**: `out [f32]: 589824 elements, bit-exact 329882 (55.9289%), max |err| 0.0320093, max ulp 2648755`.
-- **First Mismatch**: `{'index': 0, 'port': 0.008307147771120071, 'oracle': 0.00830714963376522, 'port_bits': 1007164084, 'oracle_bits': 1007164086}` (only 2 ULPs off on index 0!).
+### Attempt 3
+- **Hypothesis**: Apply GFX1201 ISA Dekker residual correction for `/ 0.36`, `* 0.01`, and division by `expo`:
+  - `t = c * kInv036; rem1 = fma(t, kNeg036, c); t = fma(rem1, kInv036, t);`
+  - `p = t * log2_10; e = exp2(p) - 1.0;`
+  - `m = e * k001; rem2 = fma(m, kNeg100, e); m = fma(rem2, k001, m);`
+  - `q = m * inv_e; rem3 = fma(-q, expo_val, m); res = fma(rem3, inv_e, q);`
+- **Result**: `out [f32]: 589824 elements, bit-exact 417865 (70.8457%), max |err| 0.0320091, max ulp 2648755`.
+- **First Mismatch**: `{'index': 4, 'port': 0.00971667468547821, 'oracle': 0.009716675616800785, 'port_bits': 1008677552, 'oracle_bits': 1008677553}` (Pixel 0 indices 0..3 are 100% bit-exact; index 4 is 1 ULP off; 87.74% within 1 ULP).
