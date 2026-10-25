@@ -60,6 +60,14 @@ Code object statistics (from the code object's metadata): kernarg 56 B, 64 threa
   y*(0x3b6b - y*y) via `v_pk_fma_f16` and a second fma with 0x3d80, `<<5`, `+0x8000`, byte permutes into
   fp8 positions, `ds_bpermute` reductions and a lookup in the second LUT. The function this computes
   and where each rounding happens is **open**; it must be read exactly, not approximated (R5).
+  Lead (from reading 0x2440-0x2850, **not yet confirmed** across the whole block): the input h is a
+  GEMM 1 output (two K=32 chains added through f16); y = clamp(f16(h * 0x2466), 0xb873, 0x3873),
+  p = y*(0x3b6b - y*y) + 0x3d80 (two `v_pk_fma_f16`), so p stays in [1, 2) and q = (bits(p) << 5) + 0x8000
+  (16-bit) equals mantissa(p) << 5: reinterpreted as f16, q ~ exp2(32*(p - 1) - 15), a bit-built exp2 of a
+  soft-clamped logit. The q of a lane and its lane^16 partner are added (`ds_bpermute`, `v_pk_add_f16`),
+  summed further, and the sum indexes the second table of `g_sr_lut`, which is 1/h (`docs/sr/HOST-RE.md`):
+  a softmax denominator. Still open: over which elements the sum runs, the add order, and how 1/sum is
+  applied.
 - ~0x2d14-0x3420: the eight f16 WMMAs (a residual / diagonal term?) — **open**.
 - fp8 WMMAs with weight offsets 2176..17600: the 4C expansion and contraction — operand wiring **open**.
 - After the barrier at 0x5cfc: the Cnext = 96 projection, weights staged through LDS

@@ -127,8 +127,12 @@ them and every code object in seconds (needs `7z`, `pip install pefile msgpack`)
   directory" because no kernel exists yet. It does not pass until the first kernel is committed.
 - `tools/gpu/collect_oracle.sh`: oracle dumps (srref M/L, rrref F, frames 0-1, seeded 256x144 -> 512x288)
   for the private repository. `--dry-run` checked here; the real run needs the card.
-- `tools/re/slice.py`: def-use slices over the disassembly, used to read `k_sr_stage`.
-- `k_sr_stage`: partial RE in `docs/sr/VULKAN.md`; no shader written.
+- `tools/re/slice.py` (def-use slices) and `tools/re/ssa.py` (straight-line SSA listing, `--expr` trees):
+  reading aids for the ISA; text only, nothing evaluated.
+- `k_sr_stage`: partial RE in `docs/sr/VULKAN.md`; no shader written. **Resume there**: the section
+  "Seen but not yet decoded" and its softmax lead (unconfirmed), with
+  `tools/re/fn.sh sr <symbol> > k.s; tools/re/ssa.py k.s --to 4660` (0x4660 is the first loop's start).
+- The work was stopped at the user's request (goal cleared) with everything pushed.
 
 **GPU-pending (run on the RX 9070 XT, from a clean checkout of this branch):**
 
@@ -159,7 +163,7 @@ edited copy of `sr_stage.comp`. The runner had no barriers between dispatches, n
 ignored `--mode` (RR cells ran the SR network), hard-coded the dec0 scales to 1.0 and did not enable
 `VK_EXT_shader_float8`.
 
-**Kept, with known defects** (`c229591`, needs a fixed re-freeze approved by the user before port work):
+**Kept, with known defects** (`c229591`; all fixed in `1fea806` + `e4c9367`, "verify: freeze v2", above):
 - V9: an absent `build/package/install.sh` is skipped and the run still passes; the NGX Vulkan path of
   `ngx_client` binds no images and reads nothing back; Proton outputs are never checked against the
   oracle; RR (feature 13) never runs; there is no missing / wrong DLL test.
@@ -218,7 +222,8 @@ buffers), the `/proc` maps / fd sampling loop, and the D3D12 path of `ngx_client
    covers an 8x8 pixel tile at grid*8 - shift, mirror-padded at the borders; RMSNorm = f16 sum of squares
    (fixed packed-add tree + a lane^16 exchange) + 2^-14, rsqrt from `g_sr_lut`, times the sqrt(C)-scaled gain,
    to fp8; GEMMs as pairs of K=32 WMMA chains whose f32 results are added through f16 (`v_fma_mixlo_f16`).
-   No `exp` anywhere: the "attention" is not softmax.
+   No `exp` instruction anywhere, but see `docs/sr/VULKAN.md`: a bit-built exp2 and the `1/h` table suggest a
+   softmax after all (unconfirmed).
 5. Faster route to games, if wanted: NeuralHub's kernels run under ROCm, so a Vulkan layer could drive them
    through HIP external-memory interop. This breaks the goal's "no HIP at run time" and needs ROCm
    libraries; ask the user before going this way.
