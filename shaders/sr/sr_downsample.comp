@@ -38,9 +38,11 @@ f16vec3 unpack_color(uint u) {
                        float16_t(g * (1.0 / 2047.0)),
                        float16_t(b * (1.0 / 1023.0)));
     } else {
-        return f16vec3(float16_t(r * 0.0011968744),
-                       float16_t(g * 0.0011968744),
-                       float16_t(b * 0.0023951556));
+        const float c_rg = uintBitsToFloat(0x3a9ce069u);
+        const float c_b  = uintBitsToFloat(0x3b1cf40au);
+        return f16vec3(float16_t(r * c_rg),
+                       float16_t(g * c_rg),
+                       float16_t(b * c_b));
     }
 }
 
@@ -137,14 +139,12 @@ void main() {
         f16vec3 s3 = s_patch[py][bx + 1];
         f16vec3 s4 = s_patch[py][bx + 2];
         f16vec3 r = s0 * wx[0] + s1 * wx[1] + s2 * wx[2] + s3 * wx[3] + s4 * wx[4];
-        f16vec3 r_min = min(min(s1, s2), s3);
-        f16vec3 r_max = max(max(s1, s2), s3);
+        f16vec3 r_min = min(min(min(s0, s1), min(s2, s3)), s4);
+        f16vec3 r_max = max(max(max(s0, s1), max(s2, s3)), s4);
         row_sums[j] = clamp(r, r_min, r_max);
 
-        if (j >= 1 && j <= 3) {
-            min_inner = min(min_inner, row_sums[j]);
-            max_inner = max(max_inner, row_sums[j]);
-        }
+        min_inner = min(min_inner, row_sums[j]);
+        max_inner = max(max_inner, row_sums[j]);
     }
 
     f16vec3 col_filtered = row_sums[0] * wy[0] + row_sums[1] * wy[1] + row_sums[2] * wy[2] + row_sums[3] * wy[3] + row_sums[4] * wy[4];

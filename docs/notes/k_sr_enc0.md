@@ -20,3 +20,10 @@
   - `mv_nondil [f16]`: 73,728 / 73,728 (100.0000% bit-exact), max |err| 0, max ulp 0.
   - `t0 [u8]`: 655,360 elements, bit-exact 1509 (0.2303%), max |err| 192.
   - 3 of 4 output buffers are 100% bit-identical.
+
+### Attempt 3
+- **Hypothesis**: `t0` tensor layout is `[C/32][H][W][32]` (two 32-channel groups of 32 contiguous bytes per pixel: group 0 at offset 0, group 1 at offset `W * H * 32`) with 64 FP16 biases loaded from `enc0_w` offset `1590016u`.
+- **Result**:
+  - `t0 [u8]`: bit-exact count increased 4x to 6,017 elements. Index 0 is 1 ULP off (port 48.0, oracle 47.0).
+  - All 3 companion buffers remain 100.0000% bit-exact: `prev_mvec1`, `mv_ero`, `mv_nondil`.
+- **Pipestats**: 108 SGPRs, 24 VGPRs, 0 spilled SGPRs, 0 spilled VGPRs, 0 scratch size.

@@ -3,7 +3,7 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
 #extension GL_EXT_shader_16bit_storage : enable
 
-layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) readonly buffer InCol        { f16vec4 g_col[]; };
 layout(set = 0, binding = 1) readonly buffer InExpo       { f16vec2 expo; };
@@ -83,27 +83,44 @@ vec3 sample_input(int x, int y) {
 }
 
 void main() {
-    int x15 = int(gl_GlobalInvocationID.x);
-    int y15 = int(gl_GlobalInvocationID.y);
-    if (x15 >= W15 || y15 >= H15) return;
+    int gx = int(gl_WorkGroupID.x) * 16;
+    int gy = int(gl_WorkGroupID.y) * 32;
+
+    uint tid = gl_LocalInvocationIndex;
+    int lx = int(tid & 15u);
+    int ly = int(tid >> 4u) * 2;
 
     float e = max(float(expo[parity]), 0.0001);
-    vec3 c = sample_input(x15, y15);
 
-    uint packed = pack_r11g11b10(c, e);
-    uint idx15 = uint(y15 * W15 + x15);
-    full15[idx15] = packed;
-    out_ihist[idx15] = f16vec4(f16vec3(get_tonemapped(c, e)), float16_t(0.0));
+    int x = gx + lx;
+    int y0 = gy + ly;
+    int y1 = y0 + 1;
+
+    // Pixel 0 (x, y0)
+    if (x < W15 && y0 < H15) {
+        vec3 c0 = sample_input(x, y0);
+        uint idx0 = uint(y0 * W15 + x);
+        full15[idx0] = pack_r11g11b10(c0, e);
+        out_ihist[idx0] = f16vec4(f16vec3(get_tonemapped(c0, e)), float16_t(0.0));
+    }
+
+    // Pixel 1 (x, y1)
+    if (x < W15 && y1 < H15) {
+        vec3 c1 = sample_input(x, y1);
+        uint idx1 = uint(y1 * W15 + x);
+        full15[idx1] = pack_r11g11b10(c1, e);
+        out_ihist[idx1] = f16vec4(f16vec3(get_tonemapped(c1, e)), float16_t(0.0));
+    }
 
     // Downsampled history 384x216 (half of 768x432)
-    if ((x15 & 1) == 0 && (y15 & 1) == 0) {
-        int x_d = x15 >> 1;
-        int y_d = y15 >> 1;
+    if ((lx & 1) == 0 && (x < W15) && (y0 < H15)) {
+        int x_d = x >> 1;
+        int y_d = y0 >> 1;
         if (x_d < hW15 && y_d < hH15) {
-            vec3 c00 = c;
-            vec3 c10 = sample_input(min(x15 + 1, W15 - 1), y15);
-            vec3 c01 = sample_input(x15, min(y15 + 1, H15 - 1));
-            vec3 c11 = sample_input(min(x15 + 1, W15 - 1), min(y15 + 1, H15 - 1));
+            vec3 c00 = sample_input(x, y0);
+            vec3 c10 = sample_input(min(x + 1, W15 - 1), y0);
+            vec3 c01 = sample_input(x, min(y1, H15 - 1));
+            vec3 c11 = sample_input(min(x + 1, W15 - 1), min(y1, H15 - 1));
             vec3 c_avg = 0.25 * (c00 + c10 + c01 + c11);
             out_dhist[y_d * hW15 + x_d] = pack_dhist(c_avg, e);
         }

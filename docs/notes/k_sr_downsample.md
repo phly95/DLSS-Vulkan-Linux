@@ -29,3 +29,11 @@
   - `q = m * inv_e; rem3 = fma(-q, expo_val, m); res = fma(rem3, inv_e, q);`
 - **Result**: `out [f32]: 589824 elements, bit-exact 417865 (70.8457%), max |err| 0.0320091, max ulp 2648755`.
 - **First Mismatch**: `{'index': 4, 'port': 0.00971667468547821, 'oracle': 0.009716675616800785, 'port_bits': 1008677552, 'oracle_bits': 1008677553}` (Pixel 0 indices 0..3 are 100% bit-exact; index 4 is 1 ULP off; 87.74% within 1 ULP).
+
+### Attempt 4
+- **Hypothesis**: The FIR clamp in ISA clamps against all 5 taps `[s0, s1, s2, s3, s4]` (both horizontally across columns 0..4 and vertically across rows 0..4), not just inner 3 taps. Also use exact bit-exact unpacking constants `c_rg = uintBitsToFloat(0x3a9ce069u)` and `c_b = uintBitsToFloat(0x3b1cf40au)` matching ISA decompilation.
+- **Result**: `out [f32]: 589824 elements, bit-exact 442642 (75.0465%), max |err| 0.005625, max ulp 140863`.
+  - Within 1 ULP: 551431 / 589824 (93.49%)
+  - CLOSE (<= 4 ULP or <= 1e-3 rel): 563983 / 589824 (95.62%)
+  - PSNR vs oracle: 75.37 dB (MSE 2.9057e-08)
+- **Pipestats**: 108 SGPRs, 96 VGPRs, 0 spilled SGPRs, 0 spilled VGPRs, 0 scratch size.

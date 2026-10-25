@@ -146,6 +146,19 @@ static Pipeline create_compute_pipeline(VkDevice dev, const std::vector<uint32_t
     return p;
 }
 
+static uint16_t f32_to_f16_rne(float f) {
+    uint32_t u; std::memcpy(&u, &f, 4);
+    uint16_t s = uint16_t((u >> 16) & 0x8000);
+    uint32_t a = u & 0x7fffffff;
+    if (a > 0x7f800000) return s | 0x7e00;
+    if (a >= 0x477ff000) return s | 0x7c00;
+    if (a < 0x38800000) {
+        float af; std::memcpy(&af, &a, 4);
+        return s | uint16_t(std::nearbyint(double(af) * 16777216.0));
+    }
+    return s | uint16_t(((a & 0x3fff) == 0x3000 || (a & 0x1fff) > 0x1000) + (a >> 13) + 0x4000);
+}
+
 int main(int argc, char** argv) {
     std::string mode = "sr";
     std::string preset = "M";
@@ -353,8 +366,13 @@ int main(int argc, char** argv) {
     Buffer g_mvhi = create_buffer(dev, picked_phys, size_t(oW) * oH * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
     Buffer expo = create_buffer(dev, picked_phys, 16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    float exp_init[4] = { 1.0f, 1.0f, 1.0f, 0.0f };
-    std::memcpy(expo.mapped, exp_init, 16);
+    if (mode == "sr") {
+        uint16_t exp_init[8] = { 0x3c00, 0x3c00, 0x3c00, 0x3c00, 0, 0, 0, 0 };
+        std::memcpy(expo.mapped, exp_init, 16);
+    } else {
+        float exp_init[4] = { 1.0f, 1.0f, 1.0f, 0.0f };
+        std::memcpy(expo.mapped, exp_init, 16);
+    }
 
     Buffer prev_mvec[2] = {
         create_buffer(dev, picked_phys, size_t(W) * H * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
@@ -482,6 +500,10 @@ int main(int argc, char** argv) {
 
             float exp_data[4] = { exposure_val, pre_val, 1.0f / std::max(exposure_val, 1e-4f), 0.0f };
             std::memcpy(expo.mapped, exp_data, 16);
+        } else {
+            uint16_t* expo_ptr = static_cast<uint16_t*>(expo.mapped);
+            uint16_t h_exp = f32_to_f16_rne(exposure_val * pre_val);
+            expo_ptr[p] = h_exp;
         }
 
         // Record commands
@@ -527,7 +549,7 @@ int main(int argc, char** argv) {
                 std::memcpy(push + 8, &exposure_val, 4);
                 std::memcpy(push + 12, &pre_val, 4);
                 std::memcpy(push + 24, &p, 4);
-                dispatch("sr_exposure", {&expo}, push, 32, 1, 1, 1);
+                dispatch("sr_exposure", {&expo, &expo}, push, 32, 1, 1, 1);
             }
 
             // 3. Enc0
@@ -609,7 +631,7 @@ int main(int argc, char** argv) {
                 std::memcpy(push + 184, &jy, 4);
                 std::memcpy(push + 212, &ldr, 4); std::memcpy(push + 216, &mvhi, 4);
                 dispatch("sr_post", {&g_col, &expo, &gates, &factors, &aniso, &ihist[p], &prev_mvec[p ^ 1], &mv_ero, &mv_nondil,
-                                     &ihist[p ^ 1], &full15, &dhist}, push, 220, (W15 + 15) / 16, (H15 + 15) / 16, 1);
+                                     &ihist[p ^ 1], &full15, &dhist}, push, 220, (W15 + 15) / 16, (hH15 + 15) / 16, 1);
             }
 
             // 7. Downsample

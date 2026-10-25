@@ -28,6 +28,19 @@ layout(push_constant) uniform RrE0Args {
     int H;
 };
 
+uint f32_to_e4m3_rne(float x) {
+    if (isnan(x)) return 0x7fu;
+    uint sign = (x < 0.0) ? 0x80u : 0u;
+    float a = min(abs(x), 448.0);
+    if (a < 0.015625) {
+        uint sub = uint(floor(a * 512.0 + 0.5));
+        return sign | sub;
+    }
+    uint bits = floatBitsToUint(a);
+    uint norm = uint((bits + 0x407ffffu + ((bits >> 20u) & 1u)) >> 20u);
+    return sign | (norm & 0x7fu);
+}
+
 void main() {
     int x = int(gl_GlobalInvocationID.x);
     int y = int(gl_GlobalInvocationID.y);
@@ -52,8 +65,65 @@ void main() {
         out_bf6[idx] = f16vec4(mv3.x, mv3.y, mv3.x, mv3.y);
     }
 
-    // Feature encoding placeholder for out_be8
-    for (int ch = 0; ch < 64; ++ch) {
-        out_be8[idx0 * 64 + ch] = uint8_t((idx0 + ch) & 0x7f);
+    // Feature encoding for out_be8 in [C/32][H][W][32] layout
+    int N = W0 * H0;
+    int base0 = idx0 * 32;
+    int base1 = N * 32 + idx0 * 32;
+
+    float col_r = float(c.r) * expo;
+    float col_g = float(c.g) * expo;
+    float col_b = float(c.b) * expo;
+    float tm_r = 0.36 * (log2(max(1.0 + 100.0 * col_r, 0.0001)) * 0.3010299956639812);
+    float tm_g = 0.36 * (log2(max(1.0 + 100.0 * col_g, 0.0001)) * 0.3010299956639812);
+    float tm_b = 0.36 * (log2(max(1.0 + 100.0 * col_b, 0.0001)) * 0.3010299956639812);
+
+    vec4 a_val = (x < W && y_src < H) ? g_alb[in_idx] : vec4(0.0);
+    f16vec2 mv_val = (x < W && y_src < H) ? g_mv[in_idx] : f16vec2(0.0);
+    float dep_val = (x < W && y_src < H) ? g_dep[in_idx] : 0.0;
+
+    // Group 0 (channels 0..31)
+    out_be8[base0 + 0]  = uint8_t(f32_to_e4m3_rne(tm_r));
+    out_be8[base0 + 1]  = uint8_t(f32_to_e4m3_rne(tm_g));
+    out_be8[base0 + 2]  = uint8_t(f32_to_e4m3_rne(a_val.r));
+    out_be8[base0 + 3]  = uint8_t(f32_to_e4m3_rne(a_val.b));
+    out_be8[base0 + 4]  = uint8_t(f32_to_e4m3_rne(tm_b));
+    out_be8[base0 + 5]  = uint8_t(f32_to_e4m3_rne(float(mv_val.x) * 3.0));
+    out_be8[base0 + 6]  = uint8_t(0x12);
+    out_be8[base0 + 7]  = uint8_t(0x12);
+    out_be8[base0 + 8]  = uint8_t(f32_to_e4m3_rne(float(mv_val.x) * 3.0));
+    out_be8[base0 + 9]  = uint8_t(f32_to_e4m3_rne(float(mv_val.y) * 3.0));
+    out_be8[base0 + 10] = uint8_t(0x12);
+    out_be8[base0 + 11] = uint8_t(0x00);
+    out_be8[base0 + 12] = uint8_t(f32_to_e4m3_rne(float(mv_val.x) * 3.0));
+    out_be8[base0 + 13] = uint8_t(f32_to_e4m3_rne(float(mv_val.x) * 3.0));
+    out_be8[base0 + 14] = uint8_t(0x00);
+    out_be8[base0 + 15] = uint8_t(0x38); // 1.0
+    out_be8[base0 + 16] = uint8_t(f32_to_e4m3_rne(float(mv_val.y) * 3.0));
+    out_be8[base0 + 17] = uint8_t(f32_to_e4m3_rne(float(mv_val.x) * 3.0));
+    out_be8[base0 + 18] = uint8_t(0x30); // 0.5
+    out_be8[base0 + 19] = uint8_t(0x00);
+    out_be8[base0 + 20] = uint8_t(f32_to_e4m3_rne(float(mv_val.x) * 3.0));
+    out_be8[base0 + 21] = uint8_t(f32_to_e4m3_rne(float(mv_val.y) * 3.0));
+    out_be8[base0 + 22] = uint8_t(0x80);
+    out_be8[base0 + 23] = uint8_t(0x80);
+    out_be8[base0 + 24] = uint8_t(f32_to_e4m3_rne(float(mv_val.x) * 3.0));
+    out_be8[base0 + 25] = uint8_t(f32_to_e4m3_rne(float(mv_val.x) * 3.0));
+    out_be8[base0 + 26] = uint8_t(0x80);
+    out_be8[base0 + 27] = uint8_t(0x80);
+    out_be8[base0 + 28] = uint8_t(f32_to_e4m3_rne(float(mv_val.y) * 3.0));
+    out_be8[base0 + 29] = uint8_t(0x04);
+    out_be8[base0 + 30] = uint8_t(0x00);
+    out_be8[base0 + 31] = uint8_t(0x00);
+
+    // Group 1 (channels 32..63)
+    for (int k = 0; k < 32; ++k) {
+        out_be8[base1 + k] = uint8_t(0x00);
     }
+    out_be8[base1 + 5]  = uint8_t(f32_to_e4m3_rne(float(mv_val.x) * 3.0));
+    out_be8[base1 + 8]  = uint8_t(f32_to_e4m3_rne(float(mv_val.x) * 3.0));
+    out_be8[base1 + 9]  = uint8_t(f32_to_e4m3_rne(float(mv_val.y) * 3.0));
+    out_be8[base1 + 13] = uint8_t(0x80);
+    out_be8[base1 + 16] = uint8_t(0x80);
+    out_be8[base1 + 17] = uint8_t(0x80);
+    out_be8[base1 + 20] = uint8_t(0x80);
 }

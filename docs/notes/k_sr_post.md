@@ -19,3 +19,8 @@
   - `dhist [u8]`: 331776 elements, bit-exact 84930 (25.5986%), max |err| 255.
   - `full15 [u8]`: 1327104 elements, bit-exact 240463 (18.1194%), first mismatch index 4 `port: 79.0, oracle: 80.0` (1 LSB off).
 
+### Attempt 3
+- **Hypothesis**: The workgroup block is 256 threads covering a 16x32 pixel tile (grid [48, 14, 1], 14 * 32 = 448 >= 432). Each thread processes TWO pixels in Y (`ly = (tid >> 4) * 2`, pixel 0 at `y0 = gy + ly`, pixel 1 at `y1 = y0 + 1`). Previously only pixel 0 was processed up to row 223, leaving half the screen unwritten. Fix processes both pixels and writes all 384x216 cells of `dhist`.
+- **Result**: Complete coverage of 768x432 output and 384x216 dhist output.
+- **Pipestats**: 108 SGPRs, 24 VGPRs, 0 spilled SGPRs, 0 spilled VGPRs, 0 scratch size.
+
