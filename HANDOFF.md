@@ -19,7 +19,7 @@ are allowed). The reference Vulkan NR port is `reference-nr-vulkan/` (MIT).
 | 1 | kernel + interop inventory | **done**: `docs/inventory/KERNELS.md`, `docs/inventory/kernels-generated.md` |
 | 2 | harness | **replaced in practice by running NeuralHub itself**: NeuralHub's code objects run unchanged under ROCm on this card (`tools/sr/srref`), so Windows dumps are no longer needed. `.hdump` + `tools/harness/compare.py` still exist (self-tested) for layer-by-layer compares. No Vulkan-side dumper yet. |
 | 3 | NR | **runs on the RX 9070 XT with the real 310.8.0 model**: 45.59 / 47.97 / 49.00 dB vs NVIDIA's output at 1080p / 1440p / 4K (offline runner, `tools/hwtest/nr_gate.py`), the same as the reference's published figures. ≥ 49 dB at every size needs the 310.9.16 model, and the in-game runtime path is not measured yet. See `docs/hardware/RX9070XT-STEAMOS.md`. |
-| 4 | SR | **host recovered, reference running**: NeuralHub's own SR code runs on the RX 9070 XT under ROCm (`tools/sr/srref`, presets M and L, 39 dB after 8 frames on the test sequence; `docs/sr/HOST-RE.md`). Weights from the user's `nvngx_dlss.dll` 310.9.1.0 packed exactly as NeuralHub does (`tools/sr/sr_weights.py`, `sr_pack.py`). **Vulkan shaders: not started** (an unvalidated attempt was reverted; see "Audit" below; next: `k_sr_stage`, ISA notes below). |
+| 4 | SR | **host recovered, reference running**: NeuralHub's own SR code runs on the RX 9070 XT under ROCm (`tools/sr/srref`, presets M and L, 39 dB after 8 frames on the test sequence; `docs/sr/HOST-RE.md`). Weights from the user's `nvngx_dlss.dll` 310.9.1.0 packed exactly as NeuralHub does (`tools/sr/sr_weights.py`, `sr_pack.py`). **Vulkan shaders: not started.** `k_sr_stage` is being read from its ISA: partial notes and the open parts in `docs/sr/VULKAN.md` (2026-10-25). |
 | 5 | RR | **host recovered, reference running**: NeuralHub's own RR (preset F) code runs on the RX 9070 XT under ROCm (`tools/rr/rrref`, gather through output; denoises a noisy test sequence to 36 dB at 1080p -> 4K after 8 frames, ~12 ms/frame; `docs/rr/HOST-RE.md`). Weights from the user's `nvngx_dlssd.dll` 310.9.1.0 match NeuralHub's fingerprint (`tools/rr/rr_weights.py`, `rr_pack.py`). Transparency / virtual-hit / SSS paths not exercised. **Vulkan shaders: not started** (a draft `rr_level.comp` was reverted; see "Audit" below). |
 | 6 | integration + installer | not started (the reference's `linux/package/install.sh` is the model to follow) |
 | 7 | performance | not started (needs the card) |
@@ -116,6 +116,32 @@ them and every code object in seconds (needs `7z`, `pip install pefile msgpack`)
   not yet known. RR has no dump.
 - FP8 is E4M3, RNE, non-saturating (`v_cvt_pk_fp8_f32` without clamp); WMMA is E4M3×E4M3→F32.
 
+## Session 2026-10-25 (cloud container, no GPU): where it stopped
+
+- **verify v2 is frozen**: `1fea806` "verify: freeze v2 ..." fixes every defect listed under "Audit"
+  below; `e4c9367` "verify: freeze v2 (correction ...)" fixes two bugs found in it before any port work
+  (r2scan flagged its own pinned hash table; `rr_weights` needed `--dither`). `run_all.sh` V10 takes the
+  newest "verify: freeze v2" commit, i.e. `e4c9367`. `tools/verify` must not change again; a real bug in it
+  is a question for the user.
+- `tools/verify/offline_check.sh` (GPU-less checks O1-O7): O1-O3 pass here; O4-O7 fail with "no shaders/
+  directory" because no kernel exists yet. It does not pass until the first kernel is committed.
+- `tools/gpu/collect_oracle.sh`: oracle dumps (srref M/L, rrref F, frames 0-1, seeded 256x144 -> 512x288)
+  for the private repository. `--dry-run` checked here; the real run needs the card.
+- `tools/re/slice.py`: def-use slices over the disassembly, used to read `k_sr_stage`.
+- `k_sr_stage`: partial RE in `docs/sr/VULKAN.md`; no shader written.
+
+**GPU-pending (run on the RX 9070 XT, from a clean checkout of this branch):**
+
+    git fetch origin ccr-a7b81023-mipeai && git checkout ccr-a7b81023-mipeai
+    # inputs: tools/verify/README.md "Restoring the inputs"; build/venv as in "Setting up from a fresh clone"
+    python3 -I tools/exe/extract.py artifacts/neuralhub-v0.8.0/NeuralHub_v0.8.0_setup.exe build/nh
+    bash tools/gpu/collect_oracle.sh
+    # then follow the printed commands: copy build/oracle/<id>.tar.xz.part* and README into
+    # phly95/dlss5-private-storage under oracle/, commit, push
+
+With those dumps in the private repository, each kernel can be diffed offline (`tools/verify/diffdump.py`).
+`run_all.sh` itself only makes sense once the port runner and package exist.
+
 ## Audit of the 2026-10-24 Vulkan attempt (`c229591`..`560ca36`)
 
 A session asked to port SR/RR under a frozen verify script (`tools/verify/run_all.sh`, rules R1-R5,
@@ -171,9 +197,11 @@ buffers), the `/proc` maps / fd sampling loop, and the D3D12 path of `ngx_client
 1. (Answered 2026-10-24: port NeuralHub's kernels.)
 2. (Answered: this machine is the RX 9070 XT. Windows dumps are no longer needed: NeuralHub's kernels run under ROCm here.)
 3. NR at 310.9.16 (the 49 dB figure at 1080p) needs `nvngx_dlssnr.dll` 310.9.16.
-4. R4: may `tools/verify` (and the generator / oracle changes frozen with it) be fixed and re-frozen in a
-   new "verify: freeze" commit? Its defects are listed under "Audit" above; no port work should be judged
-   by it until then.
+4. (Answered 2026-10-25: re-freeze as "verify: freeze v2"; done in `1fea806` + `e4c9367`.)
+5. Preset M's weight checksum mismatch (Known loose ends) is still unexplained; `collect_oracle.sh`
+   requires only L's checksum. Is an M oracle from these weights acceptable as M's reference?
+6. `k_sr_stage`'s second normalisation (`docs/sr/VULKAN.md`, "open") must be decoded exactly before a
+   shader is written; until then there is no kernel to commit.
 
 ## SR: how to continue (2026-10-24)
 
