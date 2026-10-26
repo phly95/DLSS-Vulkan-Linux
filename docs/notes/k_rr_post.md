@@ -10,3 +10,7 @@
 ## Host argument map
 
 `tools/rr/rrref/rrref.cpp` constructs the 0xb8-byte `PostArgs` used for launch 21. It passes input taps at 0x40, current history at 0x70, previous/output history at 0x88, result planes `E0cf6`/`E0cfa` at 0x90/0x98, `E0c0e` at 0xa0, and the debug probe at 0xa8. `E0c0e` is therefore a real output argument and its absence from the fixture is a binding omission. The parity-selected history pointer also differs from the current fixture's simple `OutFull` write. Do not tune the filter using the existing direct fixture until it models these pointer slots and the correct formats.
+
+## Missing `E0c0e` output probe
+
+The frame-0 launch metadata confirms launch 21 writes four outputs: `E0c0a`, `E0c0e`, `E0cf6`, and `E0cfa`. The ISA epilogue at `build/rr_post_isa.s` (`0xA05AC` onward) has distinct flat 64-bit, 32-bit, and 16-bit stores after scalar transforms. The current shader models only its three filtered color/history outputs and cannot synthesize the fourth plane by copying one filtered RGB component. The address and value feeding the 16-bit store have not yet been traced to the `E0c0e` pointer; leave that output explicitly missing until this mapping is recovered.
