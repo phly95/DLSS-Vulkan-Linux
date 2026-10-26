@@ -29,7 +29,8 @@ NOT DECODED: the exact rounding points (Review R1.8), and the attention residual
 
 The --set switches (defaults = the best measured configuration):
   deperm=1       invP on every f16 vector          snorm8=1   RMSNorm outputs to fp8
-  qk8=1          Q and K to fp8 before the dots    ctx8=1     attention context to fp8 before Wo
+  qk8=1          Q and K to fp8 before Q.K         ctx8=1     attention context to fp8 before Wo
+  v8=0           V (= K) to fp8 before prob @ V (0: f16, as the ISA's 8 f16 WMMAs suggest)
   prob8=0        probabilities to fp8              proj_in=f32|fp8  what the mode-0 projection reads
   proj_clamp=6.28125   the projection's output clamp (0 = none)
   act=gelu|erfgelu|nr                              up_order=qc|cq   mode-2 sub-pixel channel order
@@ -52,7 +53,7 @@ ORACLE = REPO / "build/oracle/oracle-8dbf027a9e-s20261025"
 P = np.array([0, 1, 16, 17, 2, 3, 18, 19, 4, 5, 20, 21, 6, 7, 22, 23,
               8, 9, 24, 25, 10, 11, 26, 27, 12, 13, 28, 29, 14, 15, 30, 31])
 IP = np.argsort(P)
-DEFAULTS = dict(deperm=1, snorm8=1, qk8=1, ctx8=1, prob8=0, proj_in="f32", proj_clamp="6.28125", maxsub=0, act="gelu",
+DEFAULTS = dict(deperm=1, snorm8=1, qk8=1, ctx8=1, prob8=0, v8=0, proj_in="fp8", proj_clamp="6.28125", maxsub=0, act="gelu",
                 up_order="qc", up_pix="xy", skip_at="before")
 
 
@@ -223,8 +224,11 @@ def run_stage(X, Wt, W, H, sx, sy, tile, cfg, skip=None, low=None, attn_only=Fal
     for (Wq, Wk, rel, Wo) in Wt.heads:
         Q = s_norm @ Wq.T
         K = f16(s_norm @ Wk.T).astype(np.float32)
+        V = K                                     # V = K (Review R1.4), taken before the fp8 step
         if cfg["qk8"]:
             Q, K = q8(Q), q8(K)
+        if cfg["v8"]:
+            V = q8(V)
         logits = np.einsum("nqc,nkc->nqk", Q, K) + rel[None]
         if cfg.get("_stats") is not None:
             cfg["_stats"].append((float(logits.max()), float((logits > 32.4).mean()), float((logits < -32.4).mean())))
@@ -235,7 +239,7 @@ def run_stage(X, Wt, W, H, sx, sy, tile, cfg, skip=None, low=None, attn_only=Fal
         prob = pe * (np.float32(1.0) / np.maximum(tot, np.float32(1e-4)))[..., None]
         if cfg["prob8"]:
             prob = q8(prob)
-        ctx = np.einsum("nqk,nkc->nqc", prob, K)
+        ctx = np.einsum("nqk,nkc->nqc", prob, V)
         if cfg["ctx8"]:
             ctx = q8(ctx)
         attn += ctx @ Wo.T
@@ -393,11 +397,15 @@ def self_check():
                               inject_postattn=None, proj_from_oracle=False, out=None)
     ra = str(REPO / "build/work/probe/real_attn_dump/frame0/003.t1.bin")
     cases = [
-        ("decoded, no rounding switches", dict(snorm8=0, qk8=0, ctx8=0, prob8=1), {}, "t1", 34.0704),
-        ("decoded, best switches", {}, {}, "t1", 34.6343),
-        ("attention only vs --isolate", dict(snorm8=0, qk8=0, ctx8=0, prob8=1), dict(attn_only=ra), "t1", 36.6338),
-        ("attention only, probs unquantized", dict(snorm8=0, qk8=0, ctx8=0), dict(attn_only=ra), "t1", 36.8595),
-        ("MLP given oracle post-attention", dict(snorm8=0, qk8=0, ctx8=0, prob8=1), dict(inject_postattn=ra), "t1", 34.4195),
+        # Review R1's numbers (its replica rounded V exactly when it rounded K: v8 = qk8)
+        ("R1 decoded, no rounding switches", dict(snorm8=0, qk8=0, ctx8=0, prob8=1, v8=0), {}, "t1", 34.0704),
+        ("R1 decoded, best switches", dict(v8=1), {}, "t1", 34.6343),
+        ("R1 attention only vs --isolate", dict(snorm8=0, qk8=0, ctx8=0, prob8=1, v8=0), dict(attn_only=ra), "t1", 36.6338),
+        ("R1 attention only, probs unquantized", dict(snorm8=0, qk8=0, ctx8=0, v8=0), dict(attn_only=ra), "t1", 36.8595),
+        ("R1 MLP given oracle post-attention", dict(snorm8=0, qk8=0, ctx8=0, prob8=1, v8=0), dict(inject_postattn=ra), "t1", 34.4195),
+        # the current defaults (Review R2)
+        ("R2 defaults, t1", {}, {}, "t1", 35.0790),
+        ("R2 defaults, t2", {}, {}, "t2", 31.9087),
     ]
     ok = True
     for label, sw, extra, key, want in cases:
