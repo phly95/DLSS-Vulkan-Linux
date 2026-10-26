@@ -10,29 +10,58 @@ network's input never contained an image.**
 
 ## The three independent breaks
 
+> **Status 2026-10-26 (Step B): breaks 2 and 3 are WIRED, break 1 is open.**  The wall test
+> that used to prove the decoupling now fails: injecting oracle buffers at all 12 network
+> points used to leave all 9 `out_i.f32` byte-identical, and after the wiring 9/9 differ.
+> What remains below is the original evidence for each break, then a new break found while
+> wiring.  Progress is now judged per-kernel against oracle inputs (Step C), not by the
+> end-to-end number, which deliberately fell when break 3 was closed.
+
 1. **`shaders/sr/sr_enc0.comp` writes a placeholder `t0`** (lines 83-98): 64 per-channel
    bias constants (with a sawtooth fallback pattern when a bias is zero) and *nothing else* -
    no tonemapped colour, no albedo, no motion, no constants.  The whole transformer stack
    runs on a content-free bias pattern.  (Contrast `shaders/rr/rr_enc0_feat.comp`, where the
    analogous feature tensor E0be8 was decoded for real: tonemapped RGB, albedo, mv*3,
-   constants - 72.91% bit-exact, `docs/notes/k_enc0_feat.md`.)
+   constants - 72.91% bit-exact, `docs/notes/k_enc0_feat.md`.)  **OPEN** - this is the
+   remaining content break and the reason the network still computes on bias data.
 
-2. **The mode-2 (decoder) stages never receive their skip inputs.**  The oracle's dumps show
-   them as arguments:
+2. ~~**The mode-2 (decoder) stages never receive their skip inputs.**~~ **WIRED 2026-10-26,
+   commit `f0c244f`.**  Original evidence: the oracle's dumps show them as arguments:
    - launch 11 `k_sr_stage<96,4,2,128>` reads `t6` (in) **and `t3` (skip)** -> writes `t7`
      (pointers 8/16/24 = t6/t3/t7);
    - launch 12 `k_sr_stage<64,2,2,96>` reads `t7` **and `t1`** -> writes `t8`.
-   The port's `pipeline.cpp` st8/st9 pass `{wbuf, t_act[6], t_act[7], t_act[7]}` /
+   The port's `pipeline.cpp` st8/st9 passed `{wbuf, t_act[6], t_act[7], t_act[7]}` /
    `{wbuf, t_act[7], t_act[8], t_act[8]}` - no skip binding at all - and `sr_stage.comp`
-   has no skip input path.  `t1` (stage0's attention output) is written and **never read by
-   anything**; `t3` likewise.  This also invalidates the earlier reading of the leverage
-   table: stage9/dec0/post looked like the error sources because the decoder reconstructs
-   from t6/t7 alone.
+   had no skip input path, so `t1` (stage0's attention output) and `t3` were written and
+   **never read by anything**.  Now `sr_stage.comp` has `binding 4 = skip_act`, added to the
+   block result in mode 2 only (where the oracle passes offset 16 and omits offset 32), and
+   `pipeline.cpp` passes `t_act[3]`/`t_act[1]`.  Verified with `DLSS5_AMD_DUMP_BUF`: `t7`
+   changes when its skip `t3` is swapped for the oracle's.
 
-3. **The restored attempt-5 `sr_post` ignores gates/factors/aniso** - they are declared as
-   bindings but never referenced in the shader body (`grep -n gates shaders/sr/sr_post.comp`:
-   binding declaration only).  Even if dec0 produced perfect confidence channels, they would
-   not influence `full15`/`dhist`/`ihist1`.
+3. ~~**The restored attempt-5 `sr_post` ignores gates/factors/aniso.**~~ **WIRED 2026-10-26,
+   commit `f0c244f`.**  Original evidence: they were declared as bindings but never
+   referenced in the shader body, so even perfect confidence channels would not have
+   influenced `full15`/`dhist`/`ihist1`.  Now read as `u8vec4`/`u8vec4`/`f16vec4` (matching
+   `sr_dec0`'s writer; the old `f16vec2` declaration was also wrong about the type) and used
+   by the decoded gate/factor blend and the anisotropic 9-tap.  Verified: `full15` changes
+   when `dec0` is injected.  **This is the break that closed the wall, and it is why the
+   end-to-end number fell from 33.76 to 29.55 - pre-committed, not to be reverted.**
+
+4. **NEW (found 2026-10-26 while wiring): the mode-2 stages read `in_act` at the wrong
+   resolution and channel count, past the end of the buffer.**  `mode == 2u` appears in
+   `sr_stage.comp` only for the weight-pointer skip, the skip add, and mode 0's `out_act2` -
+   there is **no mode-2 input path**: no 2x upsample and no 128 -> 96 projection.  The load
+   loop indexes `in_act` with the *output* dims and `num_cg = C/32` of the *output* C, so:
+   - st8: output 96ch @ L2 (64x40), input `t6` = 128ch @ L3 (32x20) = 81920 B, but the read
+     extent is 327680 B - **4x past the allocation**;
+   - st9: output 64ch @ L1 (128x80), input `t7` = 96ch @ L2 (64x40) = 245760 B, extent
+     655360 B - 2.7x past.
+   Mode 0 is exact by construction (st0 reads 655360 B of a 655360 B `t0`; st1 reads 245760 B
+   of 245760 B `t2`), so only the decoder is affected.  This does not block Step B's
+   acceptance test, and fixing it correctly needs the decoded upsample/projection that the
+   shader currently skips in its weight pointer (`cur_w += 4*C*Cn + 4*C*2`) - so it is
+   recorded rather than patched, because inventing it would violate the no-approximations
+   rule.  **Top candidate for the `k_sr_stage` half of the 2026-11-02 >= 40 dB milestone.**
 
 ## Measurements that prove it
 

@@ -66,30 +66,55 @@
 - **Verdict**: commit `99b33b2` restored attempt 5's shader. The attempt-6 rewrite is more ISA-faithful (Catmull-Rom history, covariance floor) but faithfully consumes `k_sr_dec0`'s still-wrong gates/factors (`u8vec4` confidence channels), amplifying their error; attempt 5's `f16vec2` reading of the same bytes is more forgiving. Re-evaluate attempt 6 only after `k_sr_dec0` is decoded.
 - **Do not retry**: sr_stage @ dfaed7f, sr_tube_split @ 30b5455, sr_enc0 @ 4ec6263 / cfe5b15 in the current chain - all measured 32.20 / 33.76 (identical to 2 decimals); only the post swap moves the pipeline.
 
-## Provenance of the shader now in the tree (attempt 5) - READ BEFORE CITING IT
+### Attempt 8 (2026-10-26): Step B - gates/factors/aniso wired, network reaches the image
 
-**The `sr_post.comp` in the tree is invented, not decoded.** It is a stand-in, never "the baseline".
-Its three defining pieces have no counterpart established from NeuralHub's ISA:
+- **Change**: `gates`/`factors` re-declared `u8vec4` (they were `f16vec2`, wrong about the type:
+  lane 3 is 0 for all 36864 oracle pixels, and read as f16 52.8% of `gates` came out non-finite;
+  `u8vec4` is what `sr_dec0.comp` writes).  The invented
+  `h_weight = clamp(0.90 - max_diff * 2.0, 0.0, 0.90)` is replaced by the decoded gate/factor
+  3-way blend `mix(t_spatial, f0*t_spatial + f1*t_hist + f2*t_clamped, g)`, and the invented
+  2x2 colour box by the anisotropic 9-tap that `aniso`'s (Axx, Ayy, Axy) exists for.  Both
+  invented constants are gone; `aniso`/`gates`/`factors` each have a consumer.
+- **Result** (`tools/report/pipeline_report.py`, 256x144 oracle replay, frames 0-8):
 
-- **bilinear MV warp** of `in_mv_nondil` across continuous subpixel coordinates;
-- **color-box clamp** `clamp(t_hist, cmin, cmax)` over the 4 tonemapped neighbours;
-- **disocclusion floor** `h_weight = clamp(0.90 - max_diff * 2.0, 0.0, 0.90)` - the `0.90` and the
-  `* 2.0` are hand-tuned constants, not decoded ones.
+  | cell | before (attempt 5) | after (attempt 8, wired) |
+  |---|---|---|
+  | sr_M min/mean | 32.20 / 33.76 | **27.51 / 29.55** |
+  | sr_L min/mean | 32.82 / 34.08 | **26.25 / 29.62** |
+  | rr_F min/mean | 26.78 / 27.17 | 26.78 / 27.17 (unchanged, no RR shader touched) |
 
-`gates`, `factors` and `aniso` are declared on bindings 2/3/4 and **never read**. This conflicts with
-`HANDOFF.md` "Do not retry" (no generic TAA blends); it is kept only because it holds the best measured
-number (sr_M 32.20/33.76, sr_L 32.82/34.08), pending a decode of `k_sr_post`'s real gate/factor/aniso
-path. Do not extend its invented logic to any other kernel, do not cite it as a decoded kernel, and do
-not present its number as a parity milestone.
+- **The drop was pre-committed and must not be reverted.**  `sr_post` now faithfully consumes
+  `k_sr_dec0`'s still-wrong outputs, so 33.76 -> 29.55 is the predicted fall toward ~28.  The
+  same pattern already happened once (a3a050b measured worse and was reverted by `99b33b2`);
+  undoing *this* wiring to recover a number is forbidden by the operator's 2026-10-26
+  no-revert rule.  Judge progress per-kernel against oracle inputs instead (Step C and the
+  2026-11-02 milestone).
+- **Wall test**: before, injecting oracle buffers at all 12 network points left all 9
+  `out_i.f32` byte-identical (32.20/33.76 either way).  After, 9/9 differ.  Pinned per link
+  with `DLSS5_AMD_DUMP_BUF`: `full15` changes when `dec0` is injected (gates/factors/aniso
+  reach `sr_post`), `t7` changes when its skip `t3` is swapped for the oracle's.
+- **Provenance**: commit `f0c244f`; `sha256sum build/shaders/*.spv | sha256sum` =
+  `34e6745ebf8d060640cb4f280d754969d36786504915489b37dd2586f5c6ca8f`; inputs
+  `build/oracle/oracle-8dbf027a9e-s20261025/frames/{sr,rr}` (256x144 -> 512x288, 9 frames);
+  `offline_check` = PASS 27 pipelines.
+- **Next for this kernel**: re-evaluating attempt 6's Catmull-Rom history is now unblocked in
+  principle, but it should wait until `k_sr_dec0` stops being wrong - a faithful consumer of
+  wrong data has measured worse here twice.
 
-**Expected drop when the network is wired (pre-committed).** Once `sr_post` consumes gates/factors/aniso
-it will faithfully consume outputs from kernels that are still wrong (`k_sr_stage` correlation 0.455
-with oracle inputs; `k_sr_dec0` ~0.5% exact on `hidden1`), so the end-to-end figure is expected to fall
-from 33.76 toward ~28 dB. This exact pattern already happened once: the faithful post `a3a050b`
-measured *worse* (28.15/30.14) and was reverted by `99b33b2`. **That revert is not to be repeated.**
-Once the wiring lands, do not undo it to recover a number. Until the network kernels improve, progress
-is judged per-kernel against oracle inputs (launch-level PSNR/correlation via
-`DLSS5_AMD_INJECT_DIR` / `diffdump.py`), not by the end-to-end figure.
+## Provenance of the shader now in the tree - READ BEFORE CITING IT
 
+**The `sr_post.comp` in the tree is a hybrid: decoded, invented, and wired.**  Its parts:
 
+| part | status |
+|---|---|
+| 9-tap anisotropic spatial reconstruction driven by `aniso` (Axx, Ayy, Axy) | **decoded** (attempt 6, from `k_sr_post` ISA) |
+| gate / factor 3-way temporal blend from `gates` + `factors` | **decoded** (attempt 6) |
+| bilinear MV warp of `in_mv_nondil`, bilinear `sample_history` (not the decoded Catmull-Rom) | **invented stand-in** |
+| `if (dot(t_hist, t_hist) < 1e-6)` history discard | **invented stand-in** |
 
+It is a stand-in, never "the baseline".  The invented pieces conflict with `HANDOFF.md`
+"Do not retry" (no generic TAA blends); they stay because the chain needs a post that runs and
+because the bilinear history/MV path measures best while `k_sr_dec0` is still wrong.  Do not
+extend the invented parts to any other kernel, do not cite them as decoded, and do not present
+the end-to-end number as a parity milestone - it is now, deliberately, lower than it was before
+the network was connected.
