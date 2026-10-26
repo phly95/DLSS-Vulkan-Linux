@@ -187,6 +187,21 @@ Usable from the freeze commit: the seeded camera / helmet paths and reset frames
 optional GT in `convert_seq.py`, srref's extra dumps (`g_col`, `g_dep`, `g_mv`, `g_mvhi`, preset L
 buffers), the `/proc` maps / fd sampling loop, and the D3D12 path of `ngx_client`.
 
+## How numbers are stated (2026-10-26)
+
+- **Whole-pipeline PSNR and GPU time** come only from `tools/report/pipeline_report.py`
+  (`build/venv/bin/python -I`). Nothing else in the tree may state a pipeline number.
+- **Per-launch fidelity** for anything nontrivial comes only from `tools/report/launch_report.py`,
+  measured against ORACLE inputs - upstream points forced with `DLSS5_AMD_INJECT_DIR` /
+  `DLSS5_AMD_INJECT_MASK`, the kernel's own output taken with `DLSS5_AMD_DUMP_BUF` - and every
+  claim states all three of: **peak = max|x| of the oracle tensor** (the tool prints it, and a
+  per-launch tensor is fp8 up to +-448, so PSNR is meaningless without it), **PSNR**, and
+  **Pearson r** with **relative RMSE**. Bit-exact % is recorded but is no longer the judgement.
+  Definition, first baselines and the 2026-11-02 milestone are in
+  `docs/notes/sr_chain_decoupling.md`, "Step C: the metric changed".
+- Both scripts answer `--self-test`. A pasted number without its provenance trio - commit SHA,
+  SHA-256 of the shader binaries, input directory - is not accepted.
+
 ## Do not retry
 
 - ~~**Do not build a CPU emulator that executes NeuralHub's code objects.**~~ **Lifted 2026-10-26 by

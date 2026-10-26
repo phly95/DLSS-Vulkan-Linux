@@ -133,6 +133,70 @@ chain-leverage tables), with the measurement pasted.  If it misses, that is a co
 report: come back with the actual number, what was tried, and why - no silent continuation
 past the date.  Target and date are fixed until the operator says otherwise.
 
+## Step C: the metric changed (2026-10-26)
+
+**Primary = per-launch fidelity against ORACLE INPUTS**, for anything nontrivial: run the
+kernel with every input forced to the oracle's bytes (`DLSS5_AMD_INJECT_DIR` +
+`DLSS5_AMD_INJECT_MASK` on the points *before* it), dump its output with
+`DLSS5_AMD_DUMP_BUF`, and compare that output with the oracle's own dump for the same launch.
+Bit-exact percentage is secondary from here - it stays useful only for the shallow kernels
+where it falls out for free, and it is still recorded, but it is no longer the judgement.
+Whole-pipeline numbers stay the exclusive product of `tools/report/pipeline_report.py`.
+
+**One script states every per-launch claim: `tools/report/launch_report.py`** (committed under
+`tools/report/`, next to `pipeline_report.py` - `tools/verify/` is frozen and was not touched).
+It reports three numbers and always all three:
+
+- **peak = max|x| of the ORACLE tensor**, printed with every result, because a per-launch
+  output is an fp8 activation spanning up to +-448 and PSNR means nothing without it;
+- **PSNR** = 10 log10(peak^2 / MSE) on decoded values;
+- **Pearson r** and **relative RMSE** = RMS(error)/RMS(oracle), which stay comparable across
+  dumps whose peaks differ.
+
+`--self-test` passes (14 checks) and includes a bit-exact cross-check of its fp8 decoder
+against the literal `e4m3_lut` in `shaders/sr/sr_stage.comp` for all 256 codes - including
+0x7f -> 480 (not NaN) and 0x80 -> -0 - so the decoder cannot drift from the shader it
+measures. The tool refuses a length mismatch rather than padding or truncating.
+
+### First baselines, k_sr_stage, frame0, oracle inputs
+
+Provenance for all three: commit `b8e4866` (the wiring) with `sha256sum build/shaders/*.spv |
+sha256sum` = `34e6745ebf8d060640cb4f280d754969d36786504915489b37dd2586f5c6ca8f`; inputs
+`build/oracle/oracle-8dbf027a9e-s20261025/frames/sr` (256x144 -> 512x288); oracle dumps
+`.../sr_M/dump/frame0/{003.t1,011.t7,012.t8}.bin`; injection masks `enc0` for st0,
+`enc0,stage0,stage1,tube0..tube5` for st8, plus `stage8` for st9.
+
+| launch | port buffer | peak(\|oracle\|) | PSNR | r | rRMSE | bit-exact |
+|---|---|---:|---:|---:|---:|---:|
+| `k_sr_stage<64,2,0,96>` st0 -> t1 | 655360 B | 8.0 | **4.9783 dB** | 0.455124 | 2.225339 | 0.0000% |
+| `k_sr_stage<96,4,2,128>` st8 -> t7 | 245760 B | 18.0 | **7.8425 dB** | 0.093988 | 2.018639 | 0.0000% |
+| `k_sr_stage<64,2,2,96>` st9 -> t8 | 655360 B | 13.0 | **4.6123 dB** | 0.058489 | 3.037997 | 0.0000% |
+
+Two things worth reading off this.  **st0's r = 0.455124 reproduces the 0.455 correlation
+already recorded in `docs/notes/chain-leverage.md`** by a different route, which is the
+metric agreeing with itself across sessions.  And the distance to the milestone's **>= 40 dB**
+is very large (4.6 - 7.8 dB today), exactly as the operator's brief anticipated.
+
+### The milestone's RR option is not measurable yet
+
+`k_rr_level` cannot be reported at all today, for two independent reasons:
+
+1. **Shape.**  The oracle's `k_level` launch 4 writes `E0b54` = **1310720** elements
+   (128 channels @ L1, 128x80), while the chain gives `rr_level` `t_act[1]` = **655360**
+   (64 channels).  `rr_level.comp` bounds its store with `if (out_idx < out_act.length())`,
+   so this is silent truncation rather than an overflow: in the chain only 64 of 128
+   channels are produced, and its input `t_act[0]` is under-sized the same way.  Under
+   `kernel_run` with an oracle-sized fixture the same kernel wrote the full 1310720, which is
+   what the existing `k_level` diffdump row measured.
+2. **No address.**  RR mode's dump/injection name map has no entry for the port's `rr_level`
+   output (`t1` is an SR-only name; the RR map has `E0be8 -> t_act[0]` but nothing for
+   `t_act[1]`), so there is nothing to `DLSS5_AMD_DUMP_BUF` even if the shape matched.
+
+So the practical milestone path is `k_sr_stage`.  For RR, the port first needs the real
+16-launch U-Net (`pipeline.cpp` issues 1 `rr_level` dispatch where `rrref` issues 16, and
+`rr_pooled2` is never dispatched) with buffers shaped like the oracle's - already recorded as
+break 4's neighbourhood above and in `docs/PORT-STATUS.md`.
+
 ## Amendments 2026-10-26 (three, from the orchestrator)
 
 **1. The 40 dB per-launch metric is defined here, before any measurement.**  A per-launch
