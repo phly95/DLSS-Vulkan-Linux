@@ -392,17 +392,21 @@ def make_test(name, out_dir):
             ]
         }
     elif name == "rr_pooled2":
-        col = np.linspace(0.1, 1.0, n_pix * 4, dtype=np.float16).tobytes()
+        out_w, out_h = w // 2, h // 2
+        c0 = np.arange(n_pix, dtype=np.uint32) & 1023
+        c1 = (c0 * 3 + 17) & 1023
+        c2 = (c0 * 7 + 31) & 1023
+        col = (c0 | (c1 << 10) | (c2 << 20) | 0xc0000000).astype(np.uint32).tobytes()
         open(os.path.join(out_dir, "in_img.bin"), "wb").write(col)
         push = bytearray(32)
         struct.pack_into("<2i", push, 8, w, h)
-        struct.pack_into("<2i", push, 24, w, h)
+        struct.pack_into("<2i", push, 24, out_w, out_h)
         cfg = {
-            "groups": [(w + 15) // 16, (h + 15) // 16, 1],
+            "groups": [(out_w + 15) // 16, (out_h + 15) // 16, 1],
             "push": push.hex(),
             "bindings": [
                 {"binding": 0, "file": "in_img.bin"},
-                {"binding": 1, "bytes": n_pix * 8, "output": "out_img", "type": "f16"}
+                {"binding": 1, "bytes": out_w * out_h * 4, "output": "out_img", "type": "u32"}
             ]
         }
     elif name == "rr_post_prep":

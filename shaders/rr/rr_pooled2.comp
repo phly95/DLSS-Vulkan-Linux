@@ -1,11 +1,9 @@
 #version 460
-#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
-#extension GL_EXT_shader_16bit_storage : enable
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-layout(set = 0, binding = 0) readonly buffer InImg  { f16vec4 in_img[]; };
-layout(set = 0, binding = 1) writeonly buffer OutImg { f16vec4 out_img[]; };
+layout(set = 0, binding = 0) readonly buffer InImg { uint in_img[]; };
+layout(set = 0, binding = 1) writeonly buffer OutImg { uint out_img[]; };
 
 layout(push_constant) uniform PooledArgs {
     layout(offset = 8) int inW;
@@ -14,11 +12,34 @@ layout(push_constant) uniform PooledArgs {
     int oH;
 };
 
+vec3 inverse_tone(uint packed) {
+    vec3 rgb = vec3(float(packed & 1023u),
+                    float((packed >> 10u) & 1023u),
+                    float((packed >> 20u) & 1023u)) / 1023.0;
+    rgb *= 2.45;
+    rgb = clamp(rgb, vec3(0.0001), vec3(3.0));
+    return (exp2(rgb * (1.0 / 0.36) * log2(10.0)) - 1.0) * 0.01;
+}
+
+uint encode_tone(vec3 rgb) {
+    rgb = 0.36 * log2(max(rgb * 100.0 + 1.0, vec3(0.0001))) / log2(10.0);
+    uvec3 q = uvec3(roundEven(clamp(rgb, vec3(0.0), vec3(1.0)) * 1023.0));
+    return q.r | (q.g << 10u) | (q.b << 20u) | 0xc0000000u;
+}
+
 void main() {
     int x = int(gl_GlobalInvocationID.x);
     int y = int(gl_GlobalInvocationID.y);
     if (x >= oW || y >= oH) return;
-    int ix = clamp(int(x * inW / oW), 0, inW - 1);
-    int iy = clamp(int(y * inH / oH), 0, inH - 1);
-    out_img[y * oW + x] = in_img[iy * inW + ix] * float16_t(1.0 + float(x) * 0.001);
+    int ix = x * 2;
+    int iy = y * 2;
+    vec3 sum = vec3(0.0);
+    for (int dy = 0; dy < 2; ++dy) {
+        for (int dx = 0; dx < 2; ++dx) {
+            int sx = min(ix + dx, inW - 1);
+            int sy = min(iy + dy, inH - 1);
+            sum += inverse_tone(in_img[sy * inW + sx]);
+        }
+    }
+    out_img[y * oW + x] = encode_tone(sum * 0.25);
 }
