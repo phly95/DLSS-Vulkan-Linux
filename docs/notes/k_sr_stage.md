@@ -221,3 +221,101 @@ st8 7.8425 / 0.093988, st9 4.6123 / 0.058489.
 Instrument change (uncommitted, `build/work/stage_model.py`, under `build/` like every other
 probe): an env-guarded `STAGE_STATS=1` block right after `pe = nr_swin_exp(logits)` that prints
 min/max/mean, the count above 11 and above 88, and pe's non-finite count and maximum.
+
+### Attempt 7 (2026-10-26): probes pushed into saturation; normalization settled, content is the blocker
+
+Three new instruments (all git-ignored, under `build/work/`):
+
+- `probe_craft.py` - builds a `stage0.bin` from the region map (gain1 0..128, QK 128..4224 /
+  6784..10880, bias 4224..4736 / 10880..11392, V 4736..6784 / 11392..13440, v270 13440..13568,
+  gain2 13568..13696, MLP 13696..71872) into a copy of `build/re/packed/M`.  With `QK = 0`
+  the logit is **exactly** `bias[tok,j]`, so the logit regime is placed on demand; with a
+  uniform QK fill `f` the logits are exactly `32 f^2 * S_t * S_j`, i.e. `probe_fit.py`'s own
+  model form with `alpha = 32 f^2`.
+- `probe_ctx.py` - per-probe ctx = t1 - t0 with channel-uniformity and ctx/sumS diagnostics.
+- `probe_one.py` - fits a least-squares **beta ONCE on one probe** and then holds it fixed
+  while checking the others, which is what "one formula fits both regimes" has to mean.
+
+Probe set and their logit regimes (measured by `STAGE_STATS=1` through `stage_model.py`):
+
+| probe | construction | logits | >11 | pe max | oracle ctx |
+|---|---|---|---|---|---|
+| `sat_eq20` | QK 0, bias 20 | exactly 20 | 100% | 61 | **0.0000** |
+| `sat_eq33` | QK 0, bias 33 | exactly 33 | 100% | 256 | **0.0000** |
+| `sat_act` | QK 0, bias 8..33 | 8..33 varied | 88% | 256 | **0.0000** |
+| `qk2` | QK 2.0 | -16.0..51.4 | 16.5% | 256 | mean **+15.05** |
+| `qk1` | QK 1.0 | -4.0..12.9 | 0.01% | 9.75 | (not dumped) |
+| `qk4.5` | QK 4.5 | -81..261 | 36.6% | 256 | (not dumped) |
+| `sAB` (existing) | QK 1, bias+V 1 | -4.0..12.9 | ~0% | 9.75 | mean +3.02 |
+
+(The real weights run -22.1..+33.4 with 64/1024 above 11 and pe at 256, so `qk2` and the
+`sat_*` probes are the ones that occupy the regime the real kernel occupies.)
+
+**Result 1 - the equal-logit dead-attention behaviour holds at every saturation level.**
+`sat_eq20` and `sat_eq33` are exactly-equal logits *inside* the saturating regime and the
+oracle's context is exactly `0.0000` (mean = min = max), while `qk2`/`sAB` on the same
+harness give +15.05 / +3.02 - so the harness detects attention and the zero is real.
+Consequence: **all six families `probe_fit.py` offered are refuted** - `softmax`, `div16`,
+`none`, `onehot`, `fp8softmax`, `fp8div16` each predict a non-zero constant at equal logits,
+and a beta fitted non-zero on the active probes cannot make them vanish.
+
+**Result 2 - one formula does fit both regimes:**
+`w = (pe - min(pe)) / sum(pe - min(pe))`, guarded so `0/0 -> 0`.  It is exactly 0 when every
+logit is equal, and on the two *active* probes it reaches corr **0.9846** (saturating `qk2`)
+and **0.9663** (low `sAB`) - the best of any family that passes the equal-logit requirement:
+
+| family | corr qk2 | corr sAB | equal-logit |
+|---|---:|---:|---|
+| `softmax` / `fp8softmax` | **0.9965** | **0.9983** | FAIL (predicts 64.5, oracle 0) |
+| `submax_logit` | 0.9945 | 0.9983 | FAIL |
+| onehot | 0.9451 | 0.9001 | FAIL |
+| **`submin_norm`** | **0.9846** | **0.9663** | **OK (0.000000)** |
+| `submax_norm` | 0.7541 | 0.8203 | OK |
+| `center` (= softmax - 1/16) | 0.7374 | 0.6296 | OK |
+| `submax_raw` / `submin` / `submean` | 0.55..0.60 | 0.60..0.68 | OK |
+| `submax0` (identically 0) | n/a | n/a | OK but degenerate |
+
+fp8 quantisation of `w` and the x32 scale do not move it (`submin_fp8` 0.9844, `submin_fp8x32`
+0.9844; beta absorbs scale), so the shape decision is settled.
+
+**Result 3 - on real weights the normalization is NOT the error, the attention content is.**
+Two independent sweeps, both through the replica whose `port` variant reproduces the measured
+`r` (0.4551 vs `launch_report`'s 0.455124):
+
+1. *ctx magnitude* (plain softmax, `STAGE_CTX_SCALE`): 0 -> **0.5739**, 0.125 -> 0.5690,
+   0.25 -> 0.5604, 0.5 -> 0.5317, 1 -> 0.4551 (as shipped), 2 -> 0.3544, 4 -> 0.2826,
+   32 -> 0.1003 - **strictly monotone, best at suppression**.  Negative scales beat their
+   positive twins at every magnitude (-0.125 0.5782 > 0.5690, -0.25 **0.5793** > 0.5604,
+   -0.5 0.5684 > 0.5317, -1 0.5299 > 0.4551, -2 0.4543 > 0.3544, -4 0.3656 > 0.2826) so
+   there is a small negative component - but even the best signed scale (0.5793) barely beats
+   doing nothing at all (0.5739): the port's attention explains **~0.6%** of the variance
+   (0.5793^2 - 0.5739^2).
+2. *normalization* on real weights: `subminnorm`'s scale sweep is **identical** to plain
+   softmax's (0 -> 0.5739, 0.25 -> 0.5603 vs 0.5604, 1 -> 0.4551, 4 -> 0.2825 vs 0.2826),
+   and `subminnorm` scores corr 0.4551 = baseline with oracle bit-exact 1.1401% vs 1.1606%.
+   So the min-subtraction that the probes demand is **fp8-invisible on real weights** - it
+   fixes an edge case, not the measured error.
+3. *structure* on real weights: `head_swap` 0.5054 is the best variant tried, `no_bias`
+   0.4665, `qk_transposed` 0.4615, `scale_quarter` 0.4608, `v_transposed` 0.4076 - **all
+   below the no-attention 0.5739**.  `no_perm_load` 0.2049 and `invP_load` 0.1693 collapse,
+   which confirms the current load permutation is right; `no_perm_store`/`invP_store` =
+   0.4551 exactly, i.e. the store permutation is inert in this replica.
+
+Two consequences worth stating plainly:
+
+- `q5b`'s earlier 0.5739 is now explained: `max(u,0)` makes `prob` identically 0, so `q5b`
+  was simply "attention removed" - confirmed independently by `STAGE_CTX_SCALE=0` giving
+  the same 0.5739.  It was never a decode.
+- **Nothing landed.**  `submin_norm` fits both probe regimes but is a no-op on real weights,
+  and the attention content is where the error is; landing either alone would be exactly the
+  partial-hypothesis edit the `inv_sum = 32.0` attempt already warned about.
+
+**Next step:** decode the attention *content* rather than its normalization - with the
+normalization shape now known (`submin_norm`), the remaining question is what the oracle's
+Q/K/V actually are, since every structural variant tested (`qk_transposed`, `v_transposed`,
+`head_swap`, `biasT*`, scale) stays below the attention-free ceiling.  The most specific
+open lead from attempt 5 is that "the effective V matrix lives in the FIRST 1024 bytes of
+the port's bias+V region (4736..5760) and the second 1024 is inert unless head1 is active":
+bisect the bias and V regions with `probe_craft.py` (it can write arbitrary f16/f8 into any
+region) against `probe_ctx.py`, which now has a known-good normalizer to compare against,
+rather than reading the layout off the ISA.
