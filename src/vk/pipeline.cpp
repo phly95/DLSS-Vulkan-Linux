@@ -5,6 +5,7 @@
 #include "pipeline.h"
 
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 
 namespace ngxd {
@@ -455,6 +456,95 @@ FrameChain::~FrameChain() {
 
 size_t FrameChain::pipeline_count() const { return pipelines.size(); }
 
+// ---- oracle-injection diagnosis (DLSS5_AMD_INJECT_DIR / _MASK) ------------------------------
+// The dumps under build/oracle/*/dump/frame{0,1} carry every buffer NeuralHub's own kernels
+// wrote, launch by launch.  With injection on, record() additionally copies those bytes over
+// the chain's own results after the named dispatch points, so one run can *follow* the oracle
+// from any point onward: the end-to-end PSNR of an injected run is what the whole chain
+// downstream of that point contributes.  Diagnostic only; unset, record() is unchanged.
+
+void FrameChain::set_injection(const std::string& dir, const std::string& mask) {
+    inj_dir = dir;
+    size_t i = 0;
+    while (i < mask.size()) {
+        size_t j = mask.find(',', i);
+        if (j == std::string::npos) j = mask.size();
+        if (j > i) inj_mask.push_back(mask.substr(i, j - i));
+        i = j + 1;
+    }
+    if (mode == "sr") {
+        inj_targets = {
+            {"g_col", &g_col}, {"g_dep", &g_dep}, {"g_mv", &g_mv}, {"g_mvhi", &g_mvhi},
+            {"prev_mvec0", &prev_mvec[0]}, {"prev_mvec1", &prev_mvec[1]},
+            {"mv_ero", &mv_ero}, {"mv_nondil", &mv_nondil},
+            {"hidden0", &hidden[0]}, {"hidden1", &hidden[1]},
+            {"gates", &gates}, {"factors", &factors}, {"aniso", &aniso},
+            {"dhist", &dhist}, {"full15", &full15},
+            {"ihist0", &ihist[0]}, {"ihist1", &ihist[1]},
+            {"t0", &t_act[0]}, {"t1", &t_act[1]}, {"t2", &t_act[2]}, {"t3", &t_act[3]},
+            {"t4", &t_act[4]}, {"t5", &t_act[5]}, {"t6", &t_act[6]}, {"t7", &t_act[7]},
+            {"t8", &t_act[8]},
+            {"out", &out},
+        };
+    } else {
+        inj_targets = {
+            {"E0c6e", &g_col}, {"E0c72", &g_dep}, {"E0c76", &g_mv},
+            {"E0c7a", &out_norm}, {"E0c7e", &out_alb}, {"E0c82", &out_spa}, {"E0c8e", &out_rough_},
+            {"E0c26", &ae_next}, {"E0c2a", &ae_exp}, {"E0cee", &dhist}, {"E0c22", &expo},
+            {"E0be8", &t_act[0]}, {"E0bec", &bec}, {"E0bf6", &bf6}, {"E0bf2", &bf6},
+            {"E0bfa", &bfa}, {"E0bfe", &bfe},
+            {"E0cf2", &cf2}, {"E0c0a", &ihist[0]}, {"E0c0e", &c0e},
+            {"E0cf6", &cf6}, {"E0cfa", &cfa}, {"E0cfe", &out},
+        };
+    }
+}
+
+bool FrameChain::inj_wanted(const char* point) const {
+    if (inj_dir.empty() || fc >= 2) return false;
+    if (inj_mask.empty()) return true;
+    for (auto& m : inj_mask) if (m == point) return true;
+    return false;
+}
+
+void FrameChain::inject_after(VkCommandBuffer cmd, const char* point, int launch) {
+    if (!inj_wanted(point)) return;
+    char lbuf[16];
+    std::snprintf(lbuf, sizeof(lbuf), "%03d", launch);
+    std::string base = inj_dir + "/frame" + std::to_string(fc) + "/" + lbuf + ".";
+    bool any = false;
+    std::string names;
+    for (const auto& kv : inj_targets) {
+        const std::string& name = kv.first;
+        auto bytes = slurp(base + name + ".bin");
+        if (bytes.empty()) continue;          // this launch did not write that buffer
+        Buffer* target = kv.second;
+        std::string key = std::to_string(fc) + "/" + point + "/" + name;
+        auto it = inj_shadow.find(key);
+        if (it == inj_shadow.end()) {
+            Buffer s = create_buffer(dev, phys, std::min(bytes.size(), target->size),
+                                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+            inj_shadow[key] = s;
+            it = inj_shadow.find(key);
+        }
+        Buffer& shadow = it->second;
+        std::memcpy(shadow.mapped, bytes.data(), std::min(bytes.size(), shadow.size));
+        VkBufferCopy region{};
+        region.size = std::min({bytes.size(), shadow.size, target->size}) & ~size_t(3);
+        if (region.size == 0) continue;
+        vkCmdCopyBuffer(cmd, shadow.buffer, target->buffer, 1, &region);
+        any = true;
+        names += name + " ";
+    }
+    if (any) {
+        VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0, nullptr, 0, nullptr);
+        std::fprintf(stderr, "INJECT frame%d %s launch %d <- %s\n", fc, point, launch, names.c_str());
+    }
+}
+
 // DLSS5_AMD_MAX_DISPATCH=<n>: record only the first n dispatches of a frame and skip the rest.  A
 // bisect switch for finding which dispatch of a chain misbehaves; unset (the normal case, and every
 // run of vk_runner) it records everything, exactly as before.
@@ -550,6 +640,11 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
     g_dispatch_seen = 0;
 
     if (mode == "sr") {
+        // Dump launch numbers per dispatch point (identical in frame 0 and frame 1 dumps).
+        static const int sr_l[] = {/*gather*/0, /*enc0*/2, /*stage0*/3, /*stage1*/4,
+                                   /*tube0*/5, /*tube1*/6, /*tube2*/7, /*tube3*/8, /*tube4*/9,
+                                   /*tube5*/10, /*stage8*/11, /*stage9*/12,
+                                   /*dec0*/13, /*post*/14, /*downsample*/15};
         // 1. Gather
         {
             uint8_t push[88] = {0};
@@ -564,6 +659,7 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             std::memcpy(push + 76, &H, 4);
             std::memcpy(push + 80, &mvhi, 4);
             dispatch(cmd, "sr_gather", {&in_col, &in_mv_, &in_dep, &g_col, &g_mv, &g_dep}, push, 88, (W + 15) / 16, (H + 15) / 16, 1);
+            inject_after(cmd, "gather", sr_l[0]);
         }
 
         if (mvhi) {
@@ -605,6 +701,7 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                 dispatch(cmd, "sr_enc0", {&g_col, &g_dep, mvhi ? &g_mvhi : &g_mv, &prev_mvec[p], &dhist, &hidden[p],
                                      &prev_mvec[p ^ 1], &mv_ero, &mv_nondil, &t_act[0], &w_enc0}, push, 240, W0 / 8, H0 / 8, 1);
             }
+            inject_after(cmd, "enc0", sr_l[1]);
         }
 
         // 4. Stages 0..9
@@ -642,6 +739,9 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                 std::memcpy(push + 48, &s0, 4); std::memcpy(push + 52, &s1, 4);
                 dispatch(cmd, "sr_stage", {&wbuf, &t_act[7], &t_act[8], &t_act[8]}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 7) / 8, 1);
             }
+            static const char* st_pt[] = {"stage0", "stage1", "tube0", "tube1", "tube2",
+                                          "tube3", "tube4", "tube5", "stage8", "stage9"};
+            inject_after(cmd, st_pt[st], sr_l[2 + st]);
         }
 
         // 5. Dec0
@@ -654,6 +754,7 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             std::memcpy(push + 96, &dec0_s0, 4);
             std::memcpy(push + 100, &dec0_f0, 4);
             dispatch(cmd, "sr_dec0", {&t_act[8], &prev_mvec[p ^ 1], &hidden[p], &gates, &factors, &aniso, &hidden[p ^ 1], &w_dec0}, push, 160, W0 / 8, H0 / 8, 1);
+            inject_after(cmd, "dec0", sr_l[12]);
         }
 
         // 6. Post
@@ -678,6 +779,7 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             std::memcpy(push + 252, &mvoffy, 4);
             dispatch(cmd, "sr_post", {&g_col, &expo, &gates, &factors, &aniso, &ihist[p], &prev_mvec[p ^ 1], &mv_ero, &mv_nondil,
                                  &ihist[p ^ 1], &full15, &dhist}, push, 256, (W15 + 15) / 16, (hH15 + 15) / 16, 1);
+            inject_after(cmd, "post", sr_l[13]);
         }
 
         // 7. Downsample
@@ -694,14 +796,18 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             std::memcpy(push + 80, &log210, 4);
             std::memcpy(push + 84, &ldr, 4);
             dispatch(cmd, "sr_downsample", {&full15, &g_col, &expo, &out}, push, 88, (oW + 15) / 16, (oH + 15) / 16, 1);
+            inject_after(cmd, "downsample", sr_l[14]);
         }
     } else {
-        // RR pipeline
+        // RR pipeline.  Dump launch numbers shift by +1 from ae_block onward in frame 1
+        // (its dump carries a k_pooled2 at launch 1 that frame 0 does not have).
+        const int roff = (fc == 0) ? 0 : 1;
         // 1. Gather
         {
             uint8_t push[8] = {0};
             std::memcpy(push + 0, &W, 4); std::memcpy(push + 4, &H, 4);
             dispatch(cmd, "rr_gather", {&in_col, &in_mv_, &in_dep, &in_norm, &in_alb, &in_spa, &in_rough_, &g_col, &g_dep, &g_mv, &out_norm, &out_alb, &out_spa, &out_rough_}, push, 8, (W + 15) / 16, (H + 15) / 16, 1);
+            inject_after(cmd, "gather", 0);
         }
         // 2. Auto exposure
         {
@@ -709,9 +815,11 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             std::memcpy(push + 8, &W, 4);
             std::memcpy(push + 12, &H, 4);
             dispatch(cmd, "rr_ae_block", {&g_col, &dhist}, push, 16, (W + 15) / 16, (H + 15) / 16, 1);
+            inject_after(cmd, "ae_block", 1 + roff);
             uint8_t push_final[8] = {0};
             std::memcpy(push_final + 0, &W, 4); std::memcpy(push_final + 4, &H, 4);
             dispatch(cmd, "rr_ae_final", {&dhist, &expo, &ae_next, &ae_exp}, push_final, 8, 1, 1, 1);
+            inject_after(cmd, "ae_final", 2 + roff);
         }
         // 3. Enc0 feat
         {
@@ -720,12 +828,14 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             std::memcpy(push + 8, &W, 4); std::memcpy(push + 12, &H, 4);
             dispatch(cmd, "rr_enc0_feat", {&g_col, &g_mv, &g_dep, &out_norm, &out_alb, &out_spa, &out_rough_, &expo,
                                      &t_act[0], &bec, &bf6, &bfa, &bfe}, push, 16, (W0 + 15) / 16, (H0 + 15) / 16, 1);
+            inject_after(cmd, "enc0_feat", 3 + roff);
         }
         // 4. Levels (U-Net)
         {
             uint8_t push[16] = {0};
             std::memcpy(push + 0, &W, 4); std::memcpy(push + 4, &H, 4);
             dispatch(cmd, "rr_level", {&wbuf, &t_act[0], &t_act[1]}, push, 16, (W + 15) / 16, (H + 15) / 16, 1);
+            inject_after(cmd, "level", 4 + roff);
         }
         // 5. Post prep
         {
@@ -733,6 +843,7 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             std::memcpy(push + 8, &W0, 4);
             std::memcpy(push + 32, &W, 4); std::memcpy(push + 36, &H, 4);
             dispatch(cmd, "rr_post_prep", {&bec, &gates, &aniso, &cf2}, push, 40, (W + 15) / 16, (H + 15) / 16, 1);
+            inject_after(cmd, "post_prep", 20 + roff);
         }
         // 6. Post
         {
@@ -750,6 +861,7 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             std::memcpy(push + 32, &jy, 4);
             std::memcpy(push + 36, &exposure_val, 4);
             dispatch(cmd, "rr_post", {&cf2, &expo, &cf6, &cfa, &ihist[0], &c0e}, push, 120, (W15 + 15) / 16, (H15 + 15) / 16, 1);
+            inject_after(cmd, "post", 21 + roff);
         }
         // 7. Downsample
         {
@@ -757,6 +869,7 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             std::memcpy(push + 16, &W15, 4); std::memcpy(push + 20, &H15, 4);
             std::memcpy(push + 40, &oW, 4); std::memcpy(push + 44, &oH, 4);
             dispatch(cmd, "rr_downsample", {&cf6, &cfa, &expo, &out}, push, 48, (oW + 15) / 16, (oH + 15) / 16, 1);
+            inject_after(cmd, "downsample", 22 + roff);
         }
     }
 }

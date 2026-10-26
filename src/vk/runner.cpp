@@ -140,6 +140,14 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "%s\n", chain_err.c_str());
         return 1;
     }
+    // Diagnosis: DLSS5_AMD_INJECT_DIR=<dump root> makes the chain copy the oracle's own
+    // buffer contents over its results after the dispatch points DLSS5_AMD_INJECT_MASK
+    // names (empty = all), so the end-to-end PSNR of the run measures only what runs
+    // downstream of those points.  Unset, nothing changes.
+    if (const char* inj = std::getenv("DLSS5_AMD_INJECT_DIR")) {
+        const char* m = std::getenv("DLSS5_AMD_INJECT_MASK");
+        chain->set_injection(inj, m ? m : "");
+    }
 
     std::printf("PIPELINES_CREATED: %zu\n", chain->pipeline_count());
     std::fflush(stdout);

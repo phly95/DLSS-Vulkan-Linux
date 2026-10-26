@@ -105,6 +105,12 @@ public:
     // caller may submit cmd afterwards.
     void record(VkCommandBuffer cmd, const FrameParams& fp);
 
+    // Diagnosis: follow the oracle's buffer contents from a dispatch point onward.
+    // dir is a tools/verify/diffdump.py dump root (containing frame0/, frame1/ with
+    // NNN.<buffer>.bin files); mask is a comma list of dispatch-point names ("post,downsample"),
+    // empty = every point.  With dir empty the chain records exactly what it always did.
+    void set_injection(const std::string& dir, const std::string& mask);
+
     // History state advances exactly as it always has: p ^= 1, fc = (fc + 1) & 7.
     void advance() { p ^= 1; fc = (fc + 1) & 7; }
     int parity() const { return p; }
@@ -126,6 +132,12 @@ private:
     void dispatch(VkCommandBuffer cmd, const std::string& name,
                   const std::vector<Buffer*>& bufs, const void* push,
                   size_t push_size, uint32_t gx, uint32_t gy, uint32_t gz);
+
+    // Oracle-injection diagnosis (see set_injection).  point names the dispatch just
+    // recorded; launch is that point's launch number in the dump of the *current* frame
+    // (the dumps' indices shift between frame 0 and frame 1, so callers pass the table's
+    // per-frame value).  No-op unless injection is enabled for this frame and point.
+    void inject_after(VkCommandBuffer cmd, const char* point, int launch);
 
     VkDevice dev = VK_NULL_HANDLE;
     VkPhysicalDevice phys = VK_NULL_HANDLE;
@@ -152,6 +164,13 @@ private:
     Buffer t_act[9];
     Buffer ae_next, ae_exp;   // rr_ae_final's bindings 2/3 (writeonly, never read back)
     Buffer out, wbuf, w_enc0, w_dec0;
+
+    // Oracle-injection diagnosis state (inert when set_injection was never called).
+    std::string inj_dir;
+    std::vector<std::string> inj_mask;
+    std::map<std::string, Buffer*> inj_targets;         // dump buffer name -> chain buffer
+    std::map<std::string, Buffer> inj_shadow;           // per (frame, point, name) staging
+    bool inj_wanted(const char* point) const;
 };
 
 } // namespace ngxd

@@ -18,6 +18,7 @@
     X(vkBindBufferMemory)                \
     X(vkCmdBindDescriptorSets)           \
     X(vkCmdBindPipeline)                 \
+    X(vkCmdCopyBuffer)                   \
     X(vkCmdCopyBufferToImage)            \
     X(vkCmdCopyImageToBuffer)            \
     X(vkCmdDispatch)                     \
