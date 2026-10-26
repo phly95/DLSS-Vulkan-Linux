@@ -48,7 +48,7 @@ if command -v g++ >/dev/null; then
     if [[ -f "$ROOT/src/vk/runner.cpp" ]]; then
         g++ -std=c++17 -O2 -I"$ROOT/reference-nr-vulkan/toolchain/Vulkan-Headers/include" \
             -Wl,-rpath,"$RPATH" \
-            "$ROOT/src/vk/runner.cpp" -o "$ROOT/build/vk/vk_runner" -lvulkan
+            "$ROOT/src/vk/pipeline.cpp" "$ROOT/src/vk/runner.cpp" -o "$ROOT/build/vk/vk_runner" -lvulkan
     fi
 else
     podman run --rm --memory=8g -v "$ROOT":/w localhost/nrbuild:2 bash -c \
@@ -58,6 +58,6 @@ else
          if [ -f /w/src/vk/runner.cpp ]; then \
             g++ -std=c++17 -O2 -I/w/reference-nr-vulkan/toolchain/Vulkan-Headers/include \
                 -Wl,-rpath,'$RPATH' \
-                /w/src/vk/runner.cpp -o /w/build/vk/vk_runner -lvulkan; \
+                /w/src/vk/pipeline.cpp /w/src/vk/runner.cpp -o /w/build/vk/vk_runner -lvulkan; \
          fi"
 fi
