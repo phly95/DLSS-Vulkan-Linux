@@ -1,35 +1,36 @@
 #version 460
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
 #extension GL_EXT_shader_16bit_storage : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 
-layout(set = 0, binding = 0) readonly buffer InBlocks { float block_luma[]; };
-layout(set = 0, binding = 1) writeonly buffer OutExpo { vec4 expo; };
+layout(set = 0, binding = 0) buffer Accumulator { uint64_t accumulator; };
+layout(set = 0, binding = 1) readonly buffer PreviousAE { float16_t previous_ae; };
+layout(set = 0, binding = 2) writeonly buffer NextAE { float16_t next_ae; };
+layout(set = 0, binding = 3) writeonly buffer Exposure { vec4 exposure; };
 
-layout(push_constant) uniform RrAEFinalArgs {
-    int W;
-    int H;
+layout(push_constant) uniform RrAEArgs {
+    layout(offset = 24) float scale;
 };
 
 void main() {
-    float sum = 0.0;
-    if (W > 0 && H > 0) {
-        int bw = (W + 15) / 16;
-        int bh = (H + 15) / 16;
-        int num_blocks = bw * bh;
-        for (int i = 0; i < num_blocks; ++i) {
-            sum += block_luma[i];
-        }
-        float mean_luma = sum / float(W * H);
-        float l = max(mean_luma, 0.005);
-        float val = 0.23547000885 / l;
-        float val_f16 = float(float16_t(val));
-        expo = vec4(val_f16, 1.0, 1.0 / val_f16, 0.0);
-    } else {
-        float l = max(block_luma[0], 0.005);
-        float val = 0.23547000885 / l;
-        float val_f16 = float(float16_t(val));
-        expo = vec4(val_f16, 1.0, 1.0 / val_f16, 0.0);
+    // E0cee is a 32.32 luma accumulator. On reset, the ISA converts it to
+    // the target exposure, rounds the half state downward, and clears it.
+    // The non-reset temporal adaptation is still being decoded; this target
+    // exposure path is kept explicit so reset-frame oracle comparisons are
+    // meaningful rather than reading the accumulator as float partials.
+    float mean_luma = max(float(accumulator) * scale, 0.005);
+    float target = 0.235470891 / mean_luma;
+
+    uint half_bits = packHalf2x16(vec2(target, 0.0)) & 0xffffu;
+    float half_value = unpackHalf2x16(half_bits).x;
+    if (half_value > target && half_bits > 0u) {
+        half_value = unpackHalf2x16(half_bits - 1u).x;
     }
+
+    float prev = float(previous_ae);
+    next_ae = float16_t(half_value);
+    exposure = vec4(half_value, prev, 1.0 / half_value, 0.0);
+    accumulator = uint64_t(0);
 }

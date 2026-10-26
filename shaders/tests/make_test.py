@@ -330,20 +330,25 @@ def make_test(name, out_dir):
             "push": push.hex(),
             "bindings": [
                 {"binding": 0, "file": "in_col.bin"},
-                {"binding": 1, "bytes": ((w + 15) // 16) * ((h + 15) // 16) * 4, "output": "block_luma", "type": "f32"}
+                {"binding": 1, "bytes": 8, "output": "ae_accum", "type": "u32"}
             ]
         }
     elif name == "rr_ae_final":
-        luma = np.full(512, 0.25, dtype=np.float32).tobytes()
-        open(os.path.join(out_dir, "block_luma.bin"), "wb").write(luma)
-        push = bytearray(8)
-        struct.pack_into("<2i", push, 0, w, h)
+        open(os.path.join(out_dir, "ae_accum.bin"), "wb").write(struct.pack("<Q", 1 << 33))
+        open(os.path.join(out_dir, "ae_prev.bin"), "wb").write(np.array([1.0], dtype=np.float16).tobytes())
+        open(os.path.join(out_dir, "ae_next.bin"), "wb").write(np.array([1.0], dtype=np.float16).tobytes())
+        push = bytearray(56)
+        struct.pack_into("<2i", push, 8, w, h)
+        struct.pack_into("<f", push, 24, 2.3283064365386963e-6 / float(w * h))
+        struct.pack_into("<i", push, 28, 1)
         cfg = {
             "groups": [1, 1, 1],
             "push": push.hex(),
             "bindings": [
-                {"binding": 0, "file": "block_luma.bin"},
-                {"binding": 1, "bytes": 16, "output": "expo", "type": "f32"}
+                {"binding": 0, "file": "ae_accum.bin"},
+                {"binding": 1, "file": "ae_prev.bin"},
+                {"binding": 2, "file": "ae_next.bin"},
+                {"binding": 3, "bytes": 16, "output": "expo", "type": "f32"}
             ]
         }
     elif name == "rr_enc0_feat":
