@@ -55,3 +55,14 @@ inputs):
   shader reads W from `enc0_w` and no fitted constant is ever committed (clean-room rule).
 - **Status**: APPROX; the placeholder is still what ships.  This is the SR campaign's
   critical path (see `docs/notes/sr_chain_decoupling.md`).
+
+- **Follow-up (same day)**: adding the obvious history features to the basis - `prev_mvec0`
+  (start copy from the frame-1 dump), `hidden0` (start copy), `mv*3 - prev_mv*3` erosion
+  terms - does NOT close frame 1: the frame-1-only fit residual stays 0.15 (5x the fp8
+  half-ulp) and a joint frame0+frame1 fit gives 0.27/0.26 on both frames (vs 0.029 for
+  frame0 alone on the 16-feature basis).  So the cross-frame dependence is NOT a linear
+  function of (tm(col 2x2), mv*3, dep, prev_mv, hidden) - remaining candidates: `dhist`
+  (10:10:10 u32 at hW15 x hH15 = 384x216, cell mapping unknown), nonlinear erosion terms
+  (abs/max on the mv difference), or exposure/jitter-dependent preprocessing.  Do not
+  repeat the plain-linear-with-these-features attempt; either add dhist + nonlinear mv
+  terms next, or go straight to the ISA (`tools/re/fn.sh sr _ZN2sr2io9k_sr_enc0...`).
