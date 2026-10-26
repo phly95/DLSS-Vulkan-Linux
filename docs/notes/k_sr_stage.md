@@ -831,3 +831,127 @@ from 0.48..0.79 toward the 0.157 noise floor, which would finally let the free-`
 trusted as a read of the oracle's V - and that fit, unlike the byte-guessing, is layout-agnostic.
 If it does not drop, the remaining error is in the attention weights after all, and attempt 8's
 control (83.9% vs 49.8% shuffled) needs re-running under `gain_first` too.
+
+### Attempt 13 (2026-10-26): gain2 is applied BEFORE RMSNorm2 too - +8.53 dB, LANDED
+
+#### Step 1 - the Exp B control the orchestrator asked for: the prediction is FALSIFIED
+
+`probe_w.collect()` still hardcoded the old ordering, so it now takes `gain_first=True` and
+mirrors the model branch exactly (without that the control would have measured the stale
+normalization silently).  Re-ran Exp B and attempt 8's whole control set:
+
+| Exp B (free Wv, real_attn) | SN old | SN gain_first |
+|---|---:|---:|
+| prob old | 0.4011 / 0.7020 | 0.4012 / 0.7020 |
+| prob gain_first | 0.4012 / 0.6998 | 0.4013 / 0.6998 |
+
+**It does not drop** - nowhere near the 0.157 noise floor, and it is identical to four
+decimals across all four (SN-ordering x prob-ordering) combinations, so neither ordering
+moves it.  The control is *not* stale either: under `gain_first` it reproduces attempt 8 to
+three decimals (port 0.4012/0.7020, uniform 0.6210/0.7226, shuffled 0.7086/0.7209, random
+0.6342/0.7336 vs attempt 8's 0.4011/0.7020, 0.6210/0.7226, 0.7085/0.7209, 0.6342/0.7336).
+
+So both readings stand and neither side was stale: the free-`Wv` ceiling is genuinely
+**84% (h0) / 51% (h1)**, insensitive to normalization order and to the prob source.  The
+model form `ctx = blockdiag(prob) @ (s_norm @ Wv)` is incomplete in a way this fit cannot
+reach - recorded as open, not as refuted.
+
+#### Step 2 - instrumentation: the replica now states the launch_report triple
+
+`stage_model.py` prints peak / PSNR / r / rRMSE with the same formulas as
+`tools/report/launch_report.py`, so hypotheses are judged on **all three** (PSNR is the
+milestone), not on correlation.  Validated against the GPU - the replica reproduces the
+measured triple exactly:
+
+```
+gain_first   replica 4.5099 / 0.5663 / 2.348640   GPU 4.5099 / 0.566307 / 2.348655
+gain2_first  replica 13.5080 / 0.5661 / 0.833516  GPU 13.5080 / 0.566140 / 0.833516
+port         replica 4.9785 / 0.4551 / 2.225307   GPU 4.9783 / 0.455124 / 2.225339
+```
+
+#### Step 3 - the error budget is the MLP, not attention
+
+Decomposing the real-weights run (differencing `variant` vs `variant_no_mlp`):
+
+| | attention part | MLP part | total change |
+|---|---:|---:|---:|
+| port (old ordering) | 0.522 | **5.084** | 5.061 |
+| gain_first | 0.159 | **5.621** | 5.624 |
+| **ORACLE** | **1.121** | ~0.8-1.6 | **1.938** |
+
+The MLP is **99.9%** of the port's stage change and is **3-6x the oracle's entire stage
+change**, while attention is *too small* (0.159-0.522 vs 1.121).  That also explains the
+r-up/PSNR-down divergence the orchestrator flagged: `gain_first` improved attention's
+*structure* (r 0.4551 -> 0.5663) while moving its *magnitude* further away (0.522 -> 0.159
+against a 1.121 target).
+
+#### Step 4 - the decode: RMSNorm2 takes gain2 BEFORE the norm, same as RMSNorm1
+
+A free-scale sweep said the MLP wanted x0.15-0.25 (14.02 dB), i.e. a tuned constant - but the
+*structural* fix is the ordering, and it lands in the same place without tuning:
+
+| variant | MLP rms | PSNR | r | rRMSE |
+|---|---:|---:|---:|---:|
+| gain_first | 5.621 | 4.5099 | 0.5663 | 2.3486 |
+| gain2_first alone | - | 12.9024 | 0.4565 | 0.8937 |
+| **gain_first + gain2_first** | **0.778** | **13.5080** | 0.5661 | **0.8335** |
+| + head_swap | - | 13.4463 | 0.5571 | 0.8395 |
+| + v_neg | - | 13.4954 | 0.5640 | 0.8347 |
+| + subminnorm | - | 13.5081 | 0.5662 | 0.8335 |
+| + no_bias | - | 13.5123 | 0.5668 | 0.8331 |
+| MLP x0.15 (tuned, NOT landed) | 0.844 | 14.0200 | 0.6419 | 0.7858 |
+
+**MLP rms 5.621 -> 0.778**, i.e. straight into the oracle's 0.8-1.6 band, and PSNR jumps
+**+9.0 dB** in the replica.  No combination beats it (head_swap and v_neg both *hurt*), so
+this is one clean change, not a tuned bundle.  The x0.15 sweep point (14.02) is recorded as
+a diagnostic, deliberately not landed - it is a tuned constant, not a decode.
+
+#### Step 5 - LANDED and measured on the RX 9070 XT
+
+`shaders/sr/sr_stage.comp` RMSNorm 2 rewritten (`s_norm` as scratch, `s_act` untouched for the
+residual).  Baselines: HEAD and gain_first both already measured this session on this machine.
+
+**Whole pipeline** (`pipeline_report.py`):
+
+| cell | HEAD | gain_first | **+ gain2_first** |
+|---|---|---|---|
+| SR M min | 27.51 | 27.61 | **29.30** |
+| SR M mean | 29.55 | 30.00 | **31.36** |
+| SR M max | 30.97 | 31.54 | **33.29** |
+| SR L min | 26.25 | 26.43 | **27.14** |
+| SR L mean | 29.62 | 29.71 | **30.33** |
+| SR L max | 31.75 | 31.77 | **32.43** |
+
+**Per launch** (`launch_report.py`, `k_sr_stage` launch 3, peak = oracle max|x| = 8.0):
+
+| | HEAD | with change |
+|---|---:|---:|
+| PSNR | 4.9783 dB | **13.5080 dB** |
+| pearson r | 0.455124 | **0.566140** |
+| rel RMSE | 2.225339 | **0.833516** |
+| bit-exact | 0.0000% | 0.0000% |
+
+**All three improve together** this time (+8.53 dB, r +0.111, rRMSE 2.23 -> 0.83), and every
+one of the six pipeline numbers improves too.  Still far from V4 (>=50/55) and from the
+40 dB milestone.
+
+#### Measured trajectory toward 2026-11-02 (for the condition-(c) assessment)
+
+| step | per-launch PSNR | rRMSE |
+|---|---:|---:|
+| session start (HEAD) | 4.9783 | 2.225339 |
+| + gain1 before RMSNorm1 (`a903817`) | 4.5099 | 2.348655 |
+| + gain2 before RMSNorm2 (this commit) | **13.5080** | **0.833516** |
+
+Two landed structural decodes moved the metric **+8.53 dB**, and rRMSE **2.23 -> 0.83
+(2.7x)**.  Milestone needs 40 dB, i.e. rRMSE ~0.0395 at peak 8 / oracle rms 2.027 - a further
+**21x** RMSE reduction in the remaining 7 days.  The best-global-scale ceiling of the *old*
+structure was 13.56 dB, which this change already reaches structurally, so the next gains
+must come from new decodes rather than from rescaling.
+
+**Next step (one command from resumable):** the remaining measured magnitude gap is
+attention - port 0.159 (gain_first) / 0.522 (old) rms against the oracle's **1.121**, a 2-7x
+shortfall, now the largest term left after the MLP landed.  Sweep what scales attention
+structurally (an attention-side analogue of the two gain-order fixes: the logit scale, the
+denominator's reduction, and whether the attention output itself passes a gain/norm), always
+judged on the three metrics with the replica that now reproduces the GPU triple exactly.

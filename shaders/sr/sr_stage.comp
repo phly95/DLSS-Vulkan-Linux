@@ -304,17 +304,24 @@ void main() {
     }
 
     // 4. RMSNorm 2
+    // gain2 scales the INPUT before the normalisation (s_norm = g*x / ||g*x||), not the
+    // normalised value afterwards - the same ordering as RMSNorm 1 above.  Measured through
+    // the probe harness: it takes the MLP's contribution from 5.621 rms down to 0.778, which
+    // is inside the oracle's own 0.8-1.6 band (the oracle's entire stage change is 1.94 rms),
+    // and lifts the per-launch PSNR from 4.5099 to 13.5080 dB.  See docs/notes/k_sr_stage.md
+    // attempt 13.
     uint s198_base = cur_w;
     cur_w += 2u * C;
     float sum_sq2 = 0.0;
     for (uint c = 0; c < C; ++c) {
-        float v = float(s_act[tid][c]);
-        sum_sq2 += v * v;
+        float16_t gain2 = read_f16(s198_base + c * 2u);
+        float16_t g2 = s_act[tid][c] * gain2;    // f16 product, then used as the norm input
+        s_norm[tid][c] = g2;                     // s_norm doubles as scratch for the input
+        sum_sq2 += float(g2) * float(g2);
     }
     float rs2 = inversesqrt(sum_sq2 + 6.103515625e-05);
     for (uint c = 0; c < C; ++c) {
-        float16_t gain2 = read_f16(s198_base + c * 2u);
-        s_norm[tid][c] = s_act[tid][c] * float16_t(rs2) * gain2;
+        s_norm[tid][c] = s_norm[tid][c] * float16_t(rs2);
         s_mlp[tid][c] = float16_t(0.0);
     }
     barrier();
