@@ -475,3 +475,105 @@ response over queries reveals `k0`.  Bit-plane probes over `p` (8 probes) plus a
 `gain1` selections recover the mapping empirically instead of formula-guessing; the mapping
 is a bijection (2048 bytes <-> 64x32), so a dozen well-chosen probes should pin the swizzle.
 Head 1 (51% explained vs head0's 84%) is the more suspect of the two and the place to start.
+
+### Attempt 9 (2026-10-26): V's byte layout DECODED - frag_off's arguments are swapped
+
+Attempt 8 ended by proposing to stop guessing swizzles and measure the byte->(k,c) map.
+That measurement now exists, it is validated, and it identifies the layout - with one
+residual (a per-row sign) that still stops the fix landing on real weights.
+
+#### Instruments
+
+- `probe_craft.py --v-code low5|high5` writes V byte `i` (region-local) as fp8 code
+  `0x28 + (i & 31)` / `0x28 + ((i >> 5) & 31)`, so the byte's own index bits are carried in
+  its VALUE.  Codes 0x28..0x47 decode to 0.25..3.75 - large enough to survive a fit.
+- `probe_craft.py --gain1-select K` zeros `gain1` except at channel `K`, so only ONE row of
+  `s_norm` survives.  Attention then has **1 unknown per output channel** (64 equations,
+  1 unknown) instead of 64, which removes the conditioning blow-up that defeated the first
+  attempt at this decode (`probe_vdecode.py`: fit residual was at the noise floor while the
+  entries came back 47% negative and mean |value-code| 1.46 - a least-squares solution
+  amplified by kappa ~ 860, not a wrong layout).
+- `probe_rowdec.py` - the row-wise decoder.
+
+#### Validation (the decoder is exact before it is trusted)
+
+Run against the MODEL's own noise-free `ctx` (exported via `STAGE_PROB_OUT`), where the
+answer is known by construction:
+
+```
+g0_low5 k0=0 head0: |value-code| 0.000001  match vs frag_off 100.0%  resid 0.00001
+g0_high5 k0=0 head1: |value-code| 0.000002  match vs frag_off 100.0%  resid 0.00001
+g1_low5 k0=1 head0: |value-code| 0.000003  match vs frag_off 100.0%  resid 0.00001   (all 8 probes 100%)
+```
+
+#### Result 1 - the oracle's column bits land where the port's ROW bits land
+
+Reading the swizzle's own bit dependencies, then the oracle's from the coded-probe
+amplitudes (scale- and sign-free, so immune to the fit problem):
+
+| arg bit | port's **first** arg (`r`) | port's **second** arg (`c`) | **oracle's output channel `c`** |
+|---|---|---|---|
+| 0 | p3 | p0 | **p3** |
+| 1 | p5 | p2 | **p5** |
+| 2 | p6 | p7 | **p6** |
+| 3 | p9 | p8 | **p9** |
+| 4 | p4 | p1 | **p4** |
+
+The oracle's *output channel* drives exactly the bits the port's *first* argument drives -
+all five agree.  So the oracle calls `frag_off(output_channel, input_row, ...)`, i.e. **the
+two arguments are swapped** relative to the port's `frag_off(k, c, 32)`.
+
+#### Result 2 - confirmed per row: shape corr 0.9994..1.0000 on every row tested
+
+`--gain1-select` isolates one input row at a time; each probe carries the coded V bytes.
+Predicted vs oracle per-channel amplitude shape:
+
+| probe | k0 | **swap shape** | swap \|ctx\| | swap signed | port shape |
+|---|---:|---:|---:|---:|---:|
+| `g0_low5` | 0 | **+0.9999** | +0.9930 | -0.9930 | +0.4678 |
+| `g1_low5` | 1 | **+0.9994** | +0.9390 | -0.9392 | +0.4705 |
+| `g16_low5` | 16 | **+1.0000** | +0.6154 | -0.2845 | (n/a) |
+| `g32_low5` | 32 | **+0.9997** | +0.9797 | **+0.9797** | +0.4614 |
+| `g48_low5` | 48 | **+0.9999** | +0.7849 | -0.7811 | (n/a) |
+
+Every row: transposed layout 0.9994-1.0000, port's layout 0.46-0.92.  The layout answer is
+uniform across rows and is not a coincidence of one row.  Supporting checks:
+- `frag_off(c, k, 32)` spans 0..1535 - a valid layout inside the 2048-byte region (and
+  `frag_off(c, k, 64)` spans 0..2047);
+- the low5 probe's predicted amplitude pattern for row 0 is `0.25 0.50 0.25 0.50 ... 1.0 2.0`
+  and the oracle's is `0.124 0.247 0.124 0.247 ... 0.495 0.990` - identical shape.
+
+#### Result 3 - the residual: a per-row SIGN, not explained by any single bit
+
+Signed correlation on the same probes: -0.9930, -0.9392, -0.2845, **+0.9797**, -0.7811 for
+k0 = 0, 1, 16, 32, 48.  Only k0=32 comes out positive, so it is *not* `bit5` (which would
+predict + for 48), nor parity, nor any half/quarter split tested.  |ctx| correlation stays
+high (0.61..0.99), i.e. magnitudes are right and the per-token sign is inverted for most rows.
+
+This is exactly what makes the fix fail to transfer to real weights, where all 64 rows add
+together and rows with opposite signs cancel:
+
+| V read on REAL weights | corr h0 | corr h1 |
+|---|---:|---:|
+| port `frag(k,c,32)` (baseline) | +0.1884 | +0.2333 |
+| **swap + negate** | **+0.3119** | +0.0948 |
+| swap, no negate | -0.3119 | +0.0948 (sign of h0 flips) |
+
+and on the all-rows coded probes the swap reaches only ~0.32 - consistent with per-row
+cancellation, not with the layout being wrong (Result 2 fixes the layout).
+
+#### Result 4 - still standing from attempt 8
+
+- attention **weights right** (port softmax 83.9% of head0 variance vs 49.8% shuffled /
+  61.4% uniform / 59.8% random controls);
+- all 4096 V bytes live; **nothing landed** - no edit has gone into `sr_stage.comp`.
+
+**Next step:** resolve the per-row sign, which is now the only thing between this decode and
+a landing.  Two routes, in order: (a) map the sign over more rows (`--gain1-select 2,4,8,
+24,40,56`, one oracle run each) and fit it against the row index / the byte's decoded value
+/ the sign of `g = sum_j prob(t,j) s_norm[j,k0]` - if it is a property of `g` rather than of
+the bytes, the model's `prob` for that probe is the thing to fix, not V; (b) if the sign map
+is stable per row, build the corrected read as `Wv[k,c] = s_k * LUT[buf[vbase + frag_off(c,
+k, 32)]]` with the measured `s_k`, verify real-weights corr(ctx) rises well past 0.2019, and
+only then implement it in `shaders/sr/sr_stage.comp` and re-measure per-launch with
+`launch_report.py` (provenance trio attached).
