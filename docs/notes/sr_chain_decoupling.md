@@ -103,3 +103,49 @@ oracle inputs** (diffdump oracle-input mode / the injection harness, the same ma
 chain-leverage tables), with the measurement pasted.  If it misses, that is a condition-(c)
 report: come back with the actual number, what was tried, and why - no silent continuation
 past the date.  Target and date are fixed until the operator says otherwise.
+
+## Amendments 2026-10-26 (three, from the orchestrator)
+
+**1. The 40 dB per-launch metric is defined here, before any measurement.**  A per-launch
+output of `k_sr_stage` / `k_rr_level` is an fp8 activation tensor spanning up to +-448, so
+PSNR depends entirely on the chosen peak and an undefined peak would make the milestone
+gaming-able and incomparable across sessions.  Fixed definition, all three computed by **one
+committed script**:
+
+- **PSNR with peak = the oracle tensor's max |x|** (per dump; the peak is stated in the output),
+- **Pearson correlation**,
+- **relative RMSE** = RMS(error) / RMS(oracle tensor).
+
+The script lives under `tools/report/` next to `pipeline_report.py` - it is a **new** file, so
+`tools/verify/` stays untouched and frozen - and is written in **Step C**, alongside the metric
+shift.  It speaks only for per-launch kernel claims; **pipeline-level numbers remain the
+exclusive domain of `tools/report/pipeline_report.py`**, as before.  Every subsequent per-launch
+claim is produced by this script and no other.  Context for the tripwire: `k_sr_stage` today is
+0.455 correlation, i.e. ~0 dB on any sensible definition, so the milestone asks for a large jump
+in about four working days - a miss leads to the condition-(c) reassessment report with real
+data, not to a rushed push.
+
+**2. Step D's target is distance from NeuralHub's own speed, not NVIDIA-class 1-3 ms.**
+`DEEPSEEK-ASSESSMENT.md` measured `rrref` at ~13 ms/frame for 1080p -> 4K on this machine:
+NeuralHub itself does not fit 1-3 ms, so that figure must **not** appear in the Step D report
+as the bar.  Requirements:
+
+- time **each dispatch** with GPU timestamps, at the **real 1080p -> 4K size**, not 256x144;
+- **exclude setup and uploads** - frame time is the frame's render work only;
+- time **`srref` and `rrref` the same way, on the same machine, at the same sizes** as the port;
+- the report answers exactly one question: **how far is the port from NeuralHub's own speed on
+  this card, per dispatch and per frame** - a port/oracle ratio table with pasted numbers.
+  Whether either side fits a real-time budget is a separate judgment the operator makes from
+  that table, not a conclusion the report draws.
+
+**3. Provenance on every pasted number - an orchestrator gate.**  Every measurement offered as
+a claim (mine, or the orchestrator's on re-run) must be traceable to an exact build:
+
+- **commit SHA**,
+- **SHA-256 of the shader binaries used**,
+- **input directory**,
+
+all three recorded in the paste.  Rationale is already in this project's history:
+`docs/notes/k_rr_level.md` says which working tree produced the `inf` dump "is not
+recoverable" - that must never happen again.  A number without the trio is not accepted.  The
+trio is part of the milestone report format too.
