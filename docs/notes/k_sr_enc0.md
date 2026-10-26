@@ -66,3 +66,37 @@ inputs):
   (abs/max on the mv difference), or exposure/jitter-dependent preprocessing.  Do not
   repeat the plain-linear-with-these-features attempt; either add dhist + nonlinear mv
   terms next, or go straight to the ISA (`tools/re/fn.sh sr _ZN2sr2io9k_sr_enc0...`).
+
+### Attempt 5 (2026-10-27): correct alignment, trunc-not-RNE store, the c20 recipe, v_log_f32 measured
+Four findings that change the decode (all measured, probes in `build/work/probe/enc{0..7}`
+= constant-color frame sets + `srref --dump`):
+1. **The attempt-4 fits were mis-aligned**: `t0.flat.reshape(-1,64)` interleaves two adjacent
+   cells' 32-byte groups; the cell-major layout is `t0.transpose(1,2,0,3).reshape(10240,64)`
+   ([y][x][group][channel]).  With the correct alignment the frame-0 linear model
+   {12x tm(col 2x2 subpixels), mv*3, dep, 1} closes at **fp8 half-ulp residual (median
+   0.0159) and 50.26% bit-exact**; f16/fp8 weight snapping is neutral (weights are f16-grade);
+   raw-col / 4-subpixel mv+dep extras do not help (48.7%).
+2. **The store path truncates, it does not RNE**: every t0 value is built as
+   `f16 add/sub chain -> v_and bits & 0xffffff80 (= clear 7 low mantissa bits: trunc toward
+   zero onto the E4M3 grid) -> f32 -> v_med3(x, s39, 448.0) -> v_cvt_pk_fp8`.  Modeling
+   truncation instead of RNE explains the 50% RNE ceiling; the residual off-by-one cases are
+   the f16 intermediate roundings, which need the exact per-channel term order.
+3. **The channel recipes are sparse, not dense**: ISA slice of convert site 0xC20 shows
+   `v38 = f16(tm) ; v44 = tm_bits & 0xfc00 (power-of-two floor) ; v63 = v44 | (col_bits>>9) ;
+   value = trunc_e4m3(f16(f16(tm)+v63) - v44)` - three terms with bit-level constructions,
+   plus `0xfffffc00`-masked power-of-two constant channels.  The numpy reconstruction of
+   this recipe reproduces ~16% of one channel bit-exactly (>>random 0.3%) - operand details
+   (which subpixel feeds the tm vs the raw term, packed-half selection, the s39 lower
+   clamp) still need decoding per channel.  There are 24 `v_cvt_pk_fp8` sites (+masked
+   constant channels) to enumerate; `tools/re/slice.py <site>` gives each recipe.
+4. **v_log_f32 is essentially exact** (measured on the GPU via inline-asm sweep,
+   `build/work/logprobe/`: max relative error 5.8e-8 vs f64 log2) - the hardware log is NOT
+   a source of error; the attempt-4 "log error" recovery was noise.  The tm constants are
+   confirmed: `1+100*x` fma, min clamp **0x38d1b717** (not 1e-4 exactly), x log10(2)
+   (0x3e9a209b), x 0.36 (0x3eb851ec), with NaN->0 and >=1024 guards.
+- **Status**: APPROX; the placeholder still ships.  Next: enumerate the 24 convert-site
+  recipes with slice.py (subpixel of the raw term, packed halves, s39), implement the
+  exact per-channel recipes in `sr_enc0.comp` reading the raw f16 colors + computing tm
+  with the confirmed constants, then extend to frame 1 (history features - `start.*` copies
+  give the exact prev_mvec0/hidden0/dhist inputs; plain-linear history was refuted in
+  attempt 4).
