@@ -663,3 +663,69 @@ the residual finally falls toward 0.157, the read is complete and the corrected 
 the pipeline confirmed with `pipeline_report.py`.  If Exp A still sits near 0.69 with all 64
 signs in hand, the per-row sign was never the problem and the attention weights themselves -
 attempt 8's control result - must be re-opened instead.
+
+### Attempt 11 (2026-10-26): the error is in how input CHANNELS COMBINE, not in any one byte
+
+Pursued attempt 10's next step (per-row signs) with a cheaper design: instead of 64
+single-row probes, activate **8 rows at a time** with `probe_craft --gain1-select` while
+leaving the V bytes REAL.  8 unknowns against 135*64 = 8640 equations is well conditioned,
+so each probe should hand back the oracle's own `V[k, c]` *with sign* for 8 rows at once -
+which would settle both the layout and the missing sign map in 8 oracle runs instead of 64.
+
+All eight probes verified before use: `gain1` hits exactly the intended rows, the V region is
+**byte-identical to `real_attn`** (only bytes 0..127 differ), attention alive (logits
+-12.4..31.4, pe_max 256).
+
+#### Result - the 8-row solve does not fit at all, and that is the finding
+
+| group | rows | fit h0 | fit h1 |
+|---|---|---:|---:|
+| `g8_0` | 0-7 | 0.5735 | 0.7322 |
+| `g8_1` | 8-15 | 0.4864 | 0.7044 |
+| `g8_2` | 16-23 | 0.4813 | 0.6908 |
+| `g8_3` | 24-31 | 0.5525 | 0.6521 |
+| `g8_4` | 32-39 | 0.5655 | 0.5825 |
+| `g8_5` | 40-47 | 0.5605 | 0.7934 |
+| `g8_6` | 48-55 | 0.5289 | 0.6753 |
+| `g8_7` | 56-63 | 0.5077 | 0.7253 |
+
+Residuals 0.48..0.79 against a noise floor of 0.157 - with only 8 unknowns and 8640
+equations.  Consequently every candidate read scored |corr| <= 0.11 against the recovered
+`sol` and was "ruled out"; those correlations are garbage because the solve it compares
+against never fit.  (Recorded so the negative is not mistaken for evidence about layout.)
+
+Supporting: the model's end-to-end corr for these 8-row probes is 0.5686..0.5856, i.e. *at
+the attention-free ceiling* - with 8 channels live the port's attention agrees with the
+oracle no better than having no attention at all.
+
+#### The pattern this completes
+
+| active input channels | agreement with the oracle |
+|---|---|
+| **1** (11 rows tested) | per-channel shape **0.9938..1.0000**; end-to-end 0.784..0.996 |
+| **8** | end-to-end 0.569..0.586 (= attention-free ceiling); 8-unknown fit only 0.48..0.79 |
+| **64** (real weights) | corr(ctx) **0.2019**; attention net-negative (best 0.5299 < 0.5739) |
+
+Agreement degrades monotonically as more input channels are switched on, while the
+*per-channel* placement of every byte is confirmed at ~1.000 for one channel.  So the defect
+is **not** where any individual byte sits - it is in the **combination across input
+channels**.  The prime suspects are the Q/K cross-terms: with one channel `k0` live the
+logits collapse to `C * s_t[k0] * s_j[k0]` (a single self-product, insensitive to how rows are
+paired), whereas with several live the logit becomes `sum_kk' s_t[k] s_j[k'] (...)`, which is
+exactly the term that breaks if the port's and the oracle's Q/K row pairing (load permutation
+or Q/K region walk) disagree.  V's own per-row byte placement being right is consistent with
+that, since a single active row exercises no cross-term.
+
+Note also that attempt 8's "weights are right" control (83.9% vs 49.8% shuffled) was an
+*aggregate* fit with a free `Wv`; it never tested multi-channel interaction, so it does not
+contradict this - it is simply weaker evidence than it looked.
+
+**Next step:** attack the cross-terms directly rather than V.  Two probes with the same
+single-row `gain1` isolation cannot see it, so instead compare logits: craft two probes whose
+QK bytes differ only in the pairing (e.g. `--gain1-select k` for two *different* k with an
+otherwise identical QK) and see whether the oracle's attention response changes where the
+port's model says it should not; or bypass and read `Q`/`K` back the way V was read - with
+`--v-code`-style encodings applied to the QK regions (128..4224, 6784..10880) and the same
+8-row isolation, decoding the Q/K byte->(row,col) map.  Whichever confirms the pairing error,
+the fix belongs in `shaders/sr/sr_stage.comp`'s Q/K read, after which `launch_report.py` and
+`pipeline_report.py` (provenance trio attached) re-measure the milestone numbers.
