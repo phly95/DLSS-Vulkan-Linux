@@ -55,6 +55,20 @@ and reproduction commands are in `docs/notes/k_sr_stage.md`, "Review R1". No sha
 - **Landing caveat:** the per-launch t1 number is not monotone while parts are wrong (the decoded MLP
   with today's attention scores 11.07). Land these changes together, or judge each by its sub-block.
 
+**Landed since (2026-10-26):**
+- `shaders/sr/sr_stage.comp` and `sr_tube_split.comp` implement `tools/sr/sr_stage_model.py`. They
+  are 99.73-100% bit-exact against the model on all ten stage launches, with per-launch PSNR equal
+  to the model's (`docs/notes/k_sr_stage.md`, "Review R2").
+- SR M replay 31.09 / 32.62 dB, SR L 32.13 / 33.00 (from 29.30 / 31.36 and 27.14 / 30.33).
+- The RR chain runs the oracle's 24-launch structure (row 5).
+- Delegated tasks follow `docs/agents/BRIEF-RULES.md`.
+
+**RADV pitfall (measured 2026-10-26): `float(float16_t(x))` does not round.** RADV folds the f16
+round trip away (8059 of 8064 test values came back unrounded), and `packHalf2x16` disagrees with
+RNE on about half the values. Only a 16-bit memory store and load rounds. Every place a shader relies
+on an f16 cast for rounding must use an explicit integer RNE, `rh()` in `sr_stage.comp`. The other
+port shaders have not been audited for this.
+
 Review recommendations, pending the operator: score every mode-0 stage on t1 **and** t2 plus three
 sub-blocks (attention vs `--isolate`, MLP given the oracle's input, projection given the oracle's t1);
 generate hypotheses from `sr_pack.py`, the decompile and the ISA, and use the srref probes to

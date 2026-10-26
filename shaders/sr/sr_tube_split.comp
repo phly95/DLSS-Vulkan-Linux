@@ -4,6 +4,11 @@
 #extension GL_EXT_shader_8bit_storage : enable
 #extension GL_EXT_shader_16bit_storage : enable
 
+// k_sr_tube_split (NeuralHub SR tube launches 5..10, C = 128, g = 4, mode 1). The arithmetic is the
+// spec in tools/sr/sr_stage_model.py (run_stage and its helpers), as in sr_stage.comp; one 4x4
+// window per workgroup. Thread (tok, head) owns one token and one head's 32 channels.
+// Notes: docs/notes/k_sr_stage.md (Review R1, R2); byte map docs/sr/STAGE-LAYOUT.md.
+
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) readonly buffer InWeights { uint8_t wbuf[]; };
@@ -19,18 +24,13 @@ layout(push_constant) uniform StageArgs {
     int shiftY;
 };
 
-const uint P[32] = uint[32](
-    0, 1, 16, 17, 2, 3, 18, 19, 4, 5, 20, 21, 6, 7, 22, 23,
-    8, 9, 24, 25, 10, 11, 26, 27, 12, 13, 28, 29, 14, 15, 30, 31
-);
-
-shared float16_t s_act[16][128];
-shared float16_t s_norm[16][128];
-shared float16_t s_Q[4][16][32];
-shared float16_t s_K[4][16][32];
-shared float16_t s_V[4][16][32];
-shared float16_t s_mlp[16][128];
-shared float16_t s_h1[16][32];
+shared float16_t s_act[16][128];    // residual stream
+shared float16_t s_norm[16][128];   // RMSNorm output (q8)
+shared float16_t s_K8[4][16][32];   // q8(K) per head, key-token
+shared float16_t s_V[4][16][32];    // V = f16(K) per head, key-token
+shared float16_t s_ctx[4][16][32];  // q8(attention context) per head
+shared float16_t s_mlp[16][128];    // MLP sum (f16 values)
+shared float16_t s_h1[16][32];      // q8(GELU) hidden, one block
 
 const float16_t e4m3_lut[256] = float16_t[256](
     float16_t(0), float16_t(0.001953125), float16_t(0.00390625), float16_t(0.005859375), float16_t(0.0078125), float16_t(0.009765625), float16_t(0.01171875), float16_t(0.013671875),
@@ -71,6 +71,7 @@ float e4m3_to_f32(uint b) {
     return float(e4m3_lut[b & 255u]);
 }
 
+// f32 -> E4M3, RNE, saturating at 448 (the model's to_e4m3).
 uint f32_to_e4m3_rne(float x) {
     if (isnan(x)) return 0x7fu;
     uint sign = (x < 0.0) ? 0x80u : 0u;
@@ -84,16 +85,41 @@ uint f32_to_e4m3_rne(float x) {
     return sign | (norm & 0x7fu);
 }
 
-float nr_swin_exp(float x) {
-    float y = clamp(fma(x, 0.044921875, 1.30078125), 1.03125, 1.5693359375);
-    uint h = packHalf2x16(vec2(y, 0.0)) & 0xffffu;
-    return unpackHalf2x16((h & 0x03ffu) << 5u).x;
+// q8(x): round to E4M3 and back.
+float q8(float x) {
+    return e4m3_to_f32(f32_to_e4m3_rne(x));
 }
 
-float nr_swin_act(float x) {
-    float t = clamp(x, -4.0, 4.0);
-    float u = fma(-0.055908203125, abs(t), 0.447265625);
-    return x * fma(t, u, 0.89453125);
+// f16(x) as f32, round to nearest even: the model's f16(). Done by integer bit operations because
+// float(float16_t(x)) is folded away by the driver (a register round trip does not round) and
+// packHalf2x16 truncates. A 16-bit LDS store/load does round (RNE); this is verified bit-exact against
+// numpy float16 on ties, normal and subnormal values.
+float rh(float x) {
+    uint b = floatBitsToUint(x);
+    uint sgn = b & 0x80000000u;
+    float a = abs(x);
+    if (a >= 6.103515625e-05) {                       // normal f16 (>= 2^-14): 11 significant bits
+        uint ab = b & 0x7fffffffu;
+        uint r = (ab + 0xfffu + ((ab >> 13u) & 1u)) & 0xffffe000u;
+        return uintBitsToFloat(sgn | r);
+    }
+    float q = roundEven(a * 16777216.0) * 5.9604644775390625e-08;   // subnormal f16: multiples of 2^-24
+    return (x < 0.0) ? -q : q;
+}
+
+// The P permutation of 32-channel groups: stored index i holds logical channel P[i].
+uint perm_P(uint i) {
+    return ((i >> 2u) << 1u) | (i & 1u) | (((i >> 1u) & 1u) << 4u);
+}
+
+// invP: logical channel (mod 32) -> stored index.
+uint perm_invP(uint c) {
+    return (((c >> 1u) & 7u) << 2u) | (c & 1u) | (((c >> 4u) & 1u) << 1u);
+}
+
+// Element index of logical channel c in a P-permuted f16 vector (the blob's layout).
+uint vidx(uint c) {
+    return (c & ~31u) | perm_invP(c);
 }
 
 uint frag_off(uint r, uint c, uint cols) {
@@ -105,10 +131,10 @@ uint frag_off(uint r, uint c, uint cols) {
     return (low | high) + ((u1 & 0xFu) + (u5 & 8u) * 2u) * 8u;
 }
 
-float16_t read_f16(uint byte_off) {
+float read_f16(uint byte_off) {
     uint b0 = uint(wbuf[byte_off]);
     uint b1 = uint(wbuf[byte_off + 1u]);
-    return float16_t(unpackHalf2x16(b0 | (b1 << 8u)).x);
+    return unpackHalf2x16(b0 | (b1 << 8u)).x;
 }
 
 int reflect_coord(int p, int dim) {
@@ -117,10 +143,43 @@ int reflect_coord(int p, int dim) {
     return clamp(p, 0, dim - 1);
 }
 
+// The model's nr_swin_exp: every rounding is an explicit f16 step, then the bit-built exp.
+float nr_swin_exp(float x) {
+    float hx = rh(x);
+    float y = clamp(rh(hx * 0.017181396484375), -0.55615234375, 0.55615234375);
+    float base = rh(-y * y + 0.92724609375);
+    float p = rh(y * base + 1.375);
+    uint h = packHalf2x16(vec2(p, 0.0)) & 0xffffu;
+    uint exp_bits = ((h << 5u) + 0x8000u) & 0xffffu;
+    return unpackHalf2x16(exp_bits).x;
+}
+
+// GELU, tanh form (the model's act_fn 'gelu').
+float gelu_tanh(float z) {
+    return 0.5 * z * (1.0 + tanh(0.7978845608 * (z + 0.044715 * (z * z * z))));
+}
+
+// RMSNorm of token row t over all 128 channels, but only this thread's head group `h` is written:
+// s = q8(f16(f16(x * rs) * gain)), rs = 1 / sqrt(sum x^2 + 2^-14). Every thread reads the full row.
+void rmsnorm_part(uint t, uint h, uint gain_base) {
+    float ss = 0.0;
+    for (uint c = 0u; c < 128u; ++c) {
+        float x = float(s_act[t][c]);
+        ss += x * x;
+    }
+    float rs = 1.0 / sqrt(ss + 6.103515625e-05);
+    for (uint c = 0u; c < 32u; ++c) {
+        uint cc = h * 32u + c;
+        float xr = rh(float(s_act[t][cc]) * rs);
+        float g = read_f16(gain_base + 2u * vidx(cc));
+        s_norm[t][cc] = float16_t(q8(rh(xr * g)));
+    }
+}
+
 void main() {
-    uint tid = gl_LocalInvocationID.x;
-    uint tok = tid % 16u;
-    uint head = tid / 16u;
+    uint tid = gl_LocalInvocationID.x;  // 0..63
+    uint tok = tid % 16u;               // token within the 4x4 window
+    uint head = tid / 16u;              // 0..3: attention head and channel group
 
     int gx = int(gl_WorkGroupID.x);
     int gy = int(gl_WorkGroupID.y);
@@ -132,155 +191,136 @@ void main() {
     int px = reflect_coord(x0 + dx, dimW);
     int py = reflect_coord(y0 + dy, dimH);
 
-    // 1. Load input activation into s_act
-    uint in_base = (head * uint(dimH * dimW) + uint(py * dimW + px)) * 32u;
-    for (uint i = 0; i < 32u; ++i) {
-        float val = e4m3_to_f32(uint(in_act[in_base + i]));
-        s_act[tok][head * 32u + P[i]] = float16_t(val);
-    }
-    barrier();
-
+    uint HW = uint(dimH * dimW);
+    uint pos = uint(py * dimW + px);
     uint w_off = wbuf_lo & 0x1fffffu;
 
-    // 2. RMSNorm 1
-    float sum_sq1 = 0.0;
-    for (uint c = 0; c < 128u; ++c) {
-        float v = float(s_act[tok][c]);
-        sum_sq1 += v * v;
-    }
-    float rs1 = inversesqrt(sum_sq1 + 6.103515625e-05);
-    for (uint c = 0; c < 32u; ++c) {
-        uint my_c = head * 32u + c;
-        float16_t gain1 = read_f16(w_off + my_c * 2u);
-        s_norm[tok][my_c] = s_act[tok][my_c] * float16_t(rs1) * gain1;
+    // 1. This thread's 32 channels of its token (input group = head).
+    for (uint i = 0u; i < 32u; ++i) {
+        s_act[tok][head * 32u + perm_P(i)] = float16_t(e4m3_to_f32(uint(in_act[(head * HW + pos) * 32u + i])));
     }
     barrier();
 
-    // 3. Compute Q, K, V for this head
-    uint head_w_base = w_off + 256u + head * 12800u;
-    uint qk_base = head_w_base;
-    uint bias_base = head_w_base + 8192u;
-    uint v_base = head_w_base + 8704u;
+    // 2. RMSNorm 1 (gain1)
+    rmsnorm_part(tok, head, w_off);
+    barrier();
 
-    for (uint c = 0; c < 32u; ++c) {
-        float sum_q = 0.0;
-        float sum_k = 0.0;
-        for (uint k = 0; k < 128u; k += 32u) {
-            float vnorm = float(s_norm[tok][k]);
-            uint off_q = qk_base + frag_off(c, k, 128u);
-            uint off_k = qk_base + 4096u + frag_off(c, k, 128u);
-            sum_q += vnorm * float(e4m3_lut[uint(wbuf[off_q])]);
-            sum_k += vnorm * float(e4m3_lut[uint(wbuf[off_k])]);
+    // 3. Q, K, V of head `head` for this token. Head h: Wq (32 x 128), Wk (32 x 128), rel (16 x 16), Wo (128 x 32).
+    uint hb = w_off + 256u + head * 12800u;
+    float Q[32];
+    for (uint r = 0u; r < 32u; ++r) {
+        float sq = 0.0;
+        float sk = 0.0;
+        for (uint c = 0u; c < 128u; ++c) {
+            float sv = float(s_norm[tok][c]);
+            sq += sv * float(e4m3_lut[uint(wbuf[hb + frag_off(r, c, 128u)])]);
+            sk += sv * float(e4m3_lut[uint(wbuf[hb + 4096u + frag_off(r, c, 128u)])]);
         }
-        s_Q[head][tok][c] = float16_t(sum_q * 32.0);
-        s_K[head][tok][c] = float16_t(sum_k * 32.0);
-
-        float sum_v = 0.0;
-        for (uint k = 0; k < 128u; k += 32u) {
-            uint off_v = v_base + frag_off(k, c, 32u);
-            sum_v += float(s_norm[tok][k]) * float(e4m3_lut[uint(wbuf[off_v])]);
-        }
-        s_V[head][tok][c] = float16_t(sum_v * 32.0);
+        Q[r] = q8(sq);
+        float kf = rh(sk);
+        s_V[head][tok][r] = float16_t(kf);
+        s_K8[head][tok][r] = float16_t(q8(kf));
     }
     barrier();
 
-    // 4. Attention Logits & Softmax & Context Projection
-    float sum_exp = 0.0;
-    for (uint j = 0; j < 16u; ++j) {
-        float dot_qk = 0.0;
-        for (uint c = 0; c < 32u; ++c) {
-            dot_qk += float(s_Q[head][tok][c]) * float(s_K[head][j][c]);
-        }
-        float bias = float(read_f16(bias_base + (tok * 16u + j) * 2u));
-        sum_exp += nr_swin_exp(dot_qk + bias);
+    // 4. Attention of this query token over the window's 16 keys, then the context (q8).
+    float pe[16];
+    for (uint j = 0u; j < 16u; ++j) {
+        float dot = 0.0;
+        for (uint r = 0u; r < 32u; ++r) dot += Q[r] * float(s_K8[head][j][r]);
+        float rel = read_f16(hb + 8192u + 2u * (tok * 16u + j));
+        pe[j] = nr_swin_exp(dot + rel);
     }
-    float inv_sum = 1.0 / max(sum_exp, 1e-4);
+    float s8[8];
+    float s4[4];
+    float s2[2];
+    for (uint i = 0u; i < 8u; ++i) s8[i] = rh(pe[2u * i] + pe[2u * i + 1u]);
+    for (uint i = 0u; i < 4u; ++i) s4[i] = rh(s8[2u * i] + s8[2u * i + 1u]);
+    for (uint i = 0u; i < 2u; ++i) s2[i] = rh(s4[2u * i] + s4[2u * i + 1u]);
+    float tot = rh(s2[0] + s2[1]);
+    float inv = 1.0 / max(tot, 1e-4);
+    float prob[16];
+    for (uint j = 0u; j < 16u; ++j) prob[j] = pe[j] * inv;
+    for (uint r = 0u; r < 32u; ++r) {
+        float a = 0.0;
+        for (uint j = 0u; j < 16u; ++j) a += prob[j] * float(s_V[head][j][r]);
+        s_ctx[head][tok][r] = float16_t(q8(a));
+    }
+    barrier();
 
-    uint v270_base = w_off + 256u + 4u * 12800u;
-    for (uint c = 0; c < 32u; ++c) {
-        float sum_ctx = 0.0;
-        for (uint j = 0; j < 16u; ++j) {
-            float dot_qk = 0.0;
-            for (uint k = 0; k < 32u; ++k) {
-                dot_qk += float(s_Q[head][tok][k]) * float(s_K[head][j][k]);
+    // 5. Output projection over all 4 heads for this thread's 32 channels, summed head by head in f32;
+    // then s = f16(s + attn), s = f16(s + f16(v270)).
+    uint v270 = w_off + 256u + 4u * 12800u;
+    for (uint c = 0u; c < 32u; ++c) {
+        uint cc = head * 32u + c;
+        float attn = 0.0;
+        for (uint hh = 0u; hh < 4u; ++hh) {
+            uint wo = w_off + 256u + hh * 12800u + 8704u;
+            float dot = 0.0;
+            for (uint r = 0u; r < 32u; ++r) {
+                dot += float(s_ctx[hh][tok][r]) * float(e4m3_lut[uint(wbuf[wo + frag_off(cc, r, 32u)])]);
             }
-            float bias = float(read_f16(bias_base + (tok * 16u + j) * 2u));
-            float prob = nr_swin_exp(dot_qk + bias) * inv_sum;
-            float prob_q = e4m3_to_f32(f32_to_e4m3_rne(prob));
-            sum_ctx += prob_q * float(s_V[head][j][c]);
+            attn += dot;
         }
-        float16_t b_out = read_f16(v270_base + (head * 32u + c) * 2u);
-        // Residual 1: add to original input activation
-        s_act[tok][head * 32u + c] += float16_t(sum_ctx) + b_out;
-        s_mlp[tok][head * 32u + c] = float16_t(0.0);
+        s_act[tok][cc] = float16_t(float(s_act[tok][cc]) + attn);
+    }
+    for (uint c = 0u; c < 32u; ++c) {
+        uint cc = head * 32u + c;
+        s_act[tok][cc] = float16_t(float(s_act[tok][cc]) + read_f16(v270 + 2u * vidx(cc)));
     }
     barrier();
 
-    // 5. RMSNorm 2
-    uint s198_base = v270_base + 256u;
-    float sum_sq2 = 0.0;
-    for (uint c = 0; c < 128u; ++c) {
-        float v = float(s_act[tok][c]);
-        sum_sq2 += v * v;
-    }
-    float rs2 = inversesqrt(sum_sq2 + 6.103515625e-05);
-    for (uint c = 0; c < 32u; ++c) {
-        uint my_c = head * 32u + c;
-        float16_t gain2 = read_f16(s198_base + my_c * 2u);
-        s_norm[tok][my_c] = s_act[tok][my_c] * float16_t(rs2) * gain2;
-    }
+    // 6. RMSNorm 2 (gain2)
+    uint gain2 = v270 + 256u;
+    rmsnorm_part(tok, head, gain2);
     barrier();
 
-    // 6. MLP (16 blocks of FC1 -> SiLU -> FC2)
-    uint ffn_base = s198_base + 256u;
-    uint fc2_bias_base = ffn_base + 4096u + 64u + 4096u;
-    uint cur_block = ffn_base;
+    // 7. MLP: 16 blocks of fc1 (32 x 128) + b1, GELU, fc2 (128 x 32). This thread: hidden 8*head..+8,
+    // output channels 32*head..+32.
+    uint ffn = gain2 + 256u;
+    uint fc2_bias = ffn + 4096u + 64u + 4096u;
+    for (uint c = 0u; c < 32u; ++c) s_mlp[tok][head * 32u + c] = float16_t(0.0);
+    uint cur = ffn;
+    for (uint b = 0u; b < 16u; ++b) {
+        uint fc1 = cur;
+        cur += 4096u;
+        uint b1 = cur;
+        cur += 64u;
+        uint fc2 = cur;
+        cur += 4096u;
+        if (b == 0u) cur += 256u;           // fc2_bias sits once, after block 0
 
-    for (uint b = 0; b < 16u; ++b) {
-        uint fc1_off = cur_block;
-        cur_block += 4096u;
-        uint b1_off = cur_block;
-        cur_block += 64u;
-        uint fc2_off = cur_block;
-        cur_block += 4096u;
-        if (b == 0u) cur_block += 256u;
-
-        // All 4 heads compute FC1 activations in parallel (8 channels each)
-        for (uint m_sub = 0; m_sub < 8u; ++m_sub) {
-            uint m = head * 8u + m_sub;
-            float sum_fc1 = 0.0;
-            for (uint k = 0; k < 128u; k += 32u) {
-                uint w_idx = fc1_off + frag_off(m, k, 128u);
-                sum_fc1 += float(s_norm[tok][k]) * float(e4m3_lut[uint(wbuf[w_idx])]);
+        for (uint ms = 0u; ms < 8u; ++ms) {
+            uint m = head * 8u + ms;
+            float z = 0.0;
+            for (uint c = 0u; c < 128u; ++c) {
+                z += float(s_norm[tok][c]) * float(e4m3_lut[uint(wbuf[fc1 + frag_off(m, c, 128u)])]);
             }
-            float b1 = float(read_f16(b1_off + m * 2u));
-            s_h1[tok][m] = float16_t(nr_swin_act(sum_fc1 * 32.0 + b1));
+            z += read_f16(b1 + 2u * vidx(m));
+            s_h1[tok][m] = float16_t(q8(gelu_tanh(z)));
         }
         barrier();
-
-        // All heads accumulate FC2 for their 32 channels
-        for (uint c = 0; c < 32u; ++c) {
-            uint my_c = head * 32u + c;
-            float sum_fc2 = 0.0;
-            for (uint m = 0; m < 32u; m += 8u) {
-                uint w_idx = fc2_off + frag_off(my_c, m, 32u);
-                sum_fc2 += float(s_h1[tok][m]) * float(e4m3_lut[uint(wbuf[w_idx])]);
+        for (uint c = 0u; c < 32u; ++c) {
+            uint cc = head * 32u + c;
+            float sum = 0.0;
+            for (uint m = 0u; m < 32u; ++m) {
+                sum += float(s_h1[tok][m]) * float(e4m3_lut[uint(wbuf[fc2 + frag_off(cc, m, 32u)])]);
             }
-            s_mlp[tok][my_c] += float16_t(sum_fc2) * float16_t(128.0);
+            s_mlp[tok][cc] = float16_t(rh(float(s_mlp[tok][cc]) + rh(sum)));
         }
         barrier();
     }
 
-    // Add FC2 bias, final residual add to s_act, clamp to [-448, 448], write to OutAct
+    // 8. out = clamp(s + mlp + fc2_bias, -448, 448) as E4M3 RNE, this thread's 32 channels.
     int real_x = x0 + dx;
     int real_y = y0 + dy;
     if (real_x >= 0 && real_x < dimW && real_y >= 0 && real_y < dimH) {
-        uint out_base = (head * uint(dimH * dimW) + uint(real_y * dimW + real_x)) * 32u;
-        for (uint i = 0; i < 32u; ++i) {
-            uint my_c = head * 32u + P[i];
-            float b2 = float(read_f16(fc2_bias_base + my_c * 2u));
-            float v = clamp(float(s_act[tok][my_c]) + float(s_mlp[tok][my_c]) + b2, -448.0, 448.0);
-            out_act[out_base + i] = uint8_t(f32_to_e4m3_rne(v));
+        uint opos = uint(real_y * dimW + real_x);
+        for (uint c = 0u; c < 32u; ++c) {
+            uint cc = head * 32u + c;
+            float b2 = read_f16(fc2_bias + 2u * vidx(cc));
+            float v = clamp(float(s_act[tok][cc]) + float(s_mlp[tok][cc]) + b2, -448.0, 448.0);
+            out_act[(head * HW + opos) * 32u + perm_invP(c)] = uint8_t(f32_to_e4m3_rne(v));
         }
     }
 }
