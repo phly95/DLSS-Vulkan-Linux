@@ -37,3 +37,17 @@
   - CLOSE (<= 4 ULP or <= 1e-3 rel): 563983 / 589824 (95.62%)
   - PSNR vs oracle: 75.37 dB (MSE 2.9057e-08)
 - **Pipestats**: 108 SGPRs, 96 VGPRs, 0 spilled SGPRs, 0 spilled VGPRs, 0 scratch size.
+
+### Attempt 5
+- **Hypothesis**: The large-error subset (~33,731 elements with >4 ULP, ~5.7% of total) comes from the FP16 filter accumulation order. ISA analysis shows `v_fmac_f16` chained accumulation where the HIP compiler chose a specific FMA ordering for the 5-tap row/column sums. The ~0.1-1% relative error in these pixels scales with magnitude, consistent with a small FP16 filter rounding difference being amplified by `exp2()` in inv_tonemap. The 1-ULP subset (73.9% of mismatches) is from the inv_tonemap's own FP32 rounding.
+  Analysis of mismatch distribution:
+  - Total mismatches: 147,182 / 589,824 (24.95%)
+  - <= 1 ULP: 108,789 (73.91% of mismatches)
+  - <= 4 ULP: 113,451 (77.08%)
+  - > 4 ULP: 33,731 (22.92%) — these have rel_err 0.001-0.01
+  - Alpha (channel 3): 0 mismatches
+  - No pixel-position parity pattern (odd_x: 16,236, even_x: 17,495)
+  ISA confirms the same `v_exp_f32` + Dekker residual pattern we use. The filter itself (fp16 fmac chain) is the root cause for the large errors — try matching the ISA's exact FMA chain order.
+- **Result**: Analysis only (no shader change). Current numbers unchanged: 75.05% bit-exact, 95.62% CLOSE.
+- **Next hypothesis**: Match the ISA's exact fp16 FMA chain order in the 5-tap filter: `v_fma_f16 v, s0, w0, 0; v_fmac_f16 v, s1, w1; v_fmac_f16 v, s2, w2; v_fmac_f16 v, s3, w3; v_fmac_f16 v, s4, w4` — the key difference is starting from 0 and accumulating rather than `s0*w0 + s1*w1 + ...` which the compiler may reorder.
+- **Status**: APPROX; move to other kernels for breadth, revisit later.
