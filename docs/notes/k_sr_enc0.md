@@ -133,3 +133,48 @@ write LOOP, then dies on loop-exit semantics.  Findings that change the decode:
   (d) decode the executed-path recipes (0x13BC+): the div/sqrt terms first;
   (e) then implement in sr_enc0.comp (weights from enc0_w, tm constants confirmed in
       attempt 5: 1+100x fma, min-clamp 0x38d1b717, xlog10(2), x0.36; v_log_f32 ~ exact).
+
+### Attempt 7 (2026-10-27): emulator reaches correct t0 store addresses; executed-path recipe families decoded; value path still zero (div-chain semantics + LDS staging)
+Continued the attempt-6 emulator (`build/work/enc0emu.py`) to near-fidelity.  Fixes landed
+(all in the git-ignored tool): address-driven execution (printed hex addresses, signed-16
+branch byte offsets - the loop is `s_cbranch_scc0 65317` = -219 at 0xFB20); per-lane exec
+save/restore masks (`s_and_saveexec`/`s_mov`/`s_or exec_lo` chains); `v_maxmin` two-dest;
+dual-issue right-half mnemonics; `s_add_nc_u64` actually adding; scalar-vs-vector operand
+resolution (`VO/FO` for s-regs, ttmps and flags - **three separate register-namespace bugs**
+where s-reg/ttmp reads fell into the V-dict and returned zero: `self.v[0]` vs `self.v['v0']`
+(lane id!), ttmp9/ttmp7 (workgroup ids), and scalar operands of v_add_co address math);
+fp8 WMMA (parameterized lane layout); the div/rcp/sqrt/fma_mix/pk family; LDS load/store.
+- **Verified milestone**: for wgid(0,0) the b64 t0 stores land at exactly
+  `t0_base + 0 / +16 / +0x50000` - the correct cell/group addresses - and 3/1024 stored
+  bytes match the oracle.  The remaining defects are numeric, not structural:
+  (a) the LDS-staged feature data is zero: the executed path's feature chains include the
+      IEEE div sequence (`v_div_scale/v_div_fmas/v_div_fixup` - my fixup is a num/den stub;
+      the scale handshake with the scalar register is not modeled) and `v_exp_f32`
+      (e^x vs 2^x semantics unverified);
+  (b) the `ds_store ... offset:16` immediate is ignored (both b128 stores land at v7);
+  (c) the loop exits after ~4 iterations (the 0xFB20 scc provenance - likely exec-mask
+      completion - not yet pinned); (d) the WMMA D-lane layout is parameterized
+      (WMMA_LAYOUT=0/1/3), unvalidated.
+- **Executed-path recipe families (from the 0x13BC+ disassembly)** - these supersede the
+  dead-region reading only in detail, the CONSTRUCTION is shared:
+  1. tm = 0.36 * log10(2) * v_log_f32(max(1+100*c*e, 1e-4)) with NaN/>=1024 guards (as
+     attempt 5; v_log_f32 measured ~exact);
+  2. an inverse-tonemap family: `exp(s53 * x) - 1`, then fma with -100.0 (0xc2c80000) and
+     -0.36 (0xbeb851ec) - i.e. c = (exp(k*x)-1) * 36 chains, per channel;
+  3. a depth-bit-unpack family: `bfe(dep_bits, 20, 10) -> f32 * (1/65536) -> clamp[1e-4,3]`
+     with a 3.0 (0x40400000) cndmask case for large exponents - a normalized depth feature;
+  4. the store: f16 add/sub chain -> `& 0xffffff80` (truncate to E4M3, round-toward-zero)
+     -> f32 -> med3(+-448, s39=-448) -> v_cvt_pk_fp8 -> global_store_b64 (8 channels/lane);
+     the staging to LDS then the fp8 WMMA against the wbuf weight tiles (A=weights from
+     wbuf+4096+lane*32, B=LDS-staged color features) produces the t0 values.
+- The numpy linear model stays at 50.26% fp8-exact / half-ulp residual: adding the decoded
+  depth-bit features changes nothing, and rounding-mode variants are ruled out (trunc=0%,
+  RNE=50% with half-ulp residual = the pre-quant value differs by ~0.4 ulp - a value error,
+  not a quantizer error).  The unexplained half of the values most likely comes from the
+  inverse-tonemap feature family (item 2) whose per-channel weights the linear fit smears.
+- **Status**: APPROX.  Exact next steps: (a) model the div_scale/fmas handshake (the scalar
+  scale register) and settle v_exp semantics; (b) honor the ds_store immediate offset;
+  (c) pin the loop-exit scc and iterate to all 8 chunks; (d) validate the WMMA layout by
+  matching the staged LDS B-tile against the oracle t0 back-solved through one workgroup;
+  (e) once the emulator reproduces t0 bit-exactly for wgid(0,0), extract the per-channel
+  recipes as a table and implement `sr_enc0.comp` from it (weights from `enc0_w`).
