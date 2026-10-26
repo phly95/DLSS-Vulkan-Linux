@@ -85,3 +85,45 @@ Workgroup structure:
   *synthetic* packed weights via `tools/sr/srref` + `--dump` (srref takes any packed dir; the
   oracle may be used for measurement, never committed), which identifies each sub-block's exact
   math without reading 3.3k instructions of schedule.
+
+### Attempt 5 (2026-10-26): synthetic-weight oracle probes - the interactive oracle works
+srref runs NeuralHub's own kernel on **any** packed weight dir, so `tools/sr/srref` under podman
+(`docker.io/rocm/dev-ubuntu-24.04:7.2.4`, see `tools/gpu/collect_oracle.sh`) plus a patched
+`stage0.bin` turns the reference into an interactive function.  Smoke test: real weights,
+1-frame frames dir -> dump `003.t1.bin` is **byte-identical** to the original oracle dump, so the
+probe reproduces the original conditions exactly.  All probes below: frame 0 launch 3, output t1;
+"identity" = t1 == t0 to 99.95% (the 0.05% are -0.0 -> +0.0 IEEE fixes, benign).
+
+Probe results (stage0.bin regions per the port's `cur_w` walk; ones = fp8 0x38 = 1.0):
+
+| probe | stage0.bin fill | oracle t1 |
+|---|---|---|
+| P0 | all zeros | **identity** - the output equation out = input + attention + mlp + bias is CONFIRMED |
+| P2 | gains=f16 1.0, QK0+V0+bias0, head1 same, s198=1.0, MLP=0 | wild: mean 5.9, std 12.7, corr(t1,t0) 0.06 |
+| w3 | QK region 128..4224 = 1.0 (gains zero) | identity (gains zero kills s_norm - expected) |
+| w4 | bias+V region 4224..6784 = 1.0 (gains zero) | identity (same) |
+| w5 | MLP block0 13696..17856 = 1.0 (gains zero) | mean +12.0, corr 0.89 - MLP region semantics MATCH the port's walk (b1 read as f16 pairs = 0.777 explains the offset) |
+| r1/r2/r5 | head1 QK, head1 bias+V, tail 47104..71872 = 1.0 | identity |
+| r3 | v270+s198 13440..13696 = 1.0 | constant +0.52 shift - **v270 region CONFIRMED** |
+| sA | gains 1.0 + QK0 = 1.0 | identity |
+| s4 | gains 1.0 + bias0+V0 = 1.0 | identity |
+| sAB | gains 1.0 + QK0 = 1.0 + bias0+V0 = 1.0 | wild (mean 2.9, std 6.4) |
+
+Conclusions:
+1. The attention output is exactly zero unless **both** region A (128..4224) and region B
+   (4224..6784) carry weights - A alone (Q/K with V=0) and B alone (V with Q/K=0) both give
+   exactly identity, so B is not simply "V" and the port's "bias between K and V" reading is
+   not what gates the output.
+2. Under sAB the context (t1 - t0) is **per-window constant** (one 4x4 window = one value,
+   first singular value 232 vs 2.5 for the rest) and ~16x larger than the port's
+   softmax-normalized prediction (window means 0..15, positive-biased like sum(s_norm)).
+   The port divides by sum(exp); the oracle's behaviour under constant weights looks like
+   sum or window-size normalization.  Model variants no_div / div16 on the REAL weights did
+   NOT improve (corr -0.04 / 0.11 vs 0.4551) - the normalization question must be settled in
+   probe space (model on the sAB weights), not on real weights.
+3. Next: run `build/work/stage_model.py` with STAGE_WDIR=build/work/probe/sAB (and w5, P2)
+   to fit the exact attention arithmetic in probe space, then re-test on real weights.
+
+Probe scaffolding (git-ignored): `build/work/srref` (hipcc build of tools/sr/srref/srref.cpp),
+`build/work/probe/frames1` (1-frame dir), `build/work/probe/w*|r*|s*` (crafted weight dirs),
+`build/work/stage_model.py` (NumPy replica; STAGE_WDIR/STAGE_ORC env overrides).
