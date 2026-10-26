@@ -234,6 +234,24 @@ int main(int argc, char** argv) {
         std::printf("GPU_FRAME_MS %d %.4f\n", fi, ms);
         std::fflush(stdout);
 
+        // Diagnosis: DLSS5_AMD_DUMP_BUF=name:PATH writes that chain buffer's bytes (same
+        // names as DLSS5_AMD_INJECT_DIR) after the frame's GPU work completes.  Unset: no-op.
+        if (const char* db = std::getenv("DLSS5_AMD_DUMP_BUF")) {
+            std::string spec(db);
+            size_t c = spec.find(':');
+            if (c != std::string::npos) {
+                std::vector<uint8_t> bytes;
+                if (chain->read_buffer(spec.substr(0, c), &bytes)) {
+                    std::ofstream f(spec.substr(c + 1), std::ios::binary);
+                    f.write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
+                    std::fprintf(stderr, "DUMP_BUF %s -> %s (%zu bytes)\n", spec.substr(0, c).c_str(),
+                                 spec.substr(c + 1).c_str(), bytes.size());
+                } else {
+                    std::fprintf(stderr, "DUMP_BUF: unknown buffer %s\n", spec.substr(0, c).c_str());
+                }
+            }
+        }
+
         chain->advance();
     }
 

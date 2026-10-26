@@ -506,6 +506,15 @@ bool FrameChain::inj_wanted(const char* point) const {
     return false;
 }
 
+bool FrameChain::read_buffer(const std::string& name, std::vector<uint8_t>* out) {
+    if (inj_targets.empty()) set_injection("", "");
+    auto it = inj_targets.find(name);
+    if (it == inj_targets.end() || !it->second->mapped) return false;
+    out->assign(static_cast<uint8_t*>(it->second->mapped),
+                static_cast<uint8_t*>(it->second->mapped) + it->second->size);
+    return true;
+}
+
 void FrameChain::inject_after(VkCommandBuffer cmd, const char* point, int launch) {
     if (!inj_wanted(point)) return;
     char lbuf[16];

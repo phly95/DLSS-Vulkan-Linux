@@ -111,6 +111,10 @@ public:
     // empty = every point.  With dir empty the chain records exactly what it always did.
     void set_injection(const std::string& dir, const std::string& mask);
 
+    // Diagnosis: copy a named chain buffer's contents (same names as set_injection) to *out,
+    // sized to the buffer.  Returns false when the name is unknown.
+    bool read_buffer(const std::string& name, std::vector<uint8_t>* out);
+
     // History state advances exactly as it always has: p ^= 1, fc = (fc + 1) & 7.
     void advance() { p ^= 1; fc = (fc + 1) & 7; }
     int parity() const { return p; }

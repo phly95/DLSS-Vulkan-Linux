@@ -77,3 +77,15 @@ Structural facts confirmed by the dumps while taking these numbers (frame 0, `la
 
 RR work order: (1) wire the AE exposure into the chain, (2) fix `rr_post` given oracle inputs
 (33-41 -> >= 60 dB), (3) the 16-level U-Net + the post_prep/post rewiring onto its outputs.
+
+## 2026-10-27 addendum: the table's biggest caveat
+
+The leverage table above attributes ~86% of the SR error to `sr_stage`/`sr_tube_split`, but a
+follow-up showed the attribution is about *where the oracle's buffers differ*, not about what
+moves the referee number: **the port's SR network is fully decoupled from the output image**
+(enc0 emits a bias-pattern placeholder t0; the mode-2 stages never receive their skip inputs
+t1/t3; the restored attempt-5 post ignores gates/factors/aniso).  Every row of this table that
+injects inside the network (enc0..dec0) measures a segment whose output the live image path
+never consumes - which is exactly why those injections moved the number little or oddly.
+The live segment is post -> downsample (post-inject 80.79 dB, downsample-inject 120 dB).
+See `docs/notes/sr_chain_decoupling.md` for the proofs and the corrected campaign order.

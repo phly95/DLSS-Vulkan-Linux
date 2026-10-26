@@ -127,3 +127,38 @@ Conclusions:
 Probe scaffolding (git-ignored): `build/work/srref` (hipcc build of tools/sr/srref/srref.cpp),
 `build/work/probe/frames1` (1-frame dir), `build/work/probe/w*|r*|s*` (crafted weight dirs),
 `build/work/stage_model.py` (NumPy replica; STAGE_WDIR/STAGE_ORC env overrides).
+
+### Attempt 5 (2026-10-27): softmax semantics settled in probe space; the Q5 x32 scale
+Probe campaigns (all via `srref --dump` on crafted weight dirs + the NumPy replica):
+- **Reciprocal/normalization function**: with constant-color frames and all-ones weights the
+  logits are exactly equal within every window, and the oracle's attention output is NOT the
+  softmax mean - it is large (means +20 .. -13.8 across colors 0.01..2.0) and even changes
+  sign; g = ctx/S sampled at Sigma in {2.0, 2.69, 3.13, 3.25, 5.63} = {195, 85, 65, 61, 68}.
+  Patching wbuf[0x20000..0x40000] with constant f16 changed nothing, so the ISA's
+  `flat_load_u16` table index (wbuf-base + Sigma-bits<<1 + 0x20000) is anchored elsewhere
+  (the prolog has a PC-relative `s_getpc + 0xe125c` base): the denominator's reciprocal is an
+  **embedded f16 table** whose low-Sigma entries are non-recip (wild, sign-flipping).  The
+  real-weights regime (large Sigma) is expected to be a clean 32/Sigma but is unverified.
+- **Dead attention at exactly-equal logits**: q1 (Q=1, K=0) and s4/vs0 give EXACTLY zero
+  context; the replica reproduces this at **100.0000% bit-exact** with
+  `u = exp - max(exp); prob = fp8(32 * u / sum(u))` (any max-subtraction family), and plain
+  softmax does NOT (it predicts uniform 1/16).  But every max-subtraction variant then
+  *fails* the active-regime probes (sAB corr -0.5..0.1) where plain softmax x32 fits at
+  corr 0.9983 (token-mean fit) / per-channel corr 0.998 (full replica).  The two regimes are
+  not yet reconciled by one formula - the equal-logit regime is table-driven (above).
+- **The x32 scale (Q5 probabilities)**: with active probs the oracle's context is
+  **32 x sum_j softmax_j . V_j** at every regime, including one-hot (hot20: ctx/S0 = 32.15
+  median; V-linearity probe h1 with 0.5-weights gives exactly half: 16.11).  The replica
+  variant `prob = fp8(32 * exp / sum(exp))` reproduces sAB at 20.7% bit-exact (from 0.43%)
+  and hot20 at 12.3% (from 0.24%); the residual is exactly the Q5 fp8 rounding (~7% at
+  values 2-4, E4M3 ulp 0.25) plus a spatially-coherent 6.5% wobble.  Region bisect: the
+  effective V matrix is fp8-linear and lives in the FIRST 1024 bytes of the port's bias+V
+  region (4736..5760); the second 1024 is inert unless head1 is active.
+- **Shader edit applied then reverted**: `inv_sum = 32.0 / ...` in sr_stage.comp +
+  sr_tube_split.comp is live (kernel_run launch 3: 1.1595% -> 0.4305% bit-exact on real
+  inputs - WORSE, because the dead-zone/denominator semantics are unsettled) and pipeline-
+  inert (see `docs/notes/sr_chain_decoupling.md`: the chain's t1 is a dead end).  The fix
+  lands together with the attention completion.
+- **Status**: APPROX.  Next in this kernel: settle the equal-logit/table regime (find the
+  embedded table in the .co at the PC-relative base), then land max-subtraction + Q5 + the
+  mode-2 skip wiring as one change.
