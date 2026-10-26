@@ -577,3 +577,89 @@ is stable per row, build the corrected read as `Wv[k,c] = s_k * LUT[buf[vbase + 
 k, 32)]]` with the measured `s_k`, verify real-weights corr(ctx) rises well past 0.2019, and
 only then implement it in `shaders/sr/sr_stage.comp` and re-measure per-launch with
 `launch_report.py` (provenance trio attached).
+
+### Attempt 10 (2026-10-26): the layout holds on all 11 rows, but does NOT transfer to real weights
+
+Extends attempt 9 with the full row sweep and the two tests that decide whether the decode
+is usable.  Everything below is measurement; **nothing landed in `sr_stage.comp`.**
+
+#### Result 1 - transposed layout confirmed on every row (11 rows)
+
+`--gain1-select k0 --v-code low5` isolates one input row at a time; per-channel amplitude
+shape vs the oracle:
+
+| k0 | **swap shape** | swap \|ctx\| | swap signed | **sign** | port shape |
+|---:|---:|---:|---:|:--:|---:|
+| 0 | +0.9999 | +0.9930 | -0.9930 | - | +0.4678 |
+| 1 | +0.9994 | +0.9390 | -0.9392 | - | +0.4705 |
+| 2 | +0.9998 | +0.4507 | +0.0287 | + | +0.4679 |
+| 4 | +0.9999 | +0.8615 | +0.8376 | + | +0.4677 |
+| 8 | +1.0000 | +0.7620 | +0.7504 | + | +0.4679 |
+| 16 | +1.0000 | +0.6154 | -0.2845 | - | +0.4692 |
+| 24 | +0.9938 | +0.4810 | +0.4428 | + | +0.4482 |
+| 32 | +0.9997 | +0.9797 | +0.9797 | + | +0.4614 |
+| 40 | +0.9992 | +0.7566 | -0.7566 | - | +0.4541 |
+| 48 | +0.9999 | +0.7849 | -0.7811 | - | +0.4687 |
+| 56 | +1.0000 | +0.5654 | -0.0100 | - | +0.4682 |
+
+**swap shape 0.9938..1.0000 on all 11 rows; the port's own read 0.448..0.471 on all 11.**
+The sign, however, is `-, -, +, +, +, -, +, +, -, -, -` - it is not `bit5`, not parity, not
+any half/quarter split (32 is `+` but 48 is `-`), so it is not a simple function of the row.
+
+#### Result 2 - the decode does NOT transfer: free-`w` span still fails on real weights
+
+Now that V's layout is known, Exp A (solve the 16 weights per query, no restriction on `w`)
+should collapse to the noise floor if the read were complete:
+
+| Exp A assumption | residual | vs noise floor |
+|---|---:|---:|
+| port layout | 0.7139 | 0.157 |
+| **swapped layout** | **0.6911** | 0.157 |
+
+A **per-row** sign flip is precisely what a free per-key `w` cannot absorb (`w` is shared
+across channels), so the un-absorbed 0.69 is consistent with the missing per-row signs rather
+than with the layout itself being wrong.
+
+#### Result 3 - full-stage end-to-end: no V variant reaches the attention-free ceiling
+
+| variant (real weights, whole stage) | corr vs oracle t1 |
+|---|---:|
+| `port` | 0.4551 |
+| attention-free ceiling | **0.5739** |
+| `v_neg` (= attempt 7's `STAGE_CTX_SCALE=-1`, already recorded) | 0.5299 |
+| `v_transposed` (swap alone) | 0.4076 |
+| `v_transposed` + `v_neg` | 0.4712 |
+
+So: negation alone is the same experiment already logged in attempt 7 (0.5299), and the
+swap - the layout the 11-row shape test scores at ~1.000 - is *worse* end-to-end (0.4076)
+than the port's own read.  Nothing clears 0.5739, i.e. every V variant still makes attention
+a net negative.
+
+#### Result 4 - the per-row sign cannot be read off the Exp B fit
+
+Comparing Exp B's fitted `Wv` against each read row by row gives mean |row corr| **0.179**
+(swap) / **0.146** (port), median -0.074 / -0.009, with 41/64 and 52/64 rows inside |0.2| -
+i.e. noise, no stable sign map.  That route is closed.
+
+#### Where this leaves Step E
+
+Two independent facts now stand in tension and the note should say so plainly:
+
+- **per-channel (which byte, which output channel) is solved**: shape 0.9938..1.0000 on all
+  11 rows vs 0.448..0.471 for the port's read, plus the bit-dependency table in attempt 9;
+- **per-token (the attention weights / signs) is not**: with that layout the oracle's real
+  attention is still only ~31% expressible through V, and no V variant beats removing
+  attention entirely.
+
+That is also consistent with the per-channel `|ctx|` correlations degrading (0.45..0.99) while
+shape stays at ~1.0: the error is in the token dimension, not the channel dimension.
+
+**Next step:** measure the remaining unknown directly instead of inferring it - sweep
+`--gain1-select k0` over **all 64 rows** (one oracle run each, ~1 min apiece), take each row's
+signed correlation against the swapped read as that row's sign `s_k`, and rebuild
+`V[k,c] = s_k * LUT[buf[vbase + frag_off(c, k, 32)]]`.  Then re-run Exp A on `real_attn`: if
+the residual finally falls toward 0.157, the read is complete and the corrected V goes into
+`shaders/sr/sr_stage.comp`, measured with `launch_report.py` (provenance trio attached) and
+the pipeline confirmed with `pipeline_report.py`.  If Exp A still sits near 0.69 with all 64
+signs in hand, the per-row sign was never the problem and the attention weights themselves -
+attempt 8's control result - must be re-opened instead.
