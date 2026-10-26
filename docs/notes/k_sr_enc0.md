@@ -100,3 +100,36 @@ Four findings that change the decode (all measured, probes in `build/work/probe/
   with the confirmed constants, then extend to frame 1 (history features - `start.*` copies
   give the exact prev_mvec0/hidden0/dhist inputs; plain-linear history was refuted in
   attempt 4).
+
+### Attempt 6 (2026-10-27): built a per-lane ISA emulator; found the real t0 path is in the EXECUTED region 0x13BC+, not the attempt-5 recipe site
+`build/work/enc0emu.py` (git-ignored) now executes the enc0 disassembly with concrete inputs
+(the dump's launch-2 args + the frame files): ~50 opcodes (dual-issues, packed f16, signed16
+branch offsets, exec masking,64-bit address pairs, v_maxmin's TWO destinations, div/rcp/sqrt,
+writelane/readlane).  Run: `python build/enc0emu.py build/enc0_isa.s`; it reaches the
+MV-output stores (96 x b32, addresses decode against the correct buffer bases) and the t0
+write LOOP, then dies on loop-exit semantics.  Findings that change the decode:
+1. **`s_branch 1110` at 0xBF60 is UNCONDITIONAL**: the block 0xBF64..0x13BB - which contains
+   the 24 v_cvt_pk_fp8 sites and the recipes decoded in attempt 5 - is DEAD CODE (an unchosen
+   template path).  The executed t0 path starts at **0x13BC** and contains v_div_scale/
+   v_div_fmas/v_div_fixup, v_sqrt, v_rcp - i.e. the real t0 features involve division/sqrt
+   (norm-like terms), not just tm+trunc.  **Attempt 5's c20 recipe must not be relied on.**
+2. **The kernel has a pixel/channel loop** entered by `s_cbranch_scc0 65317` at 0xFB20:
+   the printed immediate is signed16 (= -219).  All branch offsets must be read signed-16;
+   two anomalies (immediates 61991/61977 at ips 2614/2625 implying negative targets) suggest
+   **embedded data is being disassembled as instructions inside the fn.sh slice**, shifting
+   instruction indices after it - fn.sh/awk takes everything until the next symbol label.
+   Next session: strip data blobs (or drive the emulator by the printed hex addresses rather
+   than list indices) before trusting any ip arithmetic.
+3. The MV store chain decodes: base = s80:81 (a pointer copied through s47..s50/s90..s93 from
+   an args slot), offset = (y_reflected * pitch + x_reflected) << 2 via
+   v_mad_co_i64_i32 + v_lshlrev_b64 - the reflect uses v_maxmin pairs feeding cndmask; my
+   earlier -1/1 corruption here was the missing v_maxmin SECOND destination (fixed).
+- **Status**: APPROX; emulator ~90% there.  Exact next steps:
+  (a) make fn.sh-style parsing address-driven (use the printed 0x addresses, not list order)
+      to eliminate the data-blob index drift;
+  (b) finish the loop-exit semantics (the 0xFB20 loop's scc comes from the div/cmp chain);
+  (c) identify the t0 b64-store site inside the loop and validate its bytes against
+      002.t0.bin for wgid(0,0) - then all workgroups -> full t0 reproduction;
+  (d) decode the executed-path recipes (0x13BC+): the div/sqrt terms first;
+  (e) then implement in sr_enc0.comp (weights from enc0_w, tm constants confirmed in
+      attempt 5: 1+100x fma, min-clamp 0x38d1b717, xlog10(2), x0.36; v_log_f32 ~ exact).
