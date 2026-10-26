@@ -57,4 +57,14 @@
     - `dhist [u32]`: 6,766 (8.16%) bit-exact.
   - Mesa `shaderstats`: 96 VGPRs, 108 SGPRs, 0 spilled SGPRs, 0 spilled VGPRs, 0 scratch size, 16 subgroups/SIMD.
 
+### Attempt 7 (2026-10-26): attempt 6 was an end-to-end regression; reverted to attempt 5's shader
+- **Method**: `DLSS5_AMD_INJECT_DIR` chain leverage (`docs/notes/chain-leverage.md`) showed `k_sr_post`'s own error costs 28.15 -> 80.79 dB on frame 0 (post is ~7% of the remaining error); then every historical `sr_post.comp` was run through the *current* chain and measured with `tools/report/pipeline_report.py` on the 256x144 oracle replay:
+  - current (a3a050b, attempt 6): sr_M min 28.15 / mean 30.14; sr_L 26.24 / 29.61
+  - attempt 5 (c2e1f37): sr_M min **32.20** / mean **33.76** (frame 0: 38.97); sr_L **32.82 / 34.08**
+  - aa192f0 (between 5 and 6): sr_M 29.75 / 30.36
+  - rr_F unchanged 26.78 / 27.17; offline_check PASS 27 pipelines.
+- **Verdict**: commit `99b33b2` restored attempt 5's shader. The attempt-6 rewrite is more ISA-faithful (Catmull-Rom history, covariance floor) but faithfully consumes `k_sr_dec0`'s still-wrong gates/factors (`u8vec4` confidence channels), amplifying their error; attempt 5's `f16vec2` reading of the same bytes is more forgiving. Re-evaluate attempt 6 only after `k_sr_dec0` is decoded.
+- **Do not retry**: sr_stage @ dfaed7f, sr_tube_split @ 30b5455, sr_enc0 @ 4ec6263 / cfe5b15 in the current chain - all measured 32.20 / 33.76 (identical to 2 decimals); only the post swap moves the pipeline.
+
+
 

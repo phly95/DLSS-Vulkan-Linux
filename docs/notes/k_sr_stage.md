@@ -56,3 +56,32 @@ Workgroup structure:
   - `t2 [fp8]`: 245,760 elements, bit-exact 3,327 (1.3538%), max |err| 9.75, max ULP 146, first mismatch `{'index': 0, 'port': -0.9375, 'oracle': -1.75, 'port_bits': 183, 'oracle_bits': 190}`.
   - `DIFFDUMP: DIFFERS`. The denominator hypothesis made only a tiny change and leaves large errors.
 - **Status**: APPROX; continue broad work, revisit with fresh hypotheses after a pass over other families.
+
+### Attempt 4 (2026-10-26): model-driven hypothesis sweep - the kernel is structurally wrong, not rounding-noisy
+- **Method**: a NumPy replica of `sr_stage.comp` (C=64,g=2,mode=0 instantiation, oracle t0 input,
+  packed `stage0.bin` weights) that reproduces the *port GPU shader* to 89.71% bit-exact (corr
+  1.0; residue = fma/emulation detail), then structural variants scored against the oracle dump of
+  frame 0 launch 3 (`build/work/stage_model.py`, git-ignored; the replica is the template).
+- **Measured state** (kernel_run + diffdump on oracle inputs, frame 0 launch 3):
+  t1 1.1595% bit-exact, t2 1.0478%; value correlation with the oracle only **0.4551** and port
+  std 2.5x the oracle's - every output channel is wrong (per-channel corr scatters -0.5..0.9,
+  means and scales off everywhere). This is a wrong function, not accumulation-order noise.
+- **Refuted hypotheses** (corr vs oracle in parentheses; port baseline 0.4551): identity input
+  permutation (0.2049), invP input permutation (0.1693), Q/K transposed weight read (0.4615),
+  V transposed (0.4076), attention head swap (0.5054), no relative-position bias (0.4665),
+  bias table transposed (0.4550) or rolled (0.4581), QKV-then-bias block order (0.0816 - worse),
+  logit scale 0.5 (0.4569) / 0.25 (0.4608), softmax probs kept f32 (0.4554), Q/K rounded to fp8
+  before the dot (0.4551), V rounded to fp8 (0.4551), exp approximimation constants (no change).
+- **Layout facts recovered from the ISA load offsets** (`tools/re/fn.sh sr <stage<64,2,0,96>>`):
+  weight regions at 0..128 (gains), 128..4224 (head0 Q+K), 4224..6784 (head0 bias+V),
+  6784..13440 (head1), 13440..13568 (v270), 13568..13696 (s198), 13696..17856 (MLP block0:
+  fc1 2048 + b1 64 + fc2 2048) - identical to the port's `cur_w` walk, so the block ORDER is right.
+  The matmul is `v_wmma_f32_16x16x16_fp8_fp8` fed by `v_cvt_pk_fp8_f32` + `v_perm_b32 ... 0x3020104`
+  operand assembly; logits are `v_fma_mix{lo,hi}_f16(dot, 1.0, bias)` - s11 is `s_mov 1.0`, so
+  there is **no** 1/sqrt(d) logit scale in the oracle either.
+- **Status**: APPROX; the remaining suspect is the WMMA operand/weight swizzle (`frag_off` is a
+  valid bijection with the right 8-byte-lane/256-stride strip structure but has never been
+  validated against a working matmul). Fastest next instrument: run the oracle kernel itself on
+  *synthetic* packed weights via `tools/sr/srref` + `--dump` (srref takes any packed dir; the
+  oracle may be used for measurement, never committed), which identifies each sub-block's exact
+  math without reading 3.3k instructions of schedule.
