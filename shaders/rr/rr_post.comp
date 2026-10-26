@@ -9,6 +9,7 @@ layout(set = 0, binding = 1) readonly buffer InExpo   { vec4 in_expo; };
 layout(set = 0, binding = 2) writeonly buffer OutRG   { f16vec2 out_rg[]; };
 layout(set = 0, binding = 3) writeonly buffer OutB    { float16_t out_b[]; };
 layout(set = 0, binding = 4) writeonly buffer OutFull { f16vec4 out_full[]; };
+layout(set = 0, binding = 5) writeonly buffer OutPacked { uint out_packed[]; };
 
 layout(push_constant) uniform RrPostArgs {
     layout(offset = 0) int W;
@@ -22,6 +23,15 @@ layout(push_constant) uniform RrPostArgs {
     float jitterY;
     float expo_val;
 };
+
+uint pack_tonemapped_1010102(float c0, float c1, float c2) {
+    const float kLog2_10 = uintBitsToFloat(0x3e9a209bu);
+    const float kScale = uintBitsToFloat(0x3eb851ecu) * uintBitsToFloat(0x3ed0fac6u);
+    uint r = uint(roundEven(clamp(log2(max(1.0 + 100.0 * c0, 0.0001)) * kLog2_10 * kScale, 0.0, 1.0) * 1023.0));
+    uint g = uint(roundEven(clamp(log2(max(1.0 + 100.0 * c1, 0.0001)) * kLog2_10 * kScale, 0.0, 1.0) * 1023.0));
+    uint b = uint(roundEven(clamp(log2(max(1.0 + 100.0 * c2, 0.0001)) * kLog2_10 * kScale, 0.0, 1.0) * 1023.0));
+    return (r & 1023u) | ((g & 1023u) << 10u) | ((b & 1023u) << 20u) | 0xc0000000u;
+}
 
 void main() {
     int x15 = int(gl_GlobalInvocationID.x);
@@ -76,5 +86,9 @@ void main() {
         out_rg[idx] = f16vec2(float16_t(c_filt.r), float16_t(c_filt.g));
         out_b[idx] = float16_t(c_filt.b);
         out_full[idx] = f16vec4(f16vec3(c_filt), float16_t(0.0));
+        if (((x15 | y15) & 1) == 0) {
+            uint packed_idx = uint(y15 >> 1) * uint((targetW + 1) >> 1) + uint(x15 >> 1);
+            out_packed[packed_idx] = pack_tonemapped_1010102(c_filt.r, c_filt.g, c_filt.b);
+        }
     }
 }

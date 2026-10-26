@@ -326,7 +326,7 @@ int main(int argc, char** argv) {
         add_pipe("rr_enc0_feat", 13, 16);
         add_pipe("rr_level", 3, 16);
         add_pipe("rr_post_prep", 4, 40);
-        add_pipe("rr_post", 5, 120);
+        add_pipe("rr_post", 6, 120);
         add_pipe("rr_downsample", 4, 48);
         add_pipe("rr_pooled2", 2, 32);
         add_pipe("rr_avg2x2", 2, 8);
@@ -409,6 +409,7 @@ int main(int argc, char** argv) {
     Buffer cf2 = create_buffer(dev, picked_phys, size_t(W) * H * 32, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer cf6 = create_buffer(dev, picked_phys, size_t(W15) * H15 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer cfa = create_buffer(dev, picked_phys, size_t(W15) * H15 * 2, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    Buffer c0e = create_buffer(dev, picked_phys, size_t((W15 + 1) / 2) * ((H15 + 1) / 2) * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer bfa = create_buffer(dev, picked_phys, size_t(W) * H * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer bfe = create_buffer(dev, picked_phys, size_t(W) * H * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer bf6 = create_buffer(dev, picked_phys, size_t(W) * H * 8, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
@@ -785,7 +786,7 @@ int main(int argc, char** argv) {
                 std::memcpy(push + 28, &jx, 4);
                 std::memcpy(push + 32, &jy, 4);
                 std::memcpy(push + 36, &exposure_val, 4);
-                dispatch("rr_post", {&cf2, &expo, &cf6, &cfa, &ihist[0]}, push, 120, (W15 + 15) / 16, (H15 + 15) / 16, 1);
+                dispatch("rr_post", {&cf2, &expo, &cf6, &cfa, &ihist[0], &c0e}, push, 120, (W15 + 15) / 16, (H15 + 15) / 16, 1);
             }
             // 7. Downsample
             {
@@ -854,6 +855,7 @@ int main(int argc, char** argv) {
     destroy_buffer(dev, dhist);
     destroy_buffer(dev, full15);
     destroy_buffer(dev, cf2);
+    destroy_buffer(dev, c0e);
     destroy_buffer(dev, bfa);
     destroy_buffer(dev, bfe);
     destroy_buffer(dev, bf6);

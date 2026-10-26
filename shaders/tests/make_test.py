@@ -444,7 +444,8 @@ def make_test(name, out_dir):
                 {"binding": 1, "file": "in_expo.bin"},
                 {"binding": 2, "bytes": n_pix * 4, "output": "out_rg", "type": "f16"},
                 {"binding": 3, "bytes": n_pix * 2, "output": "out_b", "type": "f16"},
-                {"binding": 4, "bytes": n_pix * 8, "output": "out_full", "type": "f16"}
+                {"binding": 4, "bytes": n_pix * 8, "output": "out_full", "type": "f16"},
+                {"binding": 5, "bytes": ((w + 1) // 2) * ((h + 1) // 2) * 4, "output": "out_packed", "type": "u32"}
             ]
         }
     elif name == "rr_downsample":
