@@ -1,11 +1,13 @@
 #version 460
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 #extension GL_EXT_shader_16bit_storage : enable
+#extension GL_EXT_shader_atomic_int64 : require
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) readonly buffer InCol    { f16vec4 in_col[]; };
-layout(set = 0, binding = 1) buffer OutBlock          { float block_luma[]; };
+layout(set = 0, binding = 1) buffer OutAccumulator    { uint64_t accumulator; };
 
 layout(push_constant) uniform RrAEArgs {
     layout(offset = 8) int W;
@@ -35,7 +37,9 @@ void main() {
     }
 
     if (tid == 0u) {
-        uint gid = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
-        block_luma[gid] = s_luma[0];
+        // NeuralHub accumulates per-block luma as unsigned 32.32 fixed point.
+        // Its ISA uses RNE after multiplying by 2^32 / 10000.
+        float scaled = roundEven(s_luma[0] * 429496.71875);
+        atomicAdd(accumulator, uint64_t(scaled));
     }
 }

@@ -244,9 +244,11 @@ int main(int argc, char** argv) {
     if (has_ext(VK_KHR_8BIT_STORAGE_EXTENSION_NAME)) enabled_exts.push_back(VK_KHR_8BIT_STORAGE_EXTENSION_NAME);
     if (has_ext(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME)) enabled_exts.push_back(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME);
     if (has_ext(VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME)) enabled_exts.push_back(VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME);
+    if (has_ext(VK_KHR_SHADER_ATOMIC_INT64_EXTENSION_NAME)) enabled_exts.push_back(VK_KHR_SHADER_ATOMIC_INT64_EXTENSION_NAME);
 
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR coop{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR};
     VkPhysicalDeviceShaderFloat8FeaturesEXT fp8{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT8_FEATURES_EXT};
+    VkPhysicalDeviceShaderAtomicInt64Features atom64{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES};
     VkPhysicalDeviceVulkan11Features f11{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
     VkPhysicalDeviceVulkan12Features f12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     VkPhysicalDeviceVulkan13Features f13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
@@ -261,6 +263,10 @@ int main(int argc, char** argv) {
         fp8.shaderFloat8 = VK_TRUE;
         fp8.shaderFloat8CooperativeMatrix = VK_TRUE;
         *next_ptr = &fp8; next_ptr = &fp8.pNext;
+    }
+    if (has_ext(VK_KHR_SHADER_ATOMIC_INT64_EXTENSION_NAME)) {
+        atom64.shaderBufferInt64Atomics = VK_TRUE;
+        *next_ptr = &atom64; next_ptr = &atom64.pNext;
     }
     f11.storageBuffer16BitAccess = VK_TRUE;
     *next_ptr = &f11; next_ptr = &f11.pNext;
