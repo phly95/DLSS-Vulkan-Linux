@@ -1113,3 +1113,195 @@ port is missing a component, which becomes the new primary thread.**
 
 Do not start another thread before this is answered - it decides whether the contradiction in
 Result 2 has a known cause.
+
+### Review R1 (2026-10-26, external review): the stage decoded in the replica - four structural defects, and both landed gain-order changes were compensating errors
+
+Written by the external reviewer (Claude Opus 5.5) after attempt 15. Everything below is
+**measured**; **no shader was edited**. The instruments are git-ignored under `build/work/review/`.
+
+**Provenance.**
+- Commit `dac531e`, `sha256sum build/shaders/*.spv | sha256sum` =
+  `dcdf482a92cb5627c6e5ead6d55082b3d6100ec8ae69b97f62160df35552f3c0`. The GPU per-launch numbers
+  are from `build/work/kstage/out/{t1,t2}.bin`, the orchestrator's HEAD gate run.
+- Replica: `build/work/review/stage_model_rev.py` is `build/work/stage_model.py` plus env-guarded
+  hooks. It reproduces the landed GPU state (13.5080 / 0.5661 / 0.833516, 99.90% bit-exact vs
+  the port's GPU t1).
+- Inputs: weights `build/re/packed/M`; oracle `build/oracle/oracle-8dbf027a9e-s20261025/sr_M/
+  dump/frame0/` (launch 3: `002.t0`, `003.t1`, `003.t2`); the attention oracle is the
+  `--isolate` probe `build/work/probe/real_attn_dump/frame0/003.t1.bin`.
+
+**Use `docs/sr/STAGE-LAYOUT.md` (generated from the packer by `tools/sr/sr_layout.py`)** for
+every byte of every stage blob. It contradicts R1.1, R1.3 and R1.4's old readings directly.
+
+#### R1.1 The "unread" 24,768 bytes are the downsample projection, and t1 cannot see them
+
+- The packer writes, for mode 0, `frag(Cn x 4C)` + `f16(Cn)` after the MLP: 24,576 + 192 =
+  24,768 bytes at 47104..71872.
+- `sr_stage.comp` section 7 reads them (`proj_w_base = cur_w`) to produce `out_act2` = **t2**.
+- GPU, srref on the queued probes: `all_real` reproduces the oracle dump byte for byte (t1, t2
+  and t3). With `tail_zero`, **003.t1 is identical, 003.t2 is not written** (it stayed zero,
+  so it is unchanged) and **004.t3 differs**.
+- Why every probe missed it: `probe_craft.py`'s "MLP" region is 13696..**71872**. So
+  `--isolate` and every MLP-zeroed probe also zeroed the projection, and `oracle_dump.hpp`
+  writes only buffers that changed. No probe dump since attempt 5 contains a t2.
+- Attempt 15's next step is closed: comparing t1 alone would have read "inert".
+
+#### R1.2 t2 has never been scored, and it is worse than t1
+
+`launch_report.py` on the HEAD gate output:
+
+| launch 3 output | peak | PSNR | r | rRMSE | bit-exact |
+|---|---:|---:|---:|---:|---:|
+| t1 (skip for stage 9) | 8.0 | 13.5080 | 0.566140 | 0.833516 | 0% |
+| **t2 (launch 4's input)** | 6.5 | **9.8949** | **0.141684** | 1.010783 | 0% |
+
+The projection's math is right. I predicted t2 from the **oracle's own** t1 with the packer's
+weight layout (`build/work/review/proj_test.py`):
+
+| concat order | norm | bias | PSNR | r | best global scale |
+|---|---|---|---:|---:|---:|
+| port: (0,0), (x+1), (y+1), (x+1,y+1) | none | as read | 31.84 | 0.9968 | 0.987 |
+| **port** | **none** | **de-permuted** | **35.22** | **0.9986** | 0.987 |
+| Swin: (0,0), (y+1), (x+1), (x+1,y+1) | none | de-permuted | 18.01 | 0.9218 | 0.911 |
+| port | RMSNorm before merge | de-permuted | 15.98 | 0.9960 | 1.983 |
+
+Three defects in section 7 feed it the wrong data:
+- (a) The input is `s_act`, the residual after attention + v270 **without the MLP and
+  fc2_bias**. It must be the stage output.
+- (b) `p0..p3 = (2*dpy)*8 + 2*dpx (+1, +8, +9)` index `s_act` as a row-major 8x8 tile, but
+  `s_act[tid]` is window-major (`dx = (win%2)*4 + tok%4`, `dy = (win/2)*4 + tok/4`). For
+  example `p2 = 8` is pixel (0, 2), not (0, 1).
+- (c) The bias is read raw (R1.3).
+
+Also, the `down_x >= W2 && gy == 0` wrap writes t2 positions that the gy = 1 workgroups own.
+
+#### R1.3 Every per-channel f16 vector is read in the wrong channel order
+
+`Blob.f16` (FUN_1801140a0) stores any vector with n % 32 == 0 so that blob position i holds
+logical element `P[i]`. That is the same `P` the shader already undoes for activations
+(`s_act[cg*32 + P[i]]`). `read_f16(base + 2*c)` applies no `invP`. This affects gain1, gain2,
+v270, b1, fc2_bias and the projection bias, and `sr_tube_split.comp` has the same pattern. Alone
+on the landed state it is worth +0.31 dB; inside the decoded stage it is worth 7-16 dB (tables
+below).
+
+#### R1.4 Attention is V = K with a per-head output projection
+
+The packer has **no V matrix**. Slot 0x50 (g*64 x C) holds [Wq; Wk] per head. Slot 0x60
+(C x g*32) is C outputs by 32 inputs per head, which is the shape of an output projection.
+Hypothesis:
+
+    ctx_h  = softmax_h(Q_h K_h^T + relpos_h) @ K_h          (16 tokens per window)
+    attn   = sum_h ctx_h @ Wo_h^T,   Wo_h[c_out, i] = fp8 at frag_off(c_out, i, 32)
+    (the port's existing Wv read, with its roles reinterpreted), added to all C channels.
+
+Attention only, against the oracle's own attention (the `--isolate` dump, peak 5.0):
+
+| variant | PSNR | r | rRMSE |
+|---|---:|---:|---:|
+| port as landed | 12.92 | 0.5447 | 0.836 |
+| attention removed | 12.99 | 0.5735 | 0.830 |
+| **V = K + Wo, gain-after RMSNorm1, de-permuted vectors** | **36.63** | **0.9985** | **0.0545** |
+| same, vectors as read | 29.71 | 0.9928 | 0.121 |
+| same, gain1-first | 14.60 | 0.7826 | 0.689 |
+| V = Q + Wo | 12.95 | 0.5661 | 0.833 |
+| V = s_norm head slice + Wo | 11.34 | 0.3372 | 1.003 |
+| V = K + Wo, no relpos bias | 23.77 | 0.9707 | 0.240 |
+| V = K + Wo, relpos transposed | 36.52 | 0.9985 | 0.0553 |
+| V = K + Wo, probabilities unquantized | 36.86 | 0.9986 | 0.0531 |
+
+This **explains attempts 5-8**. With QK = 0, K = 0, so V = 0 and the context is exactly 0
+whatever the bias. Every "dead attention at equal logits", "the bias does not drive the logits"
+and `submin_norm` result came from probes with QK = 0. Those conclusions are void. The bias is
+live (23.77 without it), and plain softmax plus the port's exp is already within 0.2 dB of the
+best normalization variant tried.
+
+#### R1.5 The MLP is standard RMSNorm2 plus GELU
+
+Here the MLP gets the oracle's post-attention state (the isolate dump injected before v270 /
+RMSNorm2, `STAGE_POSTATTN_ORACLE`). Scored against oracle t1, peak 8.0:
+
+| RMSNorm2 | f16 vectors | activation | PSNR | r | rRMSE |
+|---|---|---|---:|---:|---:|
+| gain2-first (landed) | as read | `nr_swin_act` | 14.16 | 0.642 | 0.773 |
+| gain-after | de-permuted | `nr_swin_act` | 14.99 | 0.944 | 0.702 |
+| gain-after | as read | GELU | 18.63 | 0.907 | 0.462 |
+| gain2-first | de-permuted | GELU | 14.03 | 0.628 | 0.785 |
+| **gain-after** | **de-permuted** | **GELU** (tanh or erf: 34.42 / 34.42) | **34.42** | **0.9972** | **0.075** |
+| gain-after | de-permuted | SiLU / ReLU / identity | 29.17 / 27.38 / 9.87 | | |
+
+- A scale sweep on the decoded row peaks at 1.0 (x0.9 gives 30.58, x1.1 gives 30.37), so it
+  is not a tuned constant.
+- `nr_swin_act` is the NR network's MpCubicSilu (`reference-nr-vulkan/.../swin_math.glsl`),
+  about 2x GELU.
+- **Attempt 14's ceilings and "MLP = 76% of the error" are confounded.** `STAGE_ORACLE_CTX`
+  adds the oracle's attention at the store, after the port's MLP has already run on its own
+  attention-starved state. Done that way, the decoded MLP scores 9.24 dB instead of 34.42.
+- Attempt 14's activation sweep ran under the gain2-first compensation, so it has the same
+  confound.
+
+#### R1.6 Gain order: both landed changes compensated; the decode is gain-after
+
+- `a903817` (gain1 first): under V = K + Wo, attention-only is 14.60 with gain1-first vs 36.63
+  with gain-after.
+- `83a5b91` (gain2 first): with the oracle's post-attention input, gain2-first + GELU gives 14.03
+  vs 34.42 with gain-after + GELU.
+- Corroboration: `pack_layer`'s fp8 bound (`max|s1b0|`, then `|W| @ |s1b0|`) is exactly the
+  bound for `x/||x||_2 * s1b0`. Under gain-first, the sqrt(C) baked into `s1b0`/`s198` would
+  cancel. The 2026-10-24 ISA reading in `HANDOFF.md` also puts the gain after the rsqrt.
+
+#### R1.7 Whole stage, the port's own path end to end (replica), against oracle t1 (peak 8.0)
+
+| state | PSNR | r | rRMSE | bit-exact vs oracle |
+|---|---:|---:|---:|---:|
+| HEAD (landed) | 13.5080 | 0.5661 | 0.8335 | 1.45% |
+| decoded: gain-after x2, de-permuted, V = K + Wo, GELU | 34.0704 | 0.9970 | 0.0781 | 35.19% |
+| + s_norm to fp8 after both norms, Q/K to fp8, ctx to fp8, probabilities unquantized | **34.6343** | **0.9973** | **0.0732** | **38.67%** |
+
+**t2** through the projection from that t1 (R1.2, de-permuted bias): **30.58 dB / r 0.9958**,
+against 9.89 on the GPU at HEAD.
+
+**Caveat for landing.** The per-launch t1 number does not rise monotonically with correctness
+while other parts are still wrong: the decoded MLP with today's attention scores **11.07** (vs
+13.51). Land attention + MLP + norms + de-permutation + section 7 together, or judge each change
+by its sub-block number (attention vs `--isolate`, MLP given the oracle's input, projection given
+the oracle's t1) and pre-commit the composite's movement.
+
+#### R1.8 What is left to 40 dB: rounding closure, about 5.4 dB (rRMSE 0.073 -> 0.040)
+
+The ISA notes already name the candidates: the f16 sum-of-squares tree with the lane^16
+exchange, + 2^-14, rsqrt from `g_sr_lut` (the replica uses an exact f32 1/sqrt), K = 32 WMMA
+pairs added through f16 (`v_fma_mixlo_f16`), the probability quantization point, and the fp8
+points of the Wo and fc2 GEMM inputs. Then implement the stage in `shaders/sr/sr_stage.comp`
+(preferably fp8 coopmat, `perf_1080p4k.md`), check GPU vs replica at >= 99.9% bit-exact, and
+check vs the oracle with `launch_report.py` on **t1 and t2**.
+
+#### Reproduce (repo root; about 5 s per replica run)
+
+```bash
+R=build/work/review; RA=build/work/probe/real_attn_dump/frame0/003.t1.bin
+build/venv/bin/python -I $R/stage_model_rev.py gain_first_gain2_first            # HEAD: 13.5080
+STAGE_DEPERM=1 STAGE_SAVE_T1=$R/replica_t1.bin build/venv/bin/python -I $R/stage_model_rev.py \
+    port_vk_wo_act_gelu_snorm8_qk_fp8_ctxfp8_no_prob8                          # 34.6343
+STAGE_ORC=$RA STAGE_DEPERM=1 build/venv/bin/python -I $R/stage_model_rev.py port_vk_wo_no_mlp_no_v270   # 36.63
+STAGE_DEPERM=1 STAGE_POSTATTN_ORACLE=$RA build/venv/bin/python -I $R/stage_model_rev.py port_act_gelu   # 34.42
+build/venv/bin/python -I $R/proj_test.py "$PWD"                                 # t2 from oracle t1: 35.22
+build/venv/bin/python -I $R/proj_test.py "$PWD" $R/replica_t1.bin               # t2 from replica t1: 30.58
+O=build/oracle/oracle-8dbf027a9e-s20261025/sr_M/dump/frame0
+build/venv/bin/python -I tools/report/launch_report.py build/work/kstage/out/t2.bin $O/003.t2.bin   # 9.8949
+```
+
+The hooks in `stage_model_rev.py`, all env-guarded or variant-named:
+- `STAGE_DEPERM` (invP on every f16 vector);
+- `STAGE_POSTATTN_ORACLE` (replace the post-attention residual);
+- `STAGE_NORM2_SCALE`, `STAGE_ACT_HALF`, `STAGE_SAVE_T1`;
+- variants `vk_wo` / `vq_wo` / `vx_wo` (value source + output projection), `act_erfgelu`,
+  `snorm8`, `n2fp8`, `ctxf16`, `ctxfp8`.
+
+#### Do not retry, for this kernel family
+
+- Gain applied before either RMSNorm.
+- `nr_swin_act` in SR stages.
+- The attention topology `ctx = P @ (s_norm @ Wv)` written into the head's channel slice.
+- The min-subtraction / Q5 x32 / div16 normalization families (fitted on QK = 0 probes).
+- Judging a mode-0 stage on t1 alone.
+- Ceilings built by injecting downstream of the sub-block under test.
