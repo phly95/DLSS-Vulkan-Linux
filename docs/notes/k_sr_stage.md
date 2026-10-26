@@ -1305,3 +1305,52 @@ The hooks in `stage_model_rev.py`, all env-guarded or variant-named:
 - The min-subtraction / Q5 x32 / div16 normalization families (fitted on QK = 0 probes).
 - Judging a mode-0 stage on t1 alone.
 - Ceilings built by injecting downstream of the sub-block under test.
+
+### Review R2 (2026-10-26): the decode generalizes to all ten SR stage launches; projection clamp and mode 2 decoded
+
+The spec is now a committed tool: **`tools/sr/sr_stage_model.py`**. It is vectorized (about 0.6 s
+per launch) and reads geometry, inputs and the weight blob from the oracle dump's
+`launches.jsonl`. It models any `k_sr_stage` / `k_sr_tube_split` launch and scores every output
+with the `launch_report.py` formulas. `--self-check` reproduces R1's five numbers to 4 decimals.
+`--all` prints launches 3..12. `tools/sr/sr_probe.py isolate|run` crafts and runs the
+attention-isolating probe (v270 + MLP + fc2_bias zeroed, projections kept) for any set of stages.
+
+Two new decodes:
+- **The mode-0 second output is rounded to f16 and clamped to +-6.28125** (f16 `0x4648`, the
+  `v_pk_min/max_num_f16` pair just before the store at ISA line ~3245) before fp8. That is why
+  t2 and t4 both peak at exactly 6.5. Fed the oracle's own t1 / t3, the projection scores
+  **55.43 dB** (stage 0) and **50.76 dB** (stage 1), r 0.99999. Without the clamp: 36.4 / 11.6.
+- **Mode 2 (decoder):**
+  - `up = up_W (4C x Cn) @ low + up_b`, with channel index `q*C + c` (sub-pixel-major) and
+    pixel-shuffled with `q = dx + 2*dy`;
+  - rounded to f16, with the encoder skip added **before** the transformer block, and nothing
+    added after (the port adds it after).
+  - Alternatives measured on launch 11 / launch 12 (dB): skip after 16.44 / 14.42, both
+    19.38 / 15.84, none 16.86 / 15.91; channel-major order 13.56 / 10.68; y-first sub-pixel
+    order 25.03 / 25.04.
+
+Per launch, oracle inputs, `sr_stage_model.py --all` (defaults), PSNR dB / r:
+
+| launch | stage | output | frame 0 | frame 1 | HEAD shader, frame 0 |
+|---|---|---|---|---|---|
+| 3 | enc1 (C64 g2) | t1 | 34.63 / 0.9973 | 37.55 / 0.9954 | 13.51 / 0.566 |
+| 3 | | t2 | 32.04 / 0.9969 | 32.81 / 0.9964 | 9.89 / 0.142 |
+| 4 | enc2 (C96 g4) | t3 | 30.56 / 0.9883 | 25.76 / 0.9651 | - |
+| 4 | | t4 | 23.43 / 0.9943 | 20.76 / 0.9822 | - |
+| 5-9 | tube0-4 (C128 g4) | t5/t6 | 25.88-29.72 / 0.973-0.991 | 25.86-27.46 / 0.969-0.979 | tube0 3.0% bit-exact |
+| 10 | tube5 | t6 | 18.64 / 0.8836 | 20.63 / 0.9005 | - |
+| 11 | dec2 (mode 2) | t7 | 27.05 / 0.9759 | 24.61 / 0.9625 | 7.84 / 0.094 |
+| 12 | dec1 (mode 2) | t8 | 29.28 / 0.9842 | 26.09 / 0.9350 | 4.61 / 0.058 |
+
+Sub-blocks, measured with single-stage isolate probes (`sr_probe.py isolate --stages N`):
+
+| launch | attention only, real input | MLP given the oracle's post-attention |
+|---|---:|---:|
+| 4 (stage 1) | 30.92 dB | 38.07 dB (GELU; `nr` 20.60) |
+| 10 (tube 5) | 23.01 dB | 31.08 dB (GELU; `nr` 8.38) |
+
+From the all-stage isolate probe (inputs from the probe's own dump), attention alone scores 39.04
+(stage 0), 25.45 (stage 1) and 33.20-35.26 (tubes). Open residuals: **attention at stage 1**
+(each head alone 27.3-32.6 dB, head 3 worst) and **attention at tube 5 on real inputs**. Neither
+is logit saturation (no |logit| > 32.4 on real inputs; max-subtraction does not help) or an f16
+overflow of the RMSNorm sum (max per-token sum x^2 is 2,644). Not yet explained.
