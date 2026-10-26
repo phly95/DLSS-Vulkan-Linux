@@ -38,3 +38,10 @@ The final-kernel ISA loads the accumulator as two u32 values and constructs a do
 - **Test**: frame 1 launch 3 with exact prelaunch `E0cee`, previous AE state `E0c26`, and launch arguments. Outputs bound to E0c22, E0c2a, and E0cee.
 - **Result**: `DIFFDUMP: DIFFERS`. E0c22 [f32] 3/4 exact (75%), max absolute error 0.00151491, max ULP 986091534; first mismatch index 3, port 0.0 vs oracle -0.0015149132814258337. E0c2a [f16] 0/1 exact, max error 0.000976562, max ULP 1; first mismatch port 1.390625 vs oracle 1.3916015625. E0cee [u32] 2/2 exact, max error 0, max ULP 0.
 - **Disposition**: rejected. NeuralHub's non-reset temporal adaptation updates both the next AE half and the exposure delta; direct target exposure is insufficient. The family stays APPROX pending that adaptation decode.
+
+### `k_ae_final` attempt 3: seven-eighths state update
+- **Hypothesis**: the steady-state AE state takes a fixed 7/8 step from the previous f16 value toward the floored target exposure.
+- **Test**: frame 1 launch 3, same exact prelaunch accumulator and AE state; added the reset flag from push offset 28 and compared `E0c22`, `E0c2a`, and `E0cee`.
+- **Result**: the next AE state `E0c2a [f16]` became bit-exact (1/1). The output mapping also confirms `E0c22.x` is the target exposure, not the smoothed state. Latest diffdump: `E0c22 [f32]` 3/4 exact (75%), max |err| 0.00398055, max ULP 15,565,629, first mismatch index 3 (port -0.005495463963598013, oracle -0.0015149132814258337); `E0c2a [f16]` 1/1 exact, max |err| 0, max ULP 0; `E0cee [u32]` 2/2 exact, max |err| 0, max ULP 0. `DIFFDUMP: DIFFERS`.
+- **Reset regression check**: frame 0 launch 2 with the reset flag and parity-selected `E0c26` output remained `DIFFDUMP: BIT-EXACT`: E0c22 [f32] 4/4, E0c26 [f16] 1/1, E0cee [u32] 2/2; all max errors and ULPs 0.
+- **Disposition**: improved the state update for this one steady-state launch, but the output delta formula remains wrong and this fixed-step hypothesis is not yet validated on other frames. Family remains APPROX.

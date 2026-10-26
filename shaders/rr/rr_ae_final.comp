@@ -12,6 +12,7 @@ layout(set = 0, binding = 3) writeonly buffer Exposure { vec4 exposure; };
 
 layout(push_constant) uniform RrAEArgs {
     layout(offset = 24) float scale;
+    layout(offset = 28) uint reset;
 };
 
 void main() {
@@ -30,7 +31,10 @@ void main() {
     }
 
     float prev = float(previous_ae);
-    next_ae = float16_t(half_value);
-    exposure = vec4(half_value, prev, 1.0 / half_value, 0.0);
+    // First non-reset adaptation hypothesis: move seven eighths of the way
+    // from the previous state to the current target, then quantize to f16.
+    float updated = reset != 0u ? half_value : fma(half_value - prev, 0.875, prev);
+    next_ae = float16_t(updated);
+    exposure = vec4(half_value, prev, 1.0 / half_value, reset != 0u ? 0.0 : (updated - prev) / prev);
     accumulator = uint64_t(0);
 }
