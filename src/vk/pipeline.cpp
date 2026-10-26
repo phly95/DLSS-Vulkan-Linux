@@ -603,7 +603,9 @@ void FrameChain::dispatch(VkCommandBuffer cmd, const std::string& name,
     if (push && push_size > 0) {
         vkCmdPushConstants(cmd, p.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, uint32_t(push_size), push);
     }
+    if (prof_hook) prof_hook(name.c_str(), 0);
     vkCmdDispatch(cmd, gx, gy, gz);
+    if (prof_hook) prof_hook(name.c_str(), 1);
 
     VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
     mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;

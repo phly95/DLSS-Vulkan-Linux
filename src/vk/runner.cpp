@@ -132,6 +132,18 @@ int main(int argc, char** argv) {
     VkQueryPool qpool;
     vkCreateQueryPool(dev, &qpci, nullptr, &qpool);
 
+    // Per-dispatch GPU timestamps (Step D, DLSS5_AMD_PROFILE=1).  Two queries per dispatch
+    // bracket the vkCmdDispatch itself, so the memory barrier after each dispatch is charged
+    // to neither neighbour and the sum of dispatches can be compared against the frame total.
+    // The hook lives here rather than in the chain so that the NGX path, which never installs
+    // one, records exactly what it always did and the DLL gains no Vulkan entry point.
+    const bool prof_on = std::getenv("DLSS5_AMD_PROFILE") != nullptr;
+    constexpr uint32_t kProfMax = 64;
+    VkQueryPool prof_pool = VK_NULL_HANDLE;
+    std::vector<std::string> prof_names;
+    uint32_t prof_n = 0;                                   // dispatches bracketed this frame
+    float prof_period = picked_props.limits.timestampPeriod;   // ns per timestamp tick
+
     // Load shaders, create pipelines and allocate the chain's buffers
     std::string chain_err;
     FrameChain* chain = FrameChain::create(dev, picked_phys, mode, preset, W, H, oW, oH,
@@ -151,6 +163,26 @@ int main(int argc, char** argv) {
 
     std::printf("PIPELINES_CREATED: %zu\n", chain->pipeline_count());
     std::fflush(stdout);
+
+    if (prof_on) {
+        VkQueryPoolCreateInfo pq{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        pq.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        pq.queryCount = 2 * kProfMax;
+        vkCreateQueryPool(dev, &pq, nullptr, &prof_pool);
+        chain->set_prof_hook([&](const char* name, int phase) {
+            if (prof_n >= kProfMax) return;
+            if (phase == 0) {
+                if (prof_names.size() <= prof_n) prof_names.resize(prof_n + 1);
+                prof_names[prof_n] = name;
+                vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, prof_pool, 2 * prof_n);
+            } else {
+                vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, prof_pool, 2 * prof_n + 1);
+                ++prof_n;
+            }
+        });
+        std::fprintf(stderr, "PROFILE: per-dispatch GPU timestamps on (%.3f ns/tick, cap %u)\n",
+                     prof_period, kProfMax);
+    }
 
     // Frame execution loop
     for (int fi = 0; fi < nframes; ++fi) {
@@ -201,6 +233,9 @@ int main(int argc, char** argv) {
 
         // Record commands
         vkResetCommandBuffer(cmd, 0);
+        prof_n = 0;
+        // Host-side reset: safe here because the previous frame's queue wait has completed.
+        if (prof_on) vkResetQueryPool(dev, prof_pool, 0, 2 * kProfMax);
 
         VkCommandBufferBeginInfo cbbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         vkBeginCommandBuffer(cmd, &cbbi);
@@ -222,6 +257,26 @@ int main(int argc, char** argv) {
         uint64_t ts[2] = {0, 0};
         vkGetQueryPoolResults(dev, qpool, 0, 2, sizeof(ts), ts, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
         float ms = float(ts[1] - ts[0]) * picked_props.limits.timestampPeriod / 1e6f;
+
+        // Per-dispatch breakdown (Step D).  GPU_FRAME_MS above brackets chain->record() only -
+        // texture slurps and the host-side fill_* memcpy happen before it, and the D2H readback
+        // and file write after - so this is render work with setup and uploads already excluded.
+        if (prof_on && prof_n) {
+            std::vector<uint64_t> q(2 * prof_n);
+            vkGetQueryPoolResults(dev, prof_pool, 0, 2 * prof_n, q.size() * sizeof(uint64_t),
+                                  q.data(), sizeof(uint64_t),
+                                  VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+            double sum = 0.0;
+            for (uint32_t i = 0; i < prof_n; ++i) {
+                double d = double(q[2 * i + 1] - q[2 * i]) * prof_period / 1e6;
+                if (q[2 * i + 1] < q[2 * i]) d = 0.0;   // queries not written: dispatch skipped
+                sum += d;
+                std::printf("DISPATCH_MS %d %u %s %.4f\n", fi, i,
+                            i < prof_names.size() ? prof_names[i].c_str() : "?", d);
+            }
+            std::printf("DISPATCH_SUM_MS %d %u %.4f FRAME_MS %.4f OTHER_MS %.4f\n",
+                        fi, prof_n, sum, ms, ms - sum);
+        }
 
         // Write output frame
         std::string out_path = odir + "/out_" + std::to_string(fi) + ".f32";

@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -121,6 +122,15 @@ public:
     int frame_counter() const { return fc; }
     size_t pipeline_count() const;
 
+    // Profiling hook (Step D).  Called with a dispatch's name immediately before (phase 0)
+    // and immediately after (phase 1, before the memory barrier) each dispatch record() makes,
+    // so the caller can bracket exactly the kernel.  Null - the default, and always the case
+    // on the NGX path - means nothing is added and the recorded work is bit-identical to
+    // before; only vk_runner sets it, which is what keeps this out of the DLL's entry-point
+    // set entirely.
+    using ProfHook = std::function<void(const char* name, int phase)>;
+    void set_prof_hook(ProfHook h) { prof_hook = std::move(h); }
+
     int width() const { return W; }
     int height() const { return H; }
     int out_width() const { return oW; }
@@ -175,6 +185,9 @@ private:
     std::map<std::string, Buffer*> inj_targets;         // dump buffer name -> chain buffer
     std::map<std::string, Buffer> inj_shadow;           // per (frame, point, name) staging
     bool inj_wanted(const char* point) const;
+
+    // Per-dispatch profiling hook (see set_prof_hook).  Null unless vk_runner installs one.
+    ProfHook prof_hook;
 };
 
 } // namespace ngxd

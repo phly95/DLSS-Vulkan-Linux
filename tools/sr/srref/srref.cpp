@@ -28,6 +28,7 @@
 #include <limits>
 #include <map>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "../../verify/oracle_dump.hpp"
@@ -98,6 +99,11 @@ struct Args {
     Args& i2(size_t off, int x, int y) { return put(off, x).put(off + 4, y); }
 };
 
+// ---- REF_PROFILE: per-launch GPU timing, inert unless the env var is set --------------------
+// Declared above Mod because launch() references them; defined below.
+static bool prof_on();
+static void prof_add(const char* sym, hipEvent_t a, hipEvent_t b);
+
 struct Mod {
     hipModule_t m{};
     std::map<std::string, hipFunction_t> fn;
@@ -110,7 +116,14 @@ struct Mod {
     void launch(const char* sym, dim3 g, dim3 b, Args& a) {
         size_t sz = a.b.size();
         void* cfg[] = {HIP_LAUNCH_PARAM_BUFFER_POINTER, a.b.data(), HIP_LAUNCH_PARAM_BUFFER_SIZE, &sz, HIP_LAUNCH_PARAM_END};
+        // REF_PROFILE=1 brackets every launch with a HIP event pair so the reference can be
+        // compared with the port's per-dispatch GPU timestamps at the same size.  Unset, not a
+        // single event is created and the frame runs exactly as it did before.  Events are
+        // resolved and destroyed by prof_flush() after the frame's synchronize.
+        hipEvent_t p0 = nullptr, p1 = nullptr;
+        if (prof_on()) { CK(hipEventCreate(&p0)); CK(hipEventCreate(&p1)); CK(hipEventRecord(p0, nullptr)); }
         CK(hipModuleLaunchKernel(get(sym), g.x, g.y, g.z, b.x, b.y, b.z, 0, nullptr, nullptr, cfg));
+        if (p0) { CK(hipEventRecord(p1, nullptr)); prof_add(sym, p0, p1); }
         g_dump.after_launch(sym, g, b, a.b);
         if (std::getenv("SRREF_SYNC")) {
             hipError_t e = hipDeviceSynchronize();
@@ -118,6 +131,28 @@ struct Mod {
         }
     }
 };
+
+// ---- REF_PROFILE: per-launch GPU timing, inert unless the env var is set --------------------
+static bool prof_on() { static bool v = [] { const char* e = std::getenv("REF_PROFILE"); return e && *e; }(); return v; }
+static std::vector<std::tuple<std::string, hipEvent_t, hipEvent_t>> prof_ev;
+static void prof_add(const char* sym, hipEvent_t a, hipEvent_t b) { prof_ev.emplace_back(sym, a, b); }
+// Call after the frame's hipDeviceSynchronize: prints LAUNCH_MS lines and frees the events.
+static void prof_flush(int fi) {
+    if (!prof_on() || prof_ev.empty()) return;
+    double sum = 0.0;
+    int i = 0;
+    for (auto& [sym, a, b] : prof_ev) {
+        float ms = 0; CK(hipEventElapsedTime(&ms, a, b));
+        sum += ms;
+        std::printf("LAUNCH_MS %d %d %s %.4f\n", fi, i++, sym.c_str(), ms);
+        // Deliberately not hipEventDestroy(): tools/verify/hipstub (frozen) declares
+        // hipEventCreate/Record/ElapsedTime but not Destroy, and O2 compiles this file
+        // against it with -Wall -Werror.  The events are released with the process; a
+        // profiled run creates at most launches-per-frame * frames of them.
+    }
+    std::printf("LAUNCH_SUM_MS %d %d %.4f\n", fi, i, sum);
+    prof_ev.clear();
+}
 
 static void* dalloc(size_t n) { void* p; CK(hipMalloc(&p, n)); CK(hipMemset(p, 0, n)); return p; }
 
@@ -500,6 +535,7 @@ int main(int argc, char** argv) {
         CK(hipDeviceSynchronize());
         g_dump.end_frame();
         float ms = 0; CK(hipEventElapsedTime(&ms, ev0, ev1));
+        prof_flush(fi);
         CK(hipMemcpy(hostout.data(), out, hostout.size(), hipMemcpyDeviceToHost));
         spit(odir + "/out" + sfx + ".f32", hostout.data(), hostout.size());
         std::printf("frame %d done (parity %d)\nGPU_FRAME_MS %d %.4f\n", fi, p, fi, ms);
