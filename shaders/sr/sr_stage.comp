@@ -88,9 +88,16 @@ uint f32_to_e4m3_rne(float x) {
 }
 
 float nr_swin_exp(float x) {
-    float y = clamp(fma(x, 0.044921875, 1.30078125), 1.03125, 1.5693359375);
-    uint h = packHalf2x16(vec2(y, 0.0)) & 0xffffu;
-    return unpackHalf2x16((h & 0x03ffu) << 5u).x;
+    float16_t hx = float16_t(x);
+    float16_t y = clamp(hx * float16_t(unpackHalf2x16(0x00002466u).x),
+                        float16_t(unpackHalf2x16(0x0000b873u).x),
+                        float16_t(unpackHalf2x16(0x00003873u).x));
+    float16_t c = float16_t(unpackHalf2x16(0x00003b6bu).x);
+    float16_t base = fma(-y, y, c);
+    float16_t p = fma(y, base, float16_t(1.375));
+    uint h = packHalf2x16(vec2(float(p), 0.0)) & 0xffffu;
+    uint exp_bits = ((h << 5u) + 0x8000u) & 0xffffu;
+    return unpackHalf2x16(exp_bits).x;
 }
 
 float nr_swin_act(float x) {
@@ -201,7 +208,7 @@ void main() {
 
         // Compute attention logits & Softmax
         float prob[16];
-        float sum_exp = 0.0;
+        float16_t exp_half[16];
         for (uint j = 0; j < 16u; ++j) {
             float dot_qk = 0.0;
             for (uint c = 0; c < 32u; ++c) {
@@ -210,9 +217,24 @@ void main() {
             float b = float(read_f16(bias_base + (tok * 16u + j) * 2u));
             float p_exp = nr_swin_exp(dot_qk + b);
             prob[j] = p_exp;
-            sum_exp += p_exp;
+            exp_half[j] = float16_t(p_exp);
         }
-        float inv_sum = 1.0 / max(sum_exp, 1e-4);
+        float16_t s0 = exp_half[0] + exp_half[1];
+        float16_t s1 = exp_half[2] + exp_half[3];
+        float16_t s2 = exp_half[4] + exp_half[5];
+        float16_t s3 = exp_half[6] + exp_half[7];
+        float16_t s4 = exp_half[8] + exp_half[9];
+        float16_t s5 = exp_half[10] + exp_half[11];
+        float16_t s6 = exp_half[12] + exp_half[13];
+        float16_t s7 = exp_half[14] + exp_half[15];
+        float16_t s8 = s0 + s1;
+        float16_t s9 = s2 + s3;
+        float16_t s10 = s4 + s5;
+        float16_t s11 = s6 + s7;
+        float16_t s12 = s8 + s9;
+        float16_t s13 = s10 + s11;
+        float16_t sum_exp = s12 + s13;
+        float inv_sum = 1.0 / max(float(sum_exp), 1e-4);
         for (uint j = 0; j < 16u; ++j) {
             prob[j] = e4m3_to_f32(f32_to_e4m3_rne(prob[j] * inv_sum));
         }
