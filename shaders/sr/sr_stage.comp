@@ -10,6 +10,11 @@ layout(set = 0, binding = 0) readonly buffer InWeights { uint8_t wbuf[]; };
 layout(set = 0, binding = 1) readonly buffer InAct     { uint8_t in_act[]; };
 layout(set = 0, binding = 2) writeonly buffer OutAct   { uint8_t out_act[]; };
 layout(set = 0, binding = 3) buffer OutAct2            { uint8_t out_act2[]; };
+// Decoder (mode 2) skip input: oracle launches 11/12 pass it at StageArgs offset 16
+// (t3 for st8, t1 for st9).  Same [C/32][H][W][32] shape as this stage's own output, so
+// it is indexed with out_base.  Never read in mode 0 - that is why the oracle omits
+// offset 16 there.
+layout(set = 0, binding = 4) readonly buffer SkipAct    { uint8_t skip_act[]; };
 
 layout(push_constant) uniform StageArgs {
     uint wbuf_lo;
@@ -72,6 +77,25 @@ const float16_t e4m3_lut[256] = float16_t[256](
 
 float e4m3_to_f32(uint b) {
     return float(e4m3_lut[b & 255u]);
+}
+
+// Same mapping as e4m3_lut, built from the bit fields instead of looked up: verified
+// bit-identical to all 256 entries of that table (including -0 at 0x80 and the 480 that
+// 0x7f maps to).  The skip is converted inside the per-element write loop, and indexing
+// e4m3_lut there cost 6183 extra instructions and pushed ACO to 16 KB of scratch - VGPRs
+// are already at the 256 maximum - which fails offline O6.  Only the skip uses this, so
+// the input path's code generation is untouched.
+float e4m3_skip_to_f32(uint b) {
+    b &= 255u;
+    uint sign = (b & 0x80u) << 24;
+    uint e = (b >> 3) & 15u;
+    uint m = b & 7u;
+    if (e == 0u) {
+        if (m == 0u) return uintBitsToFloat(sign);          // +/- 0
+        uint k = (m >= 4u) ? 2u : ((m >= 2u) ? 1u : 0u);   // floor(log2(m)), m in 1..7
+        return uintBitsToFloat(sign | ((k + 118u) << 23) | ((m - (1u << k)) << (23u - k)));
+    }
+    return uintBitsToFloat(sign | ((e + 120u) << 23) | (m << 20));
 }
 
 uint f32_to_e4m3_rne(float x) {
@@ -334,6 +358,12 @@ void main() {
                 uint c = cg * 32u + P[i];
                 float b2 = float(read_f16(fc2_bias_base + c * 2u));
                 float v = clamp(float(s_act[tid][c]) + float(s_mlp[tid][c]) + b2, -448.0, 448.0);
+                // Mode 2 (decoder): the stage's output is its own result plus the encoder
+                // skip the oracle passes at offset 16.  skip_act is already in this stage's
+                // layout, so out_base addresses it directly.
+                if (mode == 2u) {
+                    v = clamp(v + e4m3_skip_to_f32(uint(skip_act[out_base + i])), -448.0, 448.0);
+                }
                 out_act[out_base + i] = uint8_t(f32_to_e4m3_rne(v));
             }
         }

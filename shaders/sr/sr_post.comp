@@ -1,14 +1,20 @@
 #version 460
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
 #extension GL_EXT_shader_16bit_storage : enable
+#extension GL_EXT_shader_8bit_storage : enable
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) readonly buffer InCol        { f16vec4 g_col[]; };
 layout(set = 0, binding = 1) readonly buffer InExpo       { f16vec2 expo; };
-layout(set = 0, binding = 2) readonly buffer InGates      { f16vec2 gates[]; };
-layout(set = 0, binding = 3) readonly buffer InFactors    { f16vec2 factors[]; };
+// gates/factors are dec0's u8vec4 output (lanes 0..2 used, lane 3 written 0 by
+// sr_dec0.comp), and the oracle's bytes agree: lane 3 is 0 for all 36864 pixels and
+// reading them as f16 makes 52.8% of gates non-finite.  Declaring them f16vec2, as this
+// shader did before, read the wrong bytes even if it had read them at all.
+layout(set = 0, binding = 2) readonly buffer InGates      { u8vec4 gates[]; };
+layout(set = 0, binding = 3) readonly buffer InFactors    { u8vec4 factors[]; };
 layout(set = 0, binding = 4) readonly buffer InAniso      { f16vec4 aniso[]; };
 layout(set = 0, binding = 5) readonly buffer InIhist      { f16vec4 in_ihist[]; };
 layout(set = 0, binding = 6) readonly buffer InPrevMv     { f16vec2 in_prev_mv[]; };
@@ -122,17 +128,55 @@ vec3 process_pixel(int x, int y, float e) {
     float fx = clamp(rx_f - float(x0), 0.0, 1.0);
     float fy = clamp(ry_f - float(y0), 0.0, 1.0);
 
-    vec3 c00 = clamp(vec3(g_col[y0 * W + x0].rgb), vec3(0.0), vec3(32752.0));
-    vec3 c10 = clamp(vec3(g_col[y0 * W + x1].rgb), vec3(0.0), vec3(32752.0));
-    vec3 c01 = clamp(vec3(g_col[y1 * W + x0].rgb), vec3(0.0), vec3(32752.0));
-    vec3 c11 = clamp(vec3(g_col[y1 * W + x1].rgb), vec3(0.0), vec3(32752.0));
+    // 1. Anisotropic spatial reconstruction: 9 taps weighted by the local colour
+    //    covariance dec0 wrote into `aniso` (Axx, Ayy, Axy).  `aniso` has exactly one
+    //    decoded meaning and this is it; s3x/s4y are rx_f/ry_f without the -0.5, so the
+    //    tap grid is centred the way the reference's is.  The diagonal is floored at 3.0
+    //    and the cross term is capped at 0.95*sqrt(Axx*Ayy) to keep the kernel positive.
+    //    This replaces the 2x2 bilinear box that was here before, which was invented.
+    float s3x = rx_f + 0.5;
+    float s4y = ry_f + 0.5;
+    int aniso_x = clamp(int(floor(s3x)), 0, W - 1);
+    int aniso_y = clamp(int(floor(s4y)), 0, H - 1);
+    uint aniso_idx = uint(aniso_y * W + aniso_x);
 
-    vec3 t00 = get_tonemapped(c00, e);
-    vec3 t10 = get_tonemapped(c10, e);
-    vec3 t01 = get_tonemapped(c01, e);
-    vec3 t11 = get_tonemapped(c11, e);
+    f16vec4 A = aniso[aniso_idx];
+    float Axx = max(float(A.x), 3.0);
+    float Ayy = max(float(A.y), 3.0);
+    float max_cross = sqrt(Axx * Ayy) * 0.95;
+    float Axy = clamp(float(A.z), -max_cross, max_cross);
 
-    vec3 t_curr = mix(mix(t00, t10, fx), mix(t01, t11, fx), fy);
+    int kx = int(floor(s3x - 0.5));
+    int ky = int(floor(s4y - 0.5));
+
+    vec3 num = vec3(0.0);
+    float den = 0.0;
+    vec3 cmin = vec3(1e9);
+    vec3 cmax = vec3(-1e9);
+    for (int dy = 0; dy < 3; ++dy) {
+        int in_y = clamp(ky + dy, 0, H - 1);
+        float ddy = (float(ky + dy) + 0.5) - s4y;
+        for (int dx = 0; dx < 3; ++dx) {
+            int in_x = clamp(kx + dx, 0, W - 1);
+            float ddx = (float(kx + dx) + 0.5) - s3x;
+
+            float dist = -(Axx * (ddx * ddx) + 2.0 * Axy * ddx * ddy + Ayy * (ddy * ddy));
+            float w = exp(dist);
+
+            vec3 c = clamp(vec3(g_col[in_y * W + in_x].rgb), vec3(0.0), vec3(32752.0));
+            num += w * c;
+            den += w;
+
+            vec3 tc = get_tonemapped(c, e);
+            cmin = min(cmin, tc);
+            cmax = max(cmax, tc);
+        }
+    }
+    vec3 t_spatial = get_tonemapped(num / max(den, 1e-6), e);
+
+    // Color gamut box expanded by 10%, from the same 9 taps
+    cmin = max(1.1 * cmin - vec3(0.05), vec3(0.0));
+    cmax = 1.1 * cmax + vec3(0.05);
 
     // Bilinear motion vector interpolation across continuous coordinate
     vec2 mv00 = vec2(in_mv_nondil[y0 * W + x0]);
@@ -145,22 +189,31 @@ vec3 process_pixel(int x, int y, float e) {
     float px = float(x) + mv.x + mvoffx;
     float py = float(y) + mv.y + mvoffy;
 
-    // Color gamut bounding box to prevent ghosting
-    vec3 cmin = min(min(t00, t10), min(t01, t11));
-    vec3 cmax = max(max(t00, t10), max(t01, t11));
-
     if (reset_flag == 0u && px >= 0.0 && px <= float(W15 - 1) && py >= 0.0 && py <= float(H15 - 1)) {
         vec3 t_hist = sample_history(px, py);
         if (dot(t_hist, t_hist) > 1e-6) {
             vec3 t_hist_clamped = clamp(t_hist, cmin, cmax);
-            vec3 diff = abs(t_hist - t_curr);
-            float max_diff = max(max(diff.r, diff.g), diff.b);
-            float h_weight = clamp(0.90 - max_diff * 2.0, 0.0, 0.90);
-            return mix(t_curr, t_hist_clamped, h_weight);
+
+            // 2 & 3. dec0's temporal gate and 3-way factor blend.  `gates` is the
+            // per-channel confidence in 0..255 and `factors` the three blend weights,
+            // each also 0..255 and read as lane0..lane2 (lane3 is written 0 by dec0).
+            // The candidate mixes spatial, raw history and box-clamped history, and the
+            // gate decides how far to move off the spatial-only result.  This replaces
+            // the hand-tuned `0.90 - max_diff*2.0` weight that was here before, which
+            // was invented; `gates`/`factors`/`aniso` now all have consumers.
+            u8vec4 u_gate = gates[aniso_idx];
+            u8vec4 u_fact = factors[aniso_idx];
+            vec3 g = vec3(float(u_gate.x), float(u_gate.y), float(u_gate.z)) * (1.0 / 255.0);
+            float f0 = float(u_fact.x) * (1.0 / 255.0);
+            float f1 = float(u_fact.y) * (1.0 / 255.0);
+            float f2 = float(u_fact.z) * (1.0 / 255.0);
+
+            vec3 t_cand = f0 * t_spatial + f1 * t_hist + f2 * t_hist_clamped;
+            return mix(t_spatial, t_cand, g);
         }
     }
 
-    return t_curr;
+    return t_spatial;
 }
 
 void main() {
