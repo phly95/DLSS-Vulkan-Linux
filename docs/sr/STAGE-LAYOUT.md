@@ -300,3 +300,89 @@ against the oracle (Review R1), not packer facts.
 | mlp7.fc1 | +0xa0 | frag fp8 | 68032 | 2048 | 32x64 | 32x64 = slot rows 224..255 |
 | mlp7.b1 | +0xb0 | f16 PERMUTED | 70080 | 64 | 32 | 32 halfs |
 | mlp7.fc2 | +0xc0 | frag fp8 | 70144 | 2048 | 64x32 | 64x32 = slot cols 224..255 |
+
+## enc0.bin and dec0.bin (presets M and L)
+
+sr_pack.build() writes enc0.bin and dec0.bin for each preset. This map is recorded from build() itself: its slot counts are the packer's own checks, the slots are zero-filled to those counts (slot 0x200 with the 16 values the packer reads past its end), and the dither is zero-filled to the size build() leaves for it. pack_layer(ENC0L) and pack_layer(DEC0L) are stage-like (C = 32) and use the stage labels; their slot ids are absolute (base 0x120 for ENC0L, 0xe40 for DEC0L). Semantics are not decoded unless sr_pack names them.
+
+### M: enc0.bin, 12416 bytes
+
+| region | slot | encoding | offset | bytes | shape | note |
+|---|---|---|---:|---:|---|---|
+| dither (name in sr_pack) | - | raw | 0 | 4096 | raw | bytes of dither.bin; the size is what build() leaves over (not checked by sr_pack); semantics not yet decoded |
+| matrix (no name in sr_pack) | 0x200 | frag fp8 | 4096 | 8192 | 64x128 | element (r, c) = slot 0x200[(c & 31) + 20 * (c >> 5) + 80 * r] (to_e4m3), 16 halfs read past the count; semantics not yet decoded |
+| vector (no name in sr_pack) | 0x210 | f16 PERMUTED | 12288 | 128 | 64 | semantics not yet decoded |
+
+### M: dec0.bin, 8448 bytes
+
+| region | slot | encoding | offset | bytes | shape | note |
+|---|---|---|---:|---:|---|---|
+| matrix (no name in sr_pack) | 0xf40 | frag fp8 | 0 | 8192 | 128x64 | element (r, c) = slot 0xf40[64 * r + c] (to_e4m3); semantics not yet decoded |
+| vector (no name in sr_pack) | 0xf50 | f16 PERMUTED | 8192 | 256 | 128 | semantics not yet decoded |
+
+Not in dec0.bin: slots 0xf60, 0xf70 and 0xf80 are read after the blob is written. params.json holds dec0_s0 = min(exp(f16 0xf60[0]), 8), dec0_f0 = exp(0xf70[0]) and dec0_f1 = exp(0xf80[0]) as f32. Preset M checks their counts; preset L reads them unchecked.
+
+### L: enc0.bin, 30464 bytes
+
+| region | slot | encoding | offset | bytes | shape | note |
+|---|---|---|---:|---:|---|---|
+| dither (name in sr_pack) | - | raw | 0 | 4096 | raw | bytes of dither.bin; the size is what build() leaves over (not checked by sr_pack); semantics not yet decoded |
+| matrix (no name in sr_pack) | 0x120 | frag fp8 | 4096 | 1024 | 32x32 | element (r, c) = slot 0x120[20 * r + c] for c < 20, 0 for c >= 20; semantics not yet decoded |
+| vector (no name in sr_pack) | 0x130 | f16 PERMUTED | 5120 | 64 | 32 | semantics not yet decoded |
+| matrix (no name in sr_pack) | 0x140 | frag fp8 | 5184 | 1024 | 32x32 | element (r, c) = slot 0x140[32 * r + c]; semantics not yet decoded |
+| vector (no name in sr_pack) | 0x150 | f16 PERMUTED | 6208 | 64 | 32 | semantics not yet decoded |
+| gain1 (s1b0) | 0x160 | f16 PERMUTED | 6272 | 64 | 32 | x sqrt(C); RMSNorm1 gain, applied AFTER x/||x|| |
+| head0.QK | 0x170 | frag fp8 | 6336 | 2048 | 64x32 | rows 0..31 Wq, 32..63 Wk (slot rows 0.. and 64..) |
+| head0.relpos (v258) | 0x1a0 | f16 block plain | 8384 | 512 | 16x16 | 16x16 f16, x sqrt(32) x 0.5 |
+| head0.Wo | 0x180 | frag fp8 | 8896 | 1024 | 32x32 | Cx32 = slot cols 0..31; per-head output projection, V = K |
+| head1.QK | 0x170 | frag fp8 | 9920 | 2048 | 64x32 | rows 0..31 Wq, 32..63 Wk (slot rows 32.. and 96..) |
+| head1.relpos (v258) | 0x1a0 | f16 block plain | 11968 | 512 | 16x16 | 16x16 f16, x sqrt(32) x 0.5 |
+| head1.Wo | 0x180 | frag fp8 | 12480 | 1024 | 32x32 | Cx32 = slot cols 32..63; per-head output projection, V = K |
+| v270 | 0x190 | f16 PERMUTED | 13504 | 64 | 32 | added to the residual after attention |
+| gain2 (s198) | 0x1b0 | f16 PERMUTED | 13568 | 64 | 32 | x sqrt(C); RMSNorm2 gain, applied AFTER x/||x|| |
+| mlp0.fc1 | 0x1c0 | frag fp8 | 13632 | 1024 | 32x32 | 32x32 = slot rows 0..31 |
+| mlp0.b1 | 0x1d0 | f16 PERMUTED | 14656 | 64 | 32 | 32 halfs |
+| mlp0.fc2 | 0x1e0 | frag fp8 | 14720 | 1024 | 32x32 | 32x32 = slot cols 0..31 |
+| fc2_bias (v240) | 0x1f0 | f16 PERMUTED | 15744 | 64 | 32 | 32 halfs, written once after block 0 |
+| mlp1.fc1 | 0x1c0 | frag fp8 | 15808 | 1024 | 32x32 | 32x32 = slot rows 32..63 |
+| mlp1.b1 | 0x1d0 | f16 PERMUTED | 16832 | 64 | 32 | 32 halfs |
+| mlp1.fc2 | 0x1e0 | frag fp8 | 16896 | 1024 | 32x32 | 32x32 = slot cols 32..63 |
+| mlp2.fc1 | 0x1c0 | frag fp8 | 17920 | 1024 | 32x32 | 32x32 = slot rows 64..95 |
+| mlp2.b1 | 0x1d0 | f16 PERMUTED | 18944 | 64 | 32 | 32 halfs |
+| mlp2.fc2 | 0x1e0 | frag fp8 | 19008 | 1024 | 32x32 | 32x32 = slot cols 64..95 |
+| mlp3.fc1 | 0x1c0 | frag fp8 | 20032 | 1024 | 32x32 | 32x32 = slot rows 96..127 |
+| mlp3.b1 | 0x1d0 | f16 PERMUTED | 21056 | 64 | 32 | 32 halfs |
+| mlp3.fc2 | 0x1e0 | frag fp8 | 21120 | 1024 | 32x32 | 32x32 = slot cols 96..127 |
+| down_proj.W | 0x200 | frag fp8 | 22144 | 8192 | 64x128 | 64x128, mode-0 2x2 patch-merge projection -> second output |
+| down_proj.b | 0x210 | f16 PERMUTED | 30336 | 128 | 64 | 64 halfs |
+
+### L: dec0.bin, 24320 bytes
+
+| region | slot | encoding | offset | bytes | shape | note |
+|---|---|---|---:|---:|---|---|
+| up_proj.W | 0xf40 | frag fp8 | 0 | 8192 | 128x64 | 128x64, mode-2 upsample projection |
+| up_proj.b | 0xf50 | f16 PERMUTED | 8192 | 256 | 128 | 128 halfs |
+| gain1 (s1b0) | 0xe80 | f16 PERMUTED | 8448 | 64 | 32 | x sqrt(C); RMSNorm1 gain, applied AFTER x/||x|| |
+| head0.QK | 0xe90 | frag fp8 | 8512 | 2048 | 64x32 | rows 0..31 Wq, 32..63 Wk (slot rows 0.. and 64..) |
+| head0.relpos (v258) | 0xec0 | f16 block plain | 10560 | 512 | 16x16 | 16x16 f16, x sqrt(32) x 0.5 |
+| head0.Wo | 0xea0 | frag fp8 | 11072 | 1024 | 32x32 | Cx32 = slot cols 0..31; per-head output projection, V = K |
+| head1.QK | 0xe90 | frag fp8 | 12096 | 2048 | 64x32 | rows 0..31 Wq, 32..63 Wk (slot rows 32.. and 96..) |
+| head1.relpos (v258) | 0xec0 | f16 block plain | 14144 | 512 | 16x16 | 16x16 f16, x sqrt(32) x 0.5 |
+| head1.Wo | 0xea0 | frag fp8 | 14656 | 1024 | 32x32 | Cx32 = slot cols 32..63; per-head output projection, V = K |
+| v270 | 0xeb0 | f16 PERMUTED | 15680 | 64 | 32 | added to the residual after attention |
+| gain2 (s198) | 0xed0 | f16 PERMUTED | 15744 | 64 | 32 | x sqrt(C); RMSNorm2 gain, applied AFTER x/||x|| |
+| mlp0.fc1 | 0xee0 | frag fp8 | 15808 | 1024 | 32x32 | 32x32 = slot rows 0..31 |
+| mlp0.b1 | 0xef0 | f16 PERMUTED | 16832 | 64 | 32 | 32 halfs |
+| mlp0.fc2 | 0xf00 | frag fp8 | 16896 | 1024 | 32x32 | 32x32 = slot cols 0..31 |
+| fc2_bias (v240) | 0xf10 | f16 PERMUTED | 17920 | 64 | 32 | 32 halfs, written once after block 0 |
+| mlp1.fc1 | 0xee0 | frag fp8 | 17984 | 1024 | 32x32 | 32x32 = slot rows 32..63 |
+| mlp1.b1 | 0xef0 | f16 PERMUTED | 19008 | 64 | 32 | 32 halfs |
+| mlp1.fc2 | 0xf00 | frag fp8 | 19072 | 1024 | 32x32 | 32x32 = slot cols 32..63 |
+| mlp2.fc1 | 0xee0 | frag fp8 | 20096 | 1024 | 32x32 | 32x32 = slot rows 64..95 |
+| mlp2.b1 | 0xef0 | f16 PERMUTED | 21120 | 64 | 32 | 32 halfs |
+| mlp2.fc2 | 0xf00 | frag fp8 | 21184 | 1024 | 32x32 | 32x32 = slot cols 64..95 |
+| mlp3.fc1 | 0xee0 | frag fp8 | 22208 | 1024 | 32x32 | 32x32 = slot rows 96..127 |
+| mlp3.b1 | 0xef0 | f16 PERMUTED | 23232 | 64 | 32 | 32 halfs |
+| mlp3.fc2 | 0xf00 | frag fp8 | 23296 | 1024 | 32x32 | 32x32 = slot cols 96..127 |
+
+Not in dec0.bin: slots 0xf60, 0xf70 and 0xf80 are read after the blob is written. params.json holds dec0_s0 = min(exp(f16 0xf60[0]), 8), dec0_f0 = exp(0xf70[0]) and dec0_f1 = exp(0xf80[0]) as f32. Preset M checks their counts; preset L reads them unchecked.
