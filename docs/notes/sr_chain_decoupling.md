@@ -71,3 +71,35 @@ diffdump (0.43% vs 1.16% bit-exact) because the surrounding attention semantics 
 at equal logits, denominator table at low Sigma) are not yet settled, and in the current
 decoupled chain it cannot move the pipeline number either way.  It lands with the attention
 completion, not before.
+
+## Campaign order and rules as set on 2026-10-26 (operator)
+
+Order: **A** (refresh `HANDOFF.md`) -> **D** (profile the ~60 ms/frame, quiet GPU) ->
+**B** (wire the network) -> **C** (judge by per-kernel oracle-input fidelity) ->
+**E** (decode, probes first).  D precedes B deliberately: today's cost is the *disconnected*
+chain (`bf60ac0`), so it is the only clean baseline before wiring adds reads; and if real time
+is far out of reach that changes how much fidelity work is worth.  One quick re-profile after
+B records wiring's cost delta.
+
+**No-revert rule (pre-committed).**  Wiring `sr_post` to gates/factors/aniso will make it
+faithfully consume outputs from kernels that are still wrong (`k_sr_stage` correlation 0.455
+with oracle inputs; `k_sr_dec0` ~0.5% exact on `hidden1`), so the end-to-end figure is expected
+to drop from 33.76 dB toward ~28 dB.  This already happened once in the other direction: the
+faithful post `a3a050b` measured worse (28.15/30.14) and was reverted by `99b33b2`.  **Do not
+undo the wiring to recover a number, under any circumstances.**  Until the network kernels
+improve, progress is judged per-kernel with oracle inputs (launch-level PSNR/correlation via
+`DLSS5_AMD_INJECT_DIR` / `diffdump.py`), not by the end-to-end figure.  The commit message for
+the wiring must state the expected drop explicitly so nobody mistakes it for a regression.
+Attempt-5 `sr_post` is a **stand-in**, never "the baseline".
+
+**Instrument ranking (unchanged by the emulator-ban lift).**  srref synthetic-weight probing
+primary - it settled `k_sr_stage` attempt 5 faster than four attempts of ISA reading and its
+results verify directly against oracle dumps; the emulator (`build/work/enc0emu.py`, authorized
+2026-10-26) secondary; ISA reading last.  Order by measured leverage.
+
+**Milestone (orchestrator, 2026-11-02):** after A, D and B have landed, at least one large
+network kernel - `k_sr_stage` or `k_rr_level` - must reach **>= 40 dB per-launch PSNR against
+oracle inputs** (diffdump oracle-input mode / the injection harness, the same machinery as the
+chain-leverage tables), with the measurement pasted.  If it misses, that is a condition-(c)
+report: come back with the actual number, what was tried, and why - no silent continuation
+past the date.  Target and date are fixed until the operator says otherwise.

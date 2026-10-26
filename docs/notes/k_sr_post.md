@@ -66,5 +66,30 @@
 - **Verdict**: commit `99b33b2` restored attempt 5's shader. The attempt-6 rewrite is more ISA-faithful (Catmull-Rom history, covariance floor) but faithfully consumes `k_sr_dec0`'s still-wrong gates/factors (`u8vec4` confidence channels), amplifying their error; attempt 5's `f16vec2` reading of the same bytes is more forgiving. Re-evaluate attempt 6 only after `k_sr_dec0` is decoded.
 - **Do not retry**: sr_stage @ dfaed7f, sr_tube_split @ 30b5455, sr_enc0 @ 4ec6263 / cfe5b15 in the current chain - all measured 32.20 / 33.76 (identical to 2 decimals); only the post swap moves the pipeline.
 
+## Provenance of the shader now in the tree (attempt 5) - READ BEFORE CITING IT
+
+**The `sr_post.comp` in the tree is invented, not decoded.** It is a stand-in, never "the baseline".
+Its three defining pieces have no counterpart established from NeuralHub's ISA:
+
+- **bilinear MV warp** of `in_mv_nondil` across continuous subpixel coordinates;
+- **color-box clamp** `clamp(t_hist, cmin, cmax)` over the 4 tonemapped neighbours;
+- **disocclusion floor** `h_weight = clamp(0.90 - max_diff * 2.0, 0.0, 0.90)` - the `0.90` and the
+  `* 2.0` are hand-tuned constants, not decoded ones.
+
+`gates`, `factors` and `aniso` are declared on bindings 2/3/4 and **never read**. This conflicts with
+`HANDOFF.md` "Do not retry" (no generic TAA blends); it is kept only because it holds the best measured
+number (sr_M 32.20/33.76, sr_L 32.82/34.08), pending a decode of `k_sr_post`'s real gate/factor/aniso
+path. Do not extend its invented logic to any other kernel, do not cite it as a decoded kernel, and do
+not present its number as a parity milestone.
+
+**Expected drop when the network is wired (pre-committed).** Once `sr_post` consumes gates/factors/aniso
+it will faithfully consume outputs from kernels that are still wrong (`k_sr_stage` correlation 0.455
+with oracle inputs; `k_sr_dec0` ~0.5% exact on `hidden1`), so the end-to-end figure is expected to fall
+from 33.76 toward ~28 dB. This exact pattern already happened once: the faithful post `a3a050b`
+measured *worse* (28.15/30.14) and was reverted by `99b33b2`. **That revert is not to be repeated.**
+Once the wiring lands, do not undo it to recover a number. Until the network kernels improve, progress
+is judged per-kernel against oracle inputs (launch-level PSNR/correlation via
+`DLSS5_AMD_INJECT_DIR` / `diffdump.py`), not by the end-to-end figure.
+
 
 
