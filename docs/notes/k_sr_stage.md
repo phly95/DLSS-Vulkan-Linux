@@ -319,3 +319,159 @@ the port's bias+V region (4736..5760) and the second 1024 is inert unless head1 
 bisect the bias and V regions with `probe_craft.py` (it can write arbitrary f16/f8 into any
 region) against `probe_ctx.py`, which now has a known-good normalizer to compare against,
 rather than reading the layout off the ISA.
+
+### Attempt 8 (2026-10-26): the oracle's REAL attention isolated; weights right, V read wrong
+
+Three findings force a re-reading of attempt 7's "content is the blocker", plus a set of
+instrument bugs that had made two earlier conclusions invalid.
+
+#### Instrument bugs found and fixed (all in git-ignored `build/work/`)
+
+1. **`no_perm_store` / `invP_store` were literal no-ops.** `PS` was computed at line 163 but
+   the store used a hardcoded `P[i]`, so attempt 7's "store permutation is inert in this
+   replica" was never tested.  With `PS` actually used: `no_perm_store` **-0.1301**,
+   `invP_store` **-0.1305** vs port **+0.2019** -> the port's store `P` is *correct*, now
+   measured rather than assumed.
+2. **`build_weights()` was called without its variant**, so the `bias_after_v` layout was
+   never reachable - same class of dead variant as `PS`.  Fixed by passing `variant` through.
+3. **`ulp()` returned the fp8 *value*, not the *step*.** The resulting "noise floor" (1.72)
+   overstated the floor ~10x and would have wrongly declared the oracle's attention
+   unmeasurable.  Corrected (`e>=1 -> 2^(e-10)`, `e==0 -> 2^-9`): floor is **0.1459**.
+4. In `probe_w.py`, a token-coordinate typo (`tok % 4` for `tok // 4`), a missing load
+   permutation (`s_act[tid, cg*32 + P]`), and a transposed least-squares system each had to
+   be fixed before any solve meant anything.
+
+#### New instruments (git-ignored)
+
+- `probe_craft.py --isolate` - keeps **every** weight real (QK, bias, V, gains) and zeroes
+  only `v270` + the MLP, so the oracle's dump *is its own real attention*.
+- `probe_craft.py --zero-range LO:HI` - byte-liveness tests, composable with `--isolate`.
+- `probe_attn.py` - scores **attention outputs**: `ctx = dequant(t1) - dequant(t0)` on each
+  side, so the shared input `A` (which inflates any t1-vs-t1 correlation) is removed.
+- `probe_w.py` - Exp A (free `w`, port's V) and Exp B (free `Wv`, port's weights), plus a
+  swapped head->channel control; exports fitted `Wv`.
+- `probe_multi.py` - fits ONE `w` across five probes that differ only in V bytes.
+- `probe_vsweep.py` - ranks candidate V reads purely by correlation (scale-invariant).
+
+#### Result 1 - the bias region does not drive the oracle's logits
+
+| probe | construction | oracle ctx |
+|---|---|---|
+| `neg_var` | QK 0, bias **-33..-8** | **0.0000** |
+| `neg_eq` | QK 0, bias **-20** | **0.0000** |
+| `sat_act` | QK 0, bias 8..33 | **0.0000** |
+| `qk2` | QK 2.0, bias 0 | **+15.05** |
+
+Varying the bias - positive or negative, equal or spread - never activates attention, while
+a non-zero QK fill always does.  So the oracle's logits are `Q.K` only; the port's
+`logits[tid,j] = Q@K + bias[tok,j]` adds a term the oracle does not have.  Consistent with
+attempt 7's `no_bias` = 0.4665 vs 0.4551 (small, so not the main error).
+
+#### Result 2 - the oracle's real attention is now measured directly
+
+With `--isolate`, both sides drop `v270` + MLP, so `ctx = t1 - t0` *is* the attention:
+
+```
+ctx_oracle: mean +0.1060  mean|ctx| 0.9300  max|ctx| 4.3125
+input t0  : mean|a0| 0.4716  -> ctx is 197.2% of the input magnitude
+noise floor (one fp8 step): mean 0.14592   -> mean|ctx|/noise = 6.37
+```
+
+The attention output is **twice the size of the input it is added to**, and it is 6.4x above
+the fp8 differencing noise, so it is fully measurable.  On this metric:
+
+| variant | corr(ctx) | corr(t1) | rRMSE(ctx) |
+|---|---:|---:|---:|
+| `port` (softmax) | **+0.2019** | +0.5447 | 1.2141 |
+| `subminnorm` | +0.2019 | +0.5447 | 1.2142 |
+| `no_prob8` | +0.2021 | +0.5450 | 1.2138 |
+| attention removed (`q5b`) | n/a (ctx=0) | +0.5735 | **1.2055** |
+| `maxsub` / `q5` / `q5d` | -0.1701 | -0.0594 | 464.3 |
+
+`corr(t1)` alone is misleading: both sides share the input, so "no attention at all" scores
+0.5735 there.  The honest number is **corr(ctx) = 0.2019**, and its rRMSE (1.2141) is barely
+better than predicting zero attention (1.2055): the port's attention explains **~4%** of the
+variance of the oracle's real attention.
+
+#### Result 3 - all 4096 V bytes are live (attempt 5's "second 1024 inert" refuted)
+
+Zeroing each 1024-byte half in turn, oracle vs `real_attn`:
+
+| probe | bytes changed | \|Δctx\| | Δ/noise | corr(Δ, ctx) |
+|---|---:|---:|---:|---:|
+| `v0a` (4736..5760) | 317437 | 0.4906 | 3.36 | -0.4143 |
+| `v0b` (5760..6784) | 322400 | 0.5033 | 3.45 | -0.3673 |
+| `v1a` (11392..12416) | 315595 | 0.4246 | 2.91 | -0.3095 |
+| `v1b` (12416..13440) | 312087 | 0.4466 | 3.06 | -0.2751 |
+
+Every half changes ~half the output by ~3x the noise floor, so neither V region has an inert
+second half.  (Verified the four probes differ from `real_attn` only in those exact ranges:
+1014-1019 bytes each.)
+
+#### Result 4 - the attention WEIGHTS are right; the V read is wrong
+
+Because `w` depends only on logits (Q, K, bias - untouched by these probes), all five probes
+share **one** `w` while exposing five different `V`.  So a single `w` must fit all of them:
+
+| head | fit on 2 V sets | held-out (3rd probe) | fit all 3 | noise floor |
+|---|---:|---:|---:|---:|
+| 0 | 0.8344 | **0.9511** (corr +0.3247) | 0.8515 | 0.157 |
+| 1 | 0.8008 | **1.1027** (corr -0.0163) | 0.8790 | 0.157 |
+
+Residuals sit at 0.80-1.10 against a noise floor of 0.157, and recovered `w` values are
+garbage (max 117598, 50% negative): **no attention weights can explain the oracle's output
+through the port's V**.  That is a statement about V, not about `w`.
+
+The weights are independently vindicated by Exp B controls (free `Wv`, port's `prob`):
+
+| prob source | h0 explained | h1 explained |
+|---|---:|---:|
+| **port softmax** | **83.9%** | **50.7%** |
+| `subminnorm` | 83.9% | 50.7% |
+| `no_softmax` (unnormalised) | 79.9% | 22.6% |
+| `div16` | 79.6% | 22.6% |
+| uniform 1/16 | 61.4% | 47.8% |
+| **shuffled port** | **49.8%** | 48.0% |
+| random dirichlet | 59.8% | 46.2% |
+
+The port's normalised softmax beats every control by ~34 points on head0, so the *weight
+structure* is right while the *V read* is wrong - and the fitted `Wv` that works is **not a
+rearrangement of the port's bytes**: overall corr(fitted, port) = 0.078 (h0) / 0.000 (h1),
+best row permutation reaches only cosine 0.405 with 33/64 (h0) and 24/64 (h1) distinct
+assignments (a true permutation would be 64/64), full rank 32/32.
+
+#### Result 5 - neither the obvious alternatives nor the mapping explain it
+
+- head->channel swap: h0 0.4011->0.3994, h1 0.7020->0.5850 - not the cause.
+- V basis: `snorm` 83.9/50.7, `snorm_nogain` identical (gain1 is absorbed by the free `Wv`),
+  `sact` 79.1/48.8 - not the cause.
+- V layout sweep, predictive corr(ctx), port's read = 0.1884 (h0) / 0.2333 (h1):
+
+| candidate | corr h0 | corr h1 |
+|---|---:|---:|
+| `frag(k,c,32)` **[port]** | **+0.1884** | +0.2333 |
+| `frag, first 1024 only` | -0.0003 | **+0.3070** |
+| `frag(P[k],c,32)` | +0.1142 | +0.2038 |
+| `frag, e5m2 decode` | +0.1773 | +0.1554 |
+| `rowmajor k*32+c` | +0.1186 | -0.1833 |
+| `frag(k,P[c],32)` | +0.1113 | -0.1499 |
+| V in bias region (`bias_after_v`) | +0.0866 | -0.0830 |
+| `frag reversed` | +0.0432 | -0.0233 |
+| `frag(k,c,16)` | +0.0090 | -0.0065 |
+| `rowmajor c*64+k` | -0.1824 | -0.0544 |
+| `frag(c,k,32)` | -0.3119 | -0.0948 |
+
+No candidate decodes V: the port's own read remains the best for head0, and the only
+"improvement" (head1 dropping to its first 1024 bytes) is an *ignore-the-broken-half* effect,
+not a decode - since Result 3 proves those bytes are live.
+
+**Nothing landed.**  All of these are measurements; no edit went into `sr_stage.comp`.
+
+**Next step:** stop guessing swizzles and *measure* the byte->(k,c) mapping.  A byte `p` in
+the V region is exactly one entry `Wv[k,c]`, so with `ctx[t,c] = Wv[k,c] * sum_j prob(t,j)
+s_norm[j,k]`, a probe that activates a chosen input channel `k0` (via a non-uniform `gain1`)
+and sets selected V bytes makes the *set of channels that respond* reveal `c(p)`, while the
+response over queries reveals `k0`.  Bit-plane probes over `p` (8 probes) plus a handful of
+`gain1` selections recover the mapping empirically instead of formula-guessing; the mapping
+is a bijection (2048 bytes <-> 64x32), so a dozen well-chosen probes should pin the swizzle.
+Head 1 (51% explained vs head0's 84%) is the more suspect of the two and the place to start.
