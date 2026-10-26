@@ -162,3 +162,62 @@ Probe campaigns (all via `srref --dump` on crafted weight dirs + the NumPy repli
 - **Status**: APPROX.  Next in this kernel: settle the equal-logit/table regime (find the
   embedded table in the .co at the PC-relative base), then land max-subtraction + Q5 + the
   mode-2 skip wiring as one change.
+
+### Attempt 6 (2026-10-26): the probe regime does not span the real one - reconcile before landing
+
+Instrument: `build/work/stage_model.py` (NumPy replica), scored by `corr vs oracle t0 -> t1`
+against `sr_M/dump/frame0/003.t0.bin`/`003.t1.bin`, with `STAGE_WDIR`/`STAGE_ORC` pointed at a
+crafted-weight probe to score the *same* variants in probe space.  **Cross-validation first:**
+replica `port` = **0.4551**, and `tools/report/launch_report.py` on the real GPU launch 3 with
+oracle inputs = **r 0.455124** (Step C baseline) - the offline replica and the GPU measurement
+agree to four decimals, so this instrument may be trusted.
+
+Variant sweep, `corr vs oracle`, one row per hypothesis:
+
+| variant | real weights -> oracle t1 | probe `sAB` -> oracle t1 |
+|---|---:|---:|
+| `port` (plain softmax, as shipped) | **0.4551** | 0.2627 |
+| `ctx32` (plain softmax x32) | 0.1003 | **0.6758** |
+| `q5c` (x32 + fp8 probs) | 0.1002 | **0.6758** |
+| `maxsub` (exp - max, then /sum) | -0.0537 | -0.5521 |
+| `q5b` / `q5g` (maxsub + `max(u,0)`) | **0.5739** | 0.1071 |
+| `q5` / `q5d` | -0.0537 | -0.0537 |
+| `q5e` | 0.0516 | - |
+| `no_div` | -0.0446 | - |
+| `div16` | 0.1070 | - |
+| `ctx_replace` | 0.2461 | - |
+| `no_prob8` | 0.4554 | - |
+| `qk_fp8` / `v_fp8` | 0.4551 / 0.4551 | - |
+
+**The two spaces disagree completely.**  Real weights prefer `q5b` (0.4551 -> 0.5739) and hate
+`ctx32`; probe space prefers `ctx32`/`q5c` (0.2627 -> 0.6758) and hates `q5b` (0.1071) and
+`maxsub` (-0.5521).  No single tested variant wins both, which is the note's earlier
+"two regimes are not yet reconciled" showing up as a measurement rather than a hunch.
+
+**Why, measured** (`STAGE_STATS=1`, logit/pe statistics per head per token-batch):
+
+| | logits min..max | mean | count `logit > 11` | pe max | non-finite |
+|---|---|---:|---:|---:|---:|
+| real weights | -22.1 .. **+33.4** | -9.9 | **64 / 1024** | **256** | 0 |
+| probe `sAB` | -3.5 .. **+13.4** | 0.6 .. 7.9 | 0-7 / 1024 | **11.5** | 0 |
+
+The real regime runs logits up to **33**, where `exp` saturates (pe pinned at 256); the sAB
+probe never leaves the low-logit region (pe <= 11.5) and 6 of its 8 head-batches sit at
+`logit == 0.0` exactly.  **A formula fitted on sAB is fitted on a regime the real kernel
+never occupies, and vice versa** - which is why `ctx32` and `q5b` swap places between the
+two columns.  This also explains the note's earlier contradiction (maxsub reproduces the
+equal-logit dead-attention probes bit-exactly, yet fails every active-regime probe).
+
+**Do not land any of these into `sr_stage.comp` yet** - the `inv_sum = 32.0` edit already
+measured worse on real inputs when landed piecemeal (1.1595% -> 0.4305% bit-exact).
+
+**Next step:** design probes that cover the *real* regime - push logits past 11 (large Q/K
+weights or a high-contrast frame) so `exp` saturates, and sweep Sigma there, instead of
+extending the low-logit sAB sweep.  Then one formula must fit both the saturation regime and
+the equal-logit regime before anything lands.  Judge every result with
+`tools/report/launch_report.py` (Step C): baselines st0 **4.9783 dB / r 0.455124**,
+st8 7.8425 / 0.093988, st9 4.6123 / 0.058489.
+
+Instrument change (uncommitted, `build/work/stage_model.py`, under `build/` like every other
+probe): an env-guarded `STAGE_STATS=1` block right after `pe = nr_swin_exp(logits)` that prints
+min/max/mean, the count above 11 and above 88, and pe's non-finite count and maximum.
