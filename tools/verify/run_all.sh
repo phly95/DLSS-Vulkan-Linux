@@ -259,8 +259,36 @@ INSTALLER=$ROOT/build/package/install.sh
 [[ -f "$INSTALLER" ]] || fail "V9: no package at $INSTALLER"
 bash tools/verify/ngx_client/build.sh "$SCRATCH/ngx_client.exe" > "$SCRATCH/ngx_build.log" 2>&1 || { cat "$SCRATCH/ngx_build.log"; fail "V9: ngx_client build"; }
 STEAM=$HOME/.local/share/Steam
-PROTON=$(ls -d "$STEAM"/compatibilitytools.d/*/proton "$STEAM"/steamapps/common/Proton*/proton 2>/dev/null | sort -V | tail -1)
-[[ -x "$PROTON" ]] || fail "V9: no Proton under $STEAM"
+# Pick a Proton that can actually start ngx_client here. The Wine 11 builds (Proton -
+# Experimental, Proton Hotfix, Proton 11.0) wedge every `proton run` before it loads
+# anything, and `sort -V | tail -1` selected exactly those (docs/OPEN.md, "Proton 11
+# process startup"). Probe newest-first with the just-built client and a bogus argument:
+# a healthy build rejects it with exit 1 (measured 2026-10-26: Proton 10.0, 1.6 s on a
+# fresh prefix), a wedged one hits `timeout 20` and returns 124 (measured: Experimental,
+# Hotfix, 11.0; killing a wedged probe does not poison the next candidate, and the
+# selection cost on this machine is 3x20 s + ~2 s). PROTON=<path> skips the probe.
+# 2026-10-26: operator-authorized exception to the frozen tools/verify/ rule - this
+# Proton selection is the only change allowed in this file.
+if [[ -n ${PROTON:-} ]]; then
+    echo "  Proton probe: skipped (PROTON set by the caller)"
+else
+    probe_n=0
+    while IFS= read -r probe_cand; do
+        probe_n=$((probe_n + 1))
+        mkdir -p "$SCRATCH/prefix_probe_$probe_n"
+        timeout 20 "${PROTON_ENV[@]}" STEAM_COMPAT_DATA_PATH="$SCRATCH/prefix_probe_$probe_n" \
+            STEAM_COMPAT_CLIENT_INSTALL_PATH="$STEAM" \
+            "$probe_cand" run "$SCRATCH/ngx_client.exe" --nonsense-arg \
+            > "$SCRATCH/proton_probe_$probe_n.log" 2>&1
+        probe_rc=$?
+        echo "  Proton probe rc=$probe_rc: $probe_cand"
+        if [[ $probe_rc -eq 1 ]] && ! grep -q "Traceback (most recent call last)" "$SCRATCH/proton_probe_$probe_n.log"; then
+            PROTON=$probe_cand
+            break
+        fi
+    done < <(ls -d "$STEAM"/compatibilitytools.d/*/proton "$STEAM"/steamapps/common/Proton*/proton 2>/dev/null | sort -Vr)
+fi
+[[ -n ${PROTON:-} && -x ${PROTON:-} ]] || fail "V9: no Proton under $STEAM starts ngx_client (see $SCRATCH/proton_probe_*.log)"
 echo "  Proton: $PROTON"
 game_dir() {   # game_dir <dir> <dll set: good | none | wrong>
     mkdir -p "$1"
