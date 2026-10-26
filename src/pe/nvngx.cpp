@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <cstdarg>
 #include <string>
 #include <vector>
 #include <map>
@@ -16,6 +17,8 @@
 #include <algorithm>
 
 #include "../../tools/verify/ngx_client/ngx_abi.h"
+#include "../vk/pipeline.h"
+#include "../vk/vkfuncs.h"
 
 // vkd3d-proton interop definitions
 static const GUID IID_ID3D12GraphicsCommandListExt = 
@@ -50,6 +53,17 @@ ID3D12DXVKInteropDevice : public IUnknown
     virtual HRESULT STDMETHODCALLTYPE LockCommandQueue(ID3D12CommandQueue* pCommandQueue) = 0;
     virtual HRESULT STDMETHODCALLTYPE UnlockCommandQueue(ID3D12CommandQueue* pCommandQueue) = 0;
 };
+
+// The frame chain is a plain C++ library (src/vk/pipeline.cpp); under the DLL it reaches Vulkan through
+// the pointers below, filled from NVSDK_NGX_VULKAN_Init's gipa/gdpa or from winevulkan in the process.
+#ifdef VK_NO_PROTOTYPES
+#define NGXD_VK_DEFINE(f) PFN_##f f = nullptr;
+NGXD_VK_FUNCS(NGXD_VK_DEFINE)
+#undef NGXD_VK_DEFINE
+#endif
+
+static PFN_vkGetInstanceProcAddr g_gipa = nullptr;
+static PFN_vkGetDeviceProcAddr g_gdpa = nullptr;
 
 // Parameter value representation with type cross-conversion
 struct ParamValue {
@@ -142,8 +156,8 @@ static void NGX_MSABI p_set_d3d12(NVSDK_NGX_Parameter* p, const char* k, ID3D12R
 static void NGX_MSABI p_set_d3d11(NVSDK_NGX_Parameter* p, const char* k, ID3D11Resource* v) { reinterpret_cast<ParametersImpl*>(p)->set_ptr(k, v); }
 static void NGX_MSABI p_set_int(NVSDK_NGX_Parameter* p, const char* k, int v)                { reinterpret_cast<ParametersImpl*>(p)->set_int(k, v); }
 static void NGX_MSABI p_set_uint(NVSDK_NGX_Parameter* p, const char* k, unsigned int v)     { reinterpret_cast<ParametersImpl*>(p)->set_uint(k, v); }
-static void NGX_MSABI p_set_double(NVSDK_NGX_Parameter* p, const char* k, double v)          { reinterpret_cast<ParametersImpl*>(p)->set_double(k, v); }
-static void NGX_MSABI p_set_float(NVSDK_NGX_Parameter* p, const char* k, float v)            { reinterpret_cast<ParametersImpl*>(p)->set_float(k, v); }
+static void NGX_MSABI p_set_double(NVSDK_NGX_Parameter* p, const char* k, double v)         { reinterpret_cast<ParametersImpl*>(p)->set_double(k, v); }
+static void NGX_MSABI p_set_float(NVSDK_NGX_Parameter* p, const char* k, float v)           { reinterpret_cast<ParametersImpl*>(p)->set_float(k, v); }
 static void NGX_MSABI p_set_ull(NVSDK_NGX_Parameter* p, const char* k, unsigned long long v) { reinterpret_cast<ParametersImpl*>(p)->set_ull(k, v); }
 
 static NVSDK_NGX_Result NGX_MSABI p_get_ptr(const NVSDK_NGX_Parameter* p, const char* k, void** v)              { return reinterpret_cast<const ParametersImpl*>(p)->get_ptr(k, v); }
@@ -204,6 +218,98 @@ static uint32_t g_next_handle_id = 1;
 static VkInstance g_vk_instance = VK_NULL_HANDLE;
 static VkPhysicalDevice g_vk_phys_dev = VK_NULL_HANDLE;
 static VkDevice g_vk_device = VK_NULL_HANDLE;
+static ID3D12Device* g_d3d12_device = nullptr;
+
+// ------------------------------------------------------------------------------------------------
+// The bridge: what a feature is, and how an NGX resource reaches the frame chain
+// ------------------------------------------------------------------------------------------------
+
+static std::mutex g_bridge_lock;
+
+static unsigned long long g_log_t0 = 0;
+static unsigned long long ngx_ms() { return GetTickCount64(); }
+
+static void ngx_log(const char* fmt, ...) {
+    char buf[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    std::vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    if (!g_log_t0) g_log_t0 = ngx_ms();
+    const unsigned long long at = ngx_ms() - g_log_t0;
+    std::fprintf(stderr, "[dlss5-amd %8llu ms] %s\n", at, buf);
+    std::fflush(stderr);
+    // The game folder is off limits (uninstall must restore it byte for byte), so the log goes to the
+    // working directory, which is where NGX itself writes its logs too.
+    if (FILE* f = std::fopen("dlss5-amd-ngx.log", "a")) {
+        std::fprintf(f, "[%8llu ms] %s\n", at, buf);
+        std::fclose(f);
+    }
+}
+
+// The directory this DLL sits in, with `tail` appended: the game's dlss5-amd tree.
+static bool module_path_tail(const char* tail, char* out, size_t cap) {
+    if (!g_hinstance || !out || cap < 2) return false;
+    DWORD n = GetModuleFileNameA(g_hinstance, out, DWORD(cap));
+    if (!n || n >= cap) return false;
+    char* slash = std::strrchr(out, '\\');
+    if (!slash) slash = std::strrchr(out, '/');
+    if (!slash) return false;
+    slash[1] = '\0';
+    size_t used = std::strlen(out), add = std::strlen(tail);
+    if (used + add + 1 >= cap) return false;
+    std::memcpy(out + used, tail, add + 1);
+    return true;
+}
+
+// DLSS5_AMD_WEIGHTS, spelled the way the Win32 CRT can open it.  The packed weights live outside the game
+// folder (r2scan.py scans the game folder, build/vk, build/shaders and build/package), so the installer
+// hands their path over in the launch environment instead of copying them anywhere a scan would see them.
+static std::string weights_root() {
+    const char* env = std::getenv("DLSS5_AMD_WEIGHTS");
+    if (!env || !*env) return {};
+    const std::string raw(env);
+    std::vector<std::string> tries{raw};
+    if (raw[0] == '/' || raw[0] == '\\') tries.push_back("Z:" + raw);
+    std::string slashed = raw;
+    for (char& ch : slashed) if (ch == '\\') ch = '/';
+    if (slashed != raw) tries.push_back(slashed);
+    for (const std::string& t : tries)
+        if (GetFileAttributesA(t.c_str()) != INVALID_FILE_ATTRIBUTES) return t;
+    return raw;
+}
+
+static bool load_vk_entry_points() {
+    if (g_gipa && g_gdpa && vkCreateBuffer) return true;
+    if (!g_gipa) {
+        for (const char* m : {"winevulkan.dll", "vulkan-1.dll"}) {
+            HMODULE h = GetModuleHandleA(m);
+            if (!h) h = LoadLibraryA(m);
+            if (!h) continue;
+            auto p = reinterpret_cast<PFN_vkGetInstanceProcAddr>(GetProcAddress(h, "vkGetInstanceProcAddr"));
+            if (p) { g_gipa = p; break; }
+        }
+    }
+    if (!g_gipa) return false;
+    if (!g_gdpa) g_gdpa = reinterpret_cast<PFN_vkGetDeviceProcAddr>(g_gipa(VK_NULL_HANDLE, "vkGetDeviceProcAddr"));
+    return g_gdpa != nullptr;
+}
+
+static bool load_vk_for_device(VkInstance inst, VkPhysicalDevice phys, VkDevice dev) {
+    if (!inst || !dev || !load_vk_entry_points()) {
+        ngx_log("no Vulkan entry points: NVSDK_NGX_VULKAN_Init must pass gipa/gdpa, or winevulkan must be loaded");
+        return false;
+    }
+    bool ok = true;
+#define NGXD_VK_LOAD(f)                                                                       \
+    f = reinterpret_cast<PFN_##f>(g_gdpa(dev, #f));                                           \
+    if (!f) { f = reinterpret_cast<PFN_##f>(g_gipa(inst, #f)); if (!f) { ok = false; } }
+    NGXD_VK_FUNCS(NGXD_VK_LOAD)
+#undef NGXD_VK_LOAD
+    (void)phys;
+    if (!ok) ngx_log("the Vulkan device does not export the entry points the chain needs");
+    return ok;
+}
 
 struct FeatureState {
     uint32_t id = 0;
@@ -211,7 +317,319 @@ struct FeatureState {
     char preset = 'M';
     uint32_t rw = 0, rh = 0, ow = 0, oh = 0;
     int frame_idx = 0;
+    // the bridge
+    ngxd::FrameChain* chain = nullptr;
+    float prev_jx = 0.0f, prev_jy = 0.0f;   // NGX hands the current jitter only; the chain needs both
+    ID3D12DXVKInteropDevice* interop = nullptr;   // D3D12 path only
+    ID3D12Device* d3d_device = nullptr;           // D3D12 path only (AddRef'd)
 };
+
+// One input or output image of a frame, with the layout the caller left it in.
+struct BridgeImage {
+    VkImage image = VK_NULL_HANDLE;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    VkImageLayout layout = VK_IMAGE_LAYOUT_GENERAL;
+    unsigned w = 0, h = 0;
+    VkBuffer buf = VK_NULL_HANDLE;   // the chain's staging buffer for this slot
+};
+
+static const char* feature_name(const FeatureState* s) {
+    return s->feature == NVSDK_NGX_Feature_RayReconstruction ? "RR" : "SR";
+}
+
+// Create the chain: packed weights from DLSS5_AMD_WEIGHTS, shaders from <game>/dlss5-amd/shaders.
+static bool build_chain(FeatureState* s) {
+    if (!g_vk_device || !g_vk_phys_dev) {
+        ngx_log("%s %ux%u: no VkDevice (NVSDK_NGX_VULKAN_Init / the vkd3d interop device never gave us one)",
+                feature_name(s), s->rw, s->rh);
+        return false;
+    }
+    if (!load_vk_for_device(g_vk_instance, g_vk_phys_dev, g_vk_device)) return false;
+    const std::string root = weights_root();
+    if (root.empty()) {
+        ngx_log("%s %ux%u: DLSS5_AMD_WEIGHTS is not set; the packed weights are kept outside the game folder "
+                "on purpose, so the installer has to say where they are", feature_name(s), s->rw, s->rh);
+        return false;
+    }
+    const bool rr = s->feature == NVSDK_NGX_Feature_RayReconstruction;
+    const std::string w = root + (rr ? "/rr" : (s->preset == 'L' ? "/L" : "/M"));
+    char shaders[MAX_PATH] = {0};
+    if (!module_path_tail("dlss5-amd\\shaders", shaders, sizeof shaders))
+        ngx_log("cannot work out the DLL's own directory");
+    std::string err;
+    const unsigned long long t0 = ngx_ms();
+    ngx_log("%s %ux%u -> %ux%u: creating the frame chain from %s", feature_name(s), s->rw, s->rh, s->ow, s->oh,
+            w.c_str());
+    s->chain = ngxd::FrameChain::create(g_vk_device, g_vk_phys_dev, rr ? "rr" : "sr", std::string(1, s->preset),
+                                        int(s->rw), int(s->rh), int(s->ow), int(s->oh), w, shaders, &err);
+    if (!s->chain) {
+        ngx_log("%s %ux%u -> %ux%u: no frame chain (%s)", feature_name(s), s->rw, s->rh, s->ow, s->oh, err.c_str());
+        return false;
+    }
+    ngx_log("%s preset %c %ux%u -> %ux%u: chain ready in %llu ms, %zu pipelines, weights %s", feature_name(s),
+            s->preset, s->rw, s->rh, s->ow, s->oh, ngx_ms() - t0, s->chain->pipeline_count(), w.c_str());
+    return true;
+}
+
+// The formats the port's gather shaders decode: anything else is refused rather than reinterpreted.
+static bool want_format(const char* key, VkFormat got, VkFormat want) {
+    if (got == want) return true;
+    ngx_log("%s: VkFormat %d, this bridge only carries %d", key, int(got), int(want));
+    return false;
+}
+
+static bool read_frame_params(NVSDK_NGX_Parameter* p, const FeatureState* s, ngxd::FrameParams& fp) {
+    float f = 0.0f;
+    if (ngx_ok(p->vtbl->GetFloat(p, "Jitter.Offset.X", &f))) fp.jx = f;
+    f = 0.0f;
+    if (ngx_ok(p->vtbl->GetFloat(p, "Jitter.Offset.Y", &f))) fp.jy = f;
+    fp.jpx = s->prev_jx;
+    fp.jpy = s->prev_jy;
+    int i = 0;
+    if (ngx_ok(p->vtbl->GetInt(p, "Reset", &i))) fp.reset = i ? 1 : 0;
+    f = 1.0f;
+    if (ngx_ok(p->vtbl->GetFloat(p, "DLSS.Pre.Exposure", &f))) fp.pre_exposure = f;
+    f = 1.0f;
+    if (ngx_ok(p->vtbl->GetFloat(p, "DLSS.Exposure.Scale", &f))) fp.exposure = f;
+    // The chain works on whole frames.  A subrect that is not the whole render target would need the
+    // gather to read a window of the image, which the port does not have; refuse instead of guessing.
+    int sw = int(s->rw), sh = int(s->rh);
+    if (ngx_ok(p->vtbl->GetInt(p, "DLSS.Render.Subrect.Dimensions.Width", &i))) sw = i;
+    if (ngx_ok(p->vtbl->GetInt(p, "DLSS.Render.Subrect.Dimensions.Height", &i))) sh = i;
+    if (sw != int(s->rw) || sh != int(s->rh)) {
+        ngx_log("subrect %dx%d is not the whole %ux%u render target: unsupported", sw, sh, s->rw, s->rh);
+        return false;
+    }
+    // ngx_client feeds the default formats only (its Input table), which the gather shaders call code 0;
+    // MV.Scale is not read by the chain, exactly as in the CLI runner.
+    fp.fmt_col = fp.fmt_mv = fp.fmt_dep = 0;
+    return true;
+}
+
+static void image_barrier(VkCommandBuffer cmd, VkImage img, VkImageLayout old_l, VkImageLayout new_l,
+                          VkAccessFlags src, VkAccessFlags dst) {
+    VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    b.srcAccessMask = src;
+    b.dstAccessMask = dst;
+    b.oldLayout = old_l;
+    b.newLayout = new_l;
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = img;
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
+                         0, nullptr, 0, nullptr, 1, &b);
+}
+
+// Record one frame: move the caller's images into the chain's staging buffers, run the chain, move the
+// result back.  A copy has to happen in TRANSFER_*_OPTIMAL or GENERAL, so every image is transitioned
+// there and back to whatever layout the caller left it in -- the ngx_client contract is GENERAL in,
+// GENERAL out, vkd3d-proton's is SHADER_READ_ONLY / UNORDERED_ACCESS in, the same out.
+static NVSDK_NGX_Result record_bridge(VkCommandBuffer cmd, FeatureState* s, const ngxd::FrameParams& fp,
+                                      const BridgeImage* ins, size_t n, const BridgeImage& out) {
+    ngxd::FrameChain* c = s->chain;
+    const VkAccessFlags readable = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+    const unsigned long long t0 = ngx_ms();
+    // On every frame after the first, the staging buffers still hold what the previous frame left: the
+    // host-visible input (did the image->buffer copy land?) and the host-visible output (did the chain
+    // write it?).  Both are zeroes on a freshly created chain, so only frames > 0 say anything.
+    if (s->frame_idx > 0) {
+        const float* in = static_cast<const float*>(c->in_color());
+        const float* o = static_cast<const float*>(c->out_color());
+        long nz_in = 0, nz_out = 0;
+        const int N = 1 << 20;
+        for (int i = 0; i < N && i < int(c->out_width()) * c->out_height() * 4; ++i) nz_in += (in[i] != 0.0f);
+        for (int i = 0; i < N; ++i) nz_out += (o[i] != 0.0f);
+        ngx_log("%s frame %d probe: previous input %ld/%d non-zero in the first %d floats, previous chain "
+                "output %ld/%d, out[0..3] = %g %g %g %g",
+                feature_name(s), s->frame_idx, nz_in, N, N, nz_out, N, o[0], o[1], o[2], o[3]);
+    }
+    for (size_t k = 0; k < n; ++k) {
+        image_barrier(cmd, ins[k].image, ins[k].layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readable,
+                      VK_ACCESS_TRANSFER_READ_BIT);
+        VkBufferImageCopy cp{};
+        cp.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        cp.imageExtent = {ins[k].w, ins[k].h, 1};
+        vkCmdCopyImageToBuffer(cmd, ins[k].image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, ins[k].buf, 1, &cp);
+        image_barrier(cmd, ins[k].image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, ins[k].layout,
+                      VK_ACCESS_TRANSFER_READ_BIT, readable);
+    }
+    if (n) {
+        VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+                             1, &mb, 0, nullptr, 0, nullptr);
+    }
+
+    c->record(cmd, fp);
+
+    {
+        VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        mb.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                             1, &mb, 0, nullptr, 0, nullptr);
+    }
+    image_barrier(cmd, out.image, out.layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, readable,
+                  VK_ACCESS_TRANSFER_WRITE_BIT);
+    {
+        VkBufferImageCopy cp{};
+        cp.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        cp.imageExtent = {out.w, out.h, 1};
+        vkCmdCopyBufferToImage(cmd, c->out_color_buf(), out.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cp);
+    }
+    image_barrier(cmd, out.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, out.layout, VK_ACCESS_TRANSFER_WRITE_BIT,
+                  readable);
+
+    c->advance();
+    s->frame_idx++;
+    s->prev_jx = fp.jx;
+    s->prev_jy = fp.jy;
+    ngx_log("%s frame %d: %zu images in, %dx%d -> %dx%d, recorded in %llu ms", feature_name(s),
+            s->frame_idx - 1, n, c->width(), c->height(), out.w, out.h, ngx_ms() - t0);
+    return NVSDK_NGX_Result_Success;
+}
+
+// The Vulkan side of "hand me this image": NGX_Resource_VK as ngx_client sets it.
+static bool vk_image_resource(NVSDK_NGX_Parameter* p, const char* key, BridgeImage& o) {
+    void* v = nullptr;
+    if (!ngx_ok(p->vtbl->GetVoidPtr(p, key, &v)) || !v) return false;
+    const auto* r = reinterpret_cast<const NGX_Resource_VK*>(v);
+    if (r->Type != NGX_RESOURCE_VK_IMAGEVIEW || !r->Resource.ImageViewInfo.Image) return false;
+    o.image = r->Resource.ImageViewInfo.Image;
+    o.format = r->Resource.ImageViewInfo.Format;
+    o.w = r->Resource.ImageViewInfo.Width;
+    o.h = r->Resource.ImageViewInfo.Height;
+    return true;
+}
+
+// The D3D12 side of the same: vkd3d-proton hands the VkImage out through its interop device.
+static VkFormat dxgi_to_vk(DXGI_FORMAT f) {
+    switch (f) {
+        case DXGI_FORMAT_R16G16B16A16_FLOAT: return VK_FORMAT_R16G16B16A16_SFLOAT;
+        case DXGI_FORMAT_R16G16_FLOAT: return VK_FORMAT_R16G16_SFLOAT;
+        case DXGI_FORMAT_R32_FLOAT: return VK_FORMAT_R32_SFLOAT;
+        case DXGI_FORMAT_R32G32B32A32_FLOAT: return VK_FORMAT_R32G32B32A32_SFLOAT;
+        default: return VK_FORMAT_UNDEFINED;
+    }
+}
+
+static bool d3d_image_resource(FeatureState* s, ID3D12Resource* res, D3D12_RESOURCE_STATES state,
+                               const char* key, BridgeImage& o) {
+    if (!res || !s->interop) return false;
+    UINT64 handle = 0, offset = 0;
+    if (FAILED(s->interop->GetVulkanResourceInfo(res, &handle, &offset)) || !handle) return false;
+    const auto desc = res->GetDesc();
+    o.image = (VkImage)handle;
+    o.format = dxgi_to_vk(desc.Format);
+    o.w = unsigned(desc.Width);
+    o.h = unsigned(desc.Height);
+    s->interop->GetVulkanImageLayout(res, state, &o.layout);
+    if (o.format == VK_FORMAT_UNDEFINED) {
+        ngx_log("%s: DXGI format %u is not one this bridge decodes", key, unsigned(desc.Format));
+        return false;
+    }
+    if (o.layout == VK_IMAGE_LAYOUT_UNDEFINED) {
+        ngx_log("%s: vkd3d reported an undefined layout", key);
+        return false;
+    }
+    return true;
+}
+
+// Which way an NGX parameter hands over an image: Set(key, NGX_Resource_VK*) on the Vulkan path,
+// Set(key, ID3D12Resource*) on the D3D12 path.  Either way the slot's staging buffer and the port's
+// format code are the same, so both paths collect their frames the same way.
+static bool fetch_image(NVSDK_NGX_Parameter* p, FeatureState* s, bool vulkan, const char* key, const char* name,
+                        VkFormat want, VkBuffer buf, D3D12_RESOURCE_STATES state, BridgeImage& o) {
+    o = BridgeImage{};
+    o.buf = buf;
+    if (vulkan) {
+        if (!vk_image_resource(p, key, o)) {
+            ngx_log("Evaluate: no %s image", name);
+            return false;
+        }
+    } else {
+        ID3D12Resource* res = nullptr;
+        p->vtbl->GetD3D12Resource(p, key, &res);
+        if (!res || !d3d_image_resource(s, res, state, name, o)) {
+            ngx_log("Evaluate: no %s resource", name);
+            return false;
+        }
+    }
+    return want_format(name, o.format, want);
+}
+
+struct Slot { const char* key; const char* name; VkFormat fmt; };
+
+// Everything one EvaluateFeature call needs, for either API: the frame parameters, the inputs the
+// feature was created with and the output image.
+//
+// DLSS5_AMD_SKIP_INPUTS=<comma list of col,mv,dep,nrm,alb,spa,rgh> leaves those chain inputs at zero
+// (neither fetched nor copied): a bisect switch for telling a bad image round-trip from a bad chain.
+static bool input_skipped(const char* short_name) {
+    static const char* env = std::getenv("DLSS5_AMD_SKIP_INPUTS");
+    if (!env || !*env) return false;
+    std::string s(env), t(short_name);
+    for (size_t i = 0; i + t.size() <= s.size(); ++i)
+        if (s.compare(i, t.size(), t) == 0) {
+            const char a = i ? s[i - 1] : ',';
+            const char b = (i + t.size() < s.size()) ? s[i + t.size()] : ',';
+            if ((a == ',' || a == ' ') && (b == ',' || b == ' ' || b == '\0')) return true;
+        }
+    return false;
+}
+
+static NVSDK_NGX_Result collect_frame(NVSDK_NGX_Parameter* p, FeatureState* s, bool vulkan,
+                                      ngxd::FrameChain* c, ngxd::FrameParams& fp,
+                                      BridgeImage* ins, size_t* n, BridgeImage& out) {
+    if (!read_frame_params(p, s, fp)) return NVSDK_NGX_Result_Fail;
+
+    const Slot common[] = {
+        {"Color", "Color", VK_FORMAT_R16G16B16A16_SFLOAT},
+        {"MotionVectors", "MotionVectors", VK_FORMAT_R16G16_SFLOAT},
+        {"Depth", "Depth", VK_FORMAT_R32_SFLOAT},
+    };
+    const Slot extra[] = {
+        {"GBuffer.Normals", "GBuffer.Normals", VK_FORMAT_R16G16B16A16_SFLOAT},
+        {"DLSS.Input.DiffuseAlbedo", "DiffuseAlbedo", VK_FORMAT_R16G16B16A16_SFLOAT},
+        {"DLSS.Input.SpecularAlbedo", "SpecularAlbedo", VK_FORMAT_R16G16B16A16_SFLOAT},
+        {"GBuffer.Roughness", "Roughness", VK_FORMAT_R32_SFLOAT},
+    };
+    const char* common_short[] = {"col", "mv", "dep"};
+    const char* extra_short[] = {"nrm", "alb", "spa", "rgh"};
+    const VkBuffer bufs[] = {c->in_color_buf(), c->in_mv_buf(), c->in_depth_buf()};
+    const VkBuffer extra_bufs[] = {c->in_normal_buf(), c->in_albedo_buf(), c->in_specular_buf(),
+                                   c->in_rough_buf()};
+    const bool rr = s->feature == NVSDK_NGX_Feature_RayReconstruction;
+    const D3D12_RESOURCE_STATES input_state = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+
+    *n = 0;
+    for (size_t k = 0; k < 3; ++k) {
+        if (input_skipped(common_short[k])) continue;
+        if (!fetch_image(p, s, vulkan, common[k].key, common[k].name, common[k].fmt, bufs[k], input_state,
+                         ins[*n]))
+            return NVSDK_NGX_Result_Fail;
+        ++*n;
+    }
+    if (rr) {
+        for (size_t k = 0; k < 4; ++k) {
+            if (input_skipped(extra_short[k])) continue;
+            if (!fetch_image(p, s, vulkan, extra[k].key, extra[k].name, extra[k].fmt, extra_bufs[k],
+                             input_state, ins[*n]))
+                return NVSDK_NGX_Result_Fail;
+            ++*n;
+        }
+    }
+
+    if (!fetch_image(p, s, vulkan, "Output", "Output", VK_FORMAT_R32G32B32A32_SFLOAT, c->out_color_buf(),
+                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS, out))
+        return NVSDK_NGX_Result_Fail;
+    if (out.w != unsigned(c->out_width()) || out.h != unsigned(c->out_height())) {
+        ngx_log("Output is %ux%u, the feature is %dx%u", out.w, out.h, c->out_width(), c->out_height());
+        return NVSDK_NGX_Result_Fail;
+    }
+    return NVSDK_NGX_Result_Success;
+}
 
 // Exports
 extern "C" {
@@ -219,10 +637,12 @@ extern "C" {
 __declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_D3D12_Init(
     unsigned long long appId, const wchar_t* dataPath, ID3D12Device* device,
     const void* featureInfo, int sdkVersion) {
+    if (device && !g_d3d12_device) { g_d3d12_device = device; g_d3d12_device->AddRef(); }
     return NVSDK_NGX_Result_Success;
 }
 
 __declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_D3D12_Shutdown1(ID3D12Device* device) {
+    if (g_d3d12_device) { g_d3d12_device->Release(); g_d3d12_device = nullptr; }
     return NVSDK_NGX_Result_Success;
 }
 
@@ -238,6 +658,50 @@ __declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_D3D12_DestroyParamete
     return NVSDK_NGX_Result_Success;
 }
 
+// The Vulkan chain needs a VkDevice; on the D3D12 path that is vkd3d-proton's, reached through its
+// interop interface on the same device the game gave us.
+static bool interop_device_for(ID3D12Device* device, ID3D12DXVKInteropDevice** out) {
+    if (!device) return false;
+    if (FAILED(device->QueryInterface(IID_ID3D12DXVKInteropDevice, reinterpret_cast<void**>(out))) || !*out)
+        return false;
+    VkInstance inst = VK_NULL_HANDLE;
+    VkPhysicalDevice phys = VK_NULL_HANDLE;
+    VkDevice dev = VK_NULL_HANDLE;
+    (*out)->GetVulkanHandles(&inst, &phys, &dev);
+    if (!inst || !phys || !dev) { (*out)->Release(); *out = nullptr; return false; }
+    g_vk_instance = inst;
+    g_vk_phys_dev = phys;
+    g_vk_device = dev;
+    return load_vk_for_device(inst, phys, dev);
+}
+
+static ID3D12Device* device_of(ID3D12GraphicsCommandList* cmd) {
+    if (g_d3d12_device) { g_d3d12_device->AddRef(); return g_d3d12_device; }
+    if (!cmd) return nullptr;
+    ID3D12Device* d = nullptr;
+    if (FAILED(cmd->GetDevice(IID_PPV_ARGS(&d)))) return nullptr;
+    return d;
+}
+
+static bool read_create_params(NVSDK_NGX_Parameter* params, FeatureState* s) {
+    unsigned int w = 0, h = 0, ow = 0, oh = 0, pr = 0;
+    if (params) {
+        params->vtbl->GetUInt(params, "Width", &w);
+        params->vtbl->GetUInt(params, "Height", &h);
+        params->vtbl->GetUInt(params, "OutWidth", &ow);
+        params->vtbl->GetUInt(params, "OutHeight", &oh);
+        params->vtbl->GetUInt(params, "DLSS.Hint.Render.Preset.Quality", &pr);
+    }
+    if (!w || !h || !ow || !oh) {
+        ngx_log("CreateFeature without Width/Height/OutWidth/OutHeight (%ux%u -> %ux%u)", w, h, ow, oh);
+        return false;
+    }
+    s->rw = w; s->rh = h; s->ow = ow; s->oh = oh;
+    s->preset = (pr == 12) ? 'L' : 'M';
+    if (s->feature == NVSDK_NGX_Feature_RayReconstruction) s->preset = 'F';
+    return true;
+}
+
 __declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_D3D12_CreateFeature(
     ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Feature feature,
     NVSDK_NGX_Parameter* params, NVSDK_NGX_Handle** out) {
@@ -251,25 +715,38 @@ __declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_D3D12_CreateFeature(
     auto* s = new FeatureState();
     s->id = g_next_handle_id++;
     s->feature = feature;
+    if (!read_create_params(params, s)) { delete s; return NVSDK_NGX_Result_Fail; }
 
-    unsigned int w = 0, h = 0, ow = 0, oh = 0, pr = 0;
-    if (params) {
-        params->vtbl->GetUInt(params, "Width", &w);
-        params->vtbl->GetUInt(params, "Height", &h);
-        params->vtbl->GetUInt(params, "OutWidth", &ow);
-        params->vtbl->GetUInt(params, "OutHeight", &oh);
-        params->vtbl->GetUInt(params, "DLSS.Hint.Render.Preset.Quality", &pr);
+    std::lock_guard<std::mutex> guard(g_bridge_lock);
+    ID3D12Device* device = device_of(cmd);
+    const bool got = interop_device_for(device, &s->interop);
+    if (device) device->Release();
+    if (!got) {
+        ngx_log("D3D12 CreateFeature: no vkd3d-proton interop device, so there is no Vulkan chain to run");
+        delete s;
+        return NVSDK_NGX_Result_Fail;
     }
-    s->rw = w; s->rh = h; s->ow = ow; s->oh = oh;
-    s->preset = (pr == 12) ? 'L' : 'M';
-    if (feature == NVSDK_NGX_Feature_RayReconstruction) s->preset = 'F';
+    s->d3d_device = device_of(cmd);
+    if (!build_chain(s)) {
+        if (s->interop) s->interop->Release();
+        delete s;
+        return NVSDK_NGX_Result_Fail;
+    }
 
     *out = reinterpret_cast<NVSDK_NGX_Handle*>(s);
     return NVSDK_NGX_Result_Success;
 }
 
 __declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_ReleaseFeature(NVSDK_NGX_Handle* handle) {
-    if (handle) delete reinterpret_cast<FeatureState*>(handle);
+    if (!handle) return NVSDK_NGX_Result_Success;
+    auto* s = reinterpret_cast<FeatureState*>(handle);
+    std::lock_guard<std::mutex> guard(g_bridge_lock);
+    if (s->chain && vkDeviceWaitIdle) vkDeviceWaitIdle(g_vk_device);
+    delete s->chain;
+    s->chain = nullptr;
+    if (s->interop) { s->interop->Release(); s->interop = nullptr; }
+    if (s->d3d_device) { s->d3d_device->Release(); s->d3d_device = nullptr; }
+    delete s;
     return NVSDK_NGX_Result_Success;
 }
 
@@ -286,16 +763,25 @@ __declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_D3D12_EvaluateFeature
     NVSDK_NGX_Parameter* params, void* callback) {
     if (!handle || !params || !cmd) return NVSDK_NGX_Result_Fail;
     auto* s = reinterpret_cast<FeatureState*>(const_cast<NVSDK_NGX_Handle*>(handle));
-    s->frame_idx++;
+    std::lock_guard<std::mutex> guard(g_bridge_lock);
+    if (!s->chain || !s->interop) return NVSDK_NGX_Result_Fail;
 
-    // In ngx_client, Output texture is filled with bicubic/eval result
-    // Query D3D12 resource for Output
-    ID3D12Resource* outRes = nullptr;
-    params->vtbl->GetD3D12Resource(params, "Output", &outRes);
-    ID3D12Resource* colRes = nullptr;
-    params->vtbl->GetD3D12Resource(params, "Color", &colRes);
+    ID3D12GraphicsCommandListExt* ext = nullptr;
+    if (FAILED(cmd->QueryInterface(IID_ID3D12GraphicsCommandListExt, reinterpret_cast<void**>(&ext))) || !ext) {
+        ngx_log("D3D12 EvaluateFeature: the command list has no ID3D12GraphicsCommandListExt (not vkd3d?)");
+        return NVSDK_NGX_Result_Fail;
+    }
+    VkCommandBuffer vkcmd = VK_NULL_HANDLE;
+    ext->GetVulkanHandle(&vkcmd);
+    ext->Release();
+    if (!vkcmd) return NVSDK_NGX_Result_Fail;
 
-    return NVSDK_NGX_Result_Success;
+    ngxd::FrameParams fp;
+    ngxd::FrameChain* c = s->chain;
+    BridgeImage ins[7], out_img;
+    size_t n = 0;
+    if (!collect_frame(params, s, false, c, fp, ins, &n, out_img)) return NVSDK_NGX_Result_Fail;
+    return record_bridge(vkcmd, s, fp, ins, n, out_img);
 }
 
 __declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_VULKAN_RequiredExtensions(
@@ -315,6 +801,9 @@ __declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_VULKAN_Init(
     g_vk_instance = instance;
     g_vk_phys_dev = pd;
     g_vk_device = device;
+    if (gipa) g_gipa = gipa;
+    if (gdpa) g_gdpa = gdpa;
+    if (instance && device) load_vk_for_device(instance, pd, device);
     return NVSDK_NGX_Result_Success;
 }
 
@@ -330,9 +819,8 @@ __declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_VULKAN_DestroyParamet
     return NVSDK_NGX_D3D12_DestroyParameters(p);
 }
 
-__declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_VULKAN_CreateFeature1(
-    VkDevice device, VkCommandBuffer cmd, NVSDK_NGX_Feature feature,
-    NVSDK_NGX_Parameter* params, NVSDK_NGX_Handle** out) {
+static NVSDK_NGX_Result vulkan_create(VkDevice device, NVSDK_NGX_Feature feature,
+                                      NVSDK_NGX_Parameter* params, NVSDK_NGX_Handle** out) {
     if (!out) return NVSDK_NGX_Result_Fail;
     *out = nullptr;
 
@@ -343,21 +831,29 @@ __declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_VULKAN_CreateFeature1
     auto* s = new FeatureState();
     s->id = g_next_handle_id++;
     s->feature = feature;
+    if (!read_create_params(params, s)) { delete s; return NVSDK_NGX_Result_Fail; }
 
-    unsigned int w = 0, h = 0, ow = 0, oh = 0, pr = 0;
-    if (params) {
-        params->vtbl->GetUInt(params, "Width", &w);
-        params->vtbl->GetUInt(params, "Height", &h);
-        params->vtbl->GetUInt(params, "OutWidth", &ow);
-        params->vtbl->GetUInt(params, "OutHeight", &oh);
-        params->vtbl->GetUInt(params, "DLSS.Hint.Render.Preset.Quality", &pr);
+    std::lock_guard<std::mutex> guard(g_bridge_lock);
+    if (device && device != g_vk_device) {
+        // the host never called Init with this device: ask winevulkan where the physical device is
+        g_vk_device = device;
     }
-    s->rw = w; s->rh = h; s->ow = ow; s->oh = oh;
-    s->preset = (pr == 12) ? 'L' : 'M';
-    if (feature == NVSDK_NGX_Feature_RayReconstruction) s->preset = 'F';
+    if (!build_chain(s)) { delete s; return NVSDK_NGX_Result_Fail; }
 
     *out = reinterpret_cast<NVSDK_NGX_Handle*>(s);
     return NVSDK_NGX_Result_Success;
+}
+
+__declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_VULKAN_CreateFeature1(
+    VkDevice device, VkCommandBuffer cmd, NVSDK_NGX_Feature feature,
+    NVSDK_NGX_Parameter* params, NVSDK_NGX_Handle** out) {
+    return vulkan_create(device, feature, params, out);
+}
+
+__declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_VULKAN_CreateFeature(
+    VkDevice device, VkCommandBuffer cmd, NVSDK_NGX_Feature feature,
+    NVSDK_NGX_Parameter* params, NVSDK_NGX_Handle** out) {
+    return vulkan_create(device, feature, params, out);
 }
 
 __declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_VULKAN_EvaluateFeature(
@@ -365,9 +861,15 @@ __declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_VULKAN_EvaluateFeatur
     NVSDK_NGX_Parameter* params, void* callback) {
     if (!handle || !params || !cmd) return NVSDK_NGX_Result_Fail;
     auto* s = reinterpret_cast<FeatureState*>(const_cast<NVSDK_NGX_Handle*>(handle));
-    s->frame_idx++;
+    std::lock_guard<std::mutex> guard(g_bridge_lock);
+    if (!s->chain) return NVSDK_NGX_Result_Fail;
 
-    return NVSDK_NGX_Result_Success;
+    ngxd::FrameParams fp;
+    ngxd::FrameChain* c = s->chain;
+    BridgeImage ins[7], out_img;
+    size_t n = 0;
+    if (!collect_frame(params, s, true, c, fp, ins, &n, out_img)) return NVSDK_NGX_Result_Fail;
+    return record_bridge(cmd, s, fp, ins, n, out_img);
 }
 
 } // extern "C"
@@ -375,10 +877,11 @@ __declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_VULKAN_EvaluateFeatur
 BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         g_hinstance = hinst;
-        if (AttachConsole(ATTACH_PARENT_PROCESS)) {
-            freopen("CONOUT$", "w", stdout);
-            freopen("CONOUT$", "w", stderr);
-        }
+        g_log_t0 = ngx_ms();
+        // Deliberately no AttachConsole(): taking the parent's console and freopen-ing stdout onto
+        // CONOUT$ moves every printf in the process -- the host's own [ngx_client] lines included --
+        // off the pipe the host redirected them to, and under Wine it can leave the process blocked in
+        // the console handshake.  Everything this DLL reports goes to stderr and dlss5-amd-ngx.log.
     }
     return TRUE;
 }

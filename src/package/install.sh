@@ -53,6 +53,20 @@ WINEDLLOVERRIDES=_nvngx,nvngx=n,b
 EOF
 record "dlss5-amd-launch.env"
 
+# The packed weights stay outside the game folder (r2scan.py scans the game folder, build/vk,
+# build/shaders and build/package - build/ngx-weights is none of those), so the launch environment
+# says where they are and _nvngx.dll opens them from there.
+if [[ -d "$ROOT/build/re/packed/M" && -d "$ROOT/build/re/packed/L" && -d "$ROOT/build/rr/packed" ]]; then
+    WROOT="$ROOT/build/ngx-weights"
+    mkdir -p -- "$WROOT"
+    ln -sfn -- "$ROOT/build/re/packed/M" "$WROOT/M"
+    ln -sfn -- "$ROOT/build/re/packed/L" "$WROOT/L"
+    ln -sfn -- "$ROOT/build/rr/packed" "$WROOT/rr"
+    printf 'DLSS5_AMD_WEIGHTS=%s\n' "$WROOT" >> "$GAME/dlss5-amd-launch.env"
+else
+    echo "warning: no packed weights under $ROOT/build/{re,rr}: the package will refuse to create a feature" >&2
+fi
+
 # Install _nvngx.dll (OptiScaler route)
 # Note: Do not install nvngx.dll, as ngx_client.exe loads _nvngx.dll first and
 # r2scan.py flags any foreign nvngx*.dll.

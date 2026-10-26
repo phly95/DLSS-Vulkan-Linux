@@ -6,15 +6,26 @@
 
 #include <cmath>
 #include <cstring>
-#include <fstream>
-#include <sstream>
 
 namespace ngxd {
 
 std::vector<uint8_t> slurp(const std::string& p) {
-    std::ifstream f(p, std::ios::binary);
+    // stdio, not <fstream>: a Windows DLL that pulls in libstdc++'s stream/locale machinery carries a
+    // dense run of .refptr relocations, which tools/verify/r2scan.py's 64-byte windows then find in
+    // NeuralHub's program (pure linker metadata, but the rule is the rule).  Reads the whole file, as
+    // the ifstream version did: same bytes for a file, empty for a missing one or a directory.
+    std::FILE* f = std::fopen(p.c_str(), "rb");
     if (!f) return {};
-    return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)), {});
+    std::fseek(f, 0, SEEK_END);
+    long n = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    if (n <= 0) { std::fclose(f); return {}; }
+    std::vector<uint8_t> v;
+    v.resize(size_t(n));
+    size_t got = std::fread(v.data(), 1, size_t(n), f);
+    std::fclose(f);
+    v.resize(got);
+    return v;
 }
 
 // Flat JSON parser
@@ -63,7 +74,8 @@ static Buffer create_buffer(VkDevice dev, VkPhysicalDevice phys, size_t size, Vk
     b.size = (size + 255) & ~size_t(255);
     VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     bci.size = b.size;
-    bci.usage = usage | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    bci.usage = usage | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     vkCreateBuffer(dev, &bci, nullptr, &b.buffer);
 
@@ -86,6 +98,8 @@ static void destroy_buffer(VkDevice dev, Buffer& b) {
     if (b.memory) vkFreeMemory(dev, b.memory, nullptr);
     b = {};
 }
+
+static std::string g_pipeline_error;
 
 static ChainPipeline create_compute_pipeline(VkDevice dev, const std::vector<uint32_t>& spv, uint32_t num_bindings, uint32_t push_size) {
     ChainPipeline p;
@@ -127,8 +141,15 @@ static ChainPipeline create_compute_pipeline(VkDevice dev, const std::vector<uin
     cpci.stage.module = mod;
     cpci.stage.pName = "main";
     cpci.layout = p.layout;
-    vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpci, nullptr, &p.pipeline);
+    VkResult r = vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpci, nullptr, &p.pipeline);
     vkDestroyShaderModule(dev, mod, nullptr);
+    if (r != VK_SUCCESS || p.pipeline == VK_NULL_HANDLE) {
+        // The usual reason is a device that was not created with the features these shaders need
+        // (16-bit and 8-bit storage, shaderFloat16); say so instead of dispatching a null handle.
+        g_pipeline_error = std::string("vkCreateComputePipelines failed (VkResult ") + std::to_string(int(r)) +
+                           ") - this VkDevice lacks the features the shaders are built for";
+        p.pipeline = VK_NULL_HANDLE;
+    }
     return p;
 }
 
@@ -214,7 +235,11 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
     } else {
         add_pipe("rr_gather", 14, 8);
         add_pipe("rr_ae_block", 2, 16);
-        add_pipe("rr_ae_final", 2, 8);
+        // rr_ae_final.comp declares bindings 0..3 (Accumulator, PreviousAE, NextAE, Exposure); with
+        // only 2 in the set layout, bindings 2/3 had no descriptor and the shader addressed garbage
+        // - undefined behaviour that is harmless on a native vkCreateDevice and a GPUVM fault on the
+        // device the NGX host hands over.  Push stays 8 bytes, as it always was.
+        add_pipe("rr_ae_final", 4, 8);
         add_pipe("rr_enc0_feat", 13, 16);
         add_pipe("rr_level", 3, 16);
         add_pipe("rr_post_prep", 4, 40);
@@ -224,6 +249,13 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         add_pipe("rr_avg2x2", 2, 8);
         add_pipe("rr_ds_t", 2, 8);
         add_pipe("rr_ds_fused", 2, 8);
+    }
+
+    if (!g_pipeline_error.empty()) {
+        if (err) *err = g_pipeline_error;
+        g_pipeline_error.clear();
+        delete c;
+        return nullptr;
     }
 
     if (c->pipelines.empty()) {
@@ -294,6 +326,8 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
             for (size_t i = 0; i < size_t(W) * H; ++i) std::memcpy(a_ptr + i * 4, init_aniso, 8);
         }
     }
+    c->ae_next = create_buffer(dev, phys, 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    c->ae_exp = create_buffer(dev, phys, 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->dhist = create_buffer(dev, phys, size_t(hW15) * hH15 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->full15 = create_buffer(dev, phys, size_t(W15) * H15 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->cf2 = create_buffer(dev, phys, size_t(W) * H * 32, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
@@ -391,6 +425,8 @@ FrameChain::~FrameChain() {
     destroy_buffer(dev, gates);
     destroy_buffer(dev, factors);
     destroy_buffer(dev, aniso);
+    destroy_buffer(dev, ae_next);
+    destroy_buffer(dev, ae_exp);
     destroy_buffer(dev, dhist);
     destroy_buffer(dev, full15);
     destroy_buffer(dev, cf2);
@@ -419,10 +455,24 @@ FrameChain::~FrameChain() {
 
 size_t FrameChain::pipeline_count() const { return pipelines.size(); }
 
+// DLSS5_AMD_MAX_DISPATCH=<n>: record only the first n dispatches of a frame and skip the rest.  A
+// bisect switch for finding which dispatch of a chain misbehaves; unset (the normal case, and every
+// run of vk_runner) it records everything, exactly as before.
+static int max_dispatch() {
+    static int n = -1;
+    if (n < 0) {
+        const char* e = std::getenv("DLSS5_AMD_MAX_DISPATCH");
+        n = (e && *e) ? std::atoi(e) : 0x7fffffff;
+    }
+    return n;
+}
+static int g_dispatch_seen = 0;
+
 // Helper to dispatch a pipeline with buffers and push constants
 void FrameChain::dispatch(VkCommandBuffer cmd, const std::string& name,
                           const std::vector<Buffer*>& bufs, const void* push,
                           size_t push_size, uint32_t gx, uint32_t gy, uint32_t gz) {
+    if (g_dispatch_seen++ >= max_dispatch()) return;
     auto it = pipelines.find(name);
     if (it == pipelines.end()) return;
     const auto& p = it->second;
@@ -497,6 +547,7 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
 
     // The caller has begun cmd; every descriptor set below is freshly allocated.
     vkResetDescriptorPool(dev, dpool, 0);
+    g_dispatch_seen = 0;
 
     if (mode == "sr") {
         // 1. Gather
@@ -660,7 +711,7 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             dispatch(cmd, "rr_ae_block", {&g_col, &dhist}, push, 16, (W + 15) / 16, (H + 15) / 16, 1);
             uint8_t push_final[8] = {0};
             std::memcpy(push_final + 0, &W, 4); std::memcpy(push_final + 4, &H, 4);
-            dispatch(cmd, "rr_ae_final", {&dhist, &expo}, push_final, 8, 1, 1, 1);
+            dispatch(cmd, "rr_ae_final", {&dhist, &expo, &ae_next, &ae_exp}, push_final, 8, 1, 1, 1);
         }
         // 3. Enc0 feat
         {

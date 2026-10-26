@@ -34,9 +34,11 @@ if [[ -f "$ROOT/src/package/install.sh" ]]; then
 fi
 if [[ -f "$ROOT/src/pe/nvngx.cpp" ]]; then
     if command -v x86_64-w64-mingw32-g++ >/dev/null; then
-        x86_64-w64-mingw32-g++ -std=c++17 -shared -O2 \
+        # The DLL links no Vulkan: with VK_NO_PROTOTYPES the frame chain calls the entry points that
+        # NVSDK_NGX_VULKAN_Init / vkd3d-proton hand over (src/vk/vkfuncs.h), not libvulkan.
+        x86_64-w64-mingw32-g++ -std=c++17 -shared -O2 -DVK_NO_PROTOTYPES \
             -I"$ROOT/reference-nr-vulkan/toolchain/Vulkan-Headers/include" \
-            "$ROOT/src/pe/nvngx.cpp" -o "$ROOT/build/package/_nvngx.dll" \
+            "$ROOT/src/vk/pipeline.cpp" "$ROOT/src/pe/nvngx.cpp" -o "$ROOT/build/package/_nvngx.dll" \
             -ld3d12 -ldxgi -lole32 -static -static-libgcc -static-libstdc++
     fi
 fi

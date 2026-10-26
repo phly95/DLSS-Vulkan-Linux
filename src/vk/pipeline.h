@@ -15,6 +15,8 @@
 #include <string>
 #include <vector>
 
+#include "vkfuncs.h"
+
 namespace ngxd {
 
 // Small file / JSON helpers shared by the runner and the chain.
@@ -87,6 +89,17 @@ public:
     void fill_albedo(const void* p, size_t n)   { fill(in_alb, p, n); }
     void fill_specular(const void* p, size_t n) { fill(in_spa, p, n); }
 
+    // The same slots as VkBuffer, for a caller that moves whole images in and out with
+    // vkCmdCopyImageToBuffer / vkCmdCopyBufferToImage instead of memcpy.
+    VkBuffer in_color_buf()    const { return in_col.buffer; }
+    VkBuffer in_depth_buf()    const { return in_dep.buffer; }
+    VkBuffer in_mv_buf()       const { return in_mv_.buffer; }
+    VkBuffer in_normal_buf()   const { return in_norm.buffer; }
+    VkBuffer in_rough_buf()    const { return in_rough_.buffer; }
+    VkBuffer in_albedo_buf()   const { return in_alb.buffer; }
+    VkBuffer in_specular_buf() const { return in_spa.buffer; }
+    VkBuffer out_color_buf()   const { return out.buffer; }
+
     // Record one frame into cmd: history reset, the exposure slot, then the whole
     // dispatch chain. The host-side writes happen before record() returns, so the
     // caller may submit cmd afterwards.
@@ -137,6 +150,7 @@ private:
     Buffer dhist, full15, cf2, cf6, cfa, c0e, bfa, bfe, bf6, bec;
     Buffer ihist[2];
     Buffer t_act[9];
+    Buffer ae_next, ae_exp;   // rr_ae_final's bindings 2/3 (writeonly, never read back)
     Buffer out, wbuf, w_enc0, w_dec0;
 };
 
