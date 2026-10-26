@@ -46,6 +46,7 @@ struct Buffer {
     VkDeviceMemory memory = VK_NULL_HANDLE;
     void* mapped = nullptr;
     size_t size = 0;
+    size_t logical = 0;   // bytes the buffer is meant to hold when it is not a whole 256-byte unit (0 = size)
 };
 
 struct ChainPipeline {
@@ -178,6 +179,15 @@ private:
     Buffer t_act[9];
     Buffer ae_next, ae_exp;   // rr_ae_final's bindings 2/3 (writeonly, never read back)
     Buffer out, wbuf, w_enc0, w_dec0;
+
+    // RR (preset F) buffers that have no SR counterpart, keyed by the oracle's buffer name
+    // (E0b54..E0be4 U-Net outputs, E0c02/E0c16/E0c1a/E0c1e U-Net outputs read by post_prep,
+    // E0c12 pooled2 output, E0d02 bicubic table), allocated at the oracle's byte sizes.
+    std::map<std::string, Buffer> ue;
+    Buffer rr_dummy;                 // bound to the rr_level slots a unit leaves unused
+    size_t rr_blob_off[16] = {};     // byte offset of unit u's weights inside wbuf
+    std::string trace_label;         // DLSS5_AMD_TRACE: which oracle launch the next dispatch is
+    Buffer* rr_buf(const std::string& oracle_name);   // nullptr for "" or an unknown name
 
     // Oracle-injection diagnosis state (inert when set_injection was never called).
     std::string inj_dir;

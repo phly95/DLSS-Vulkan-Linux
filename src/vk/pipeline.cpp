@@ -242,7 +242,7 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         // device the NGX host hands over.  Push stays 8 bytes, as it always was.
         add_pipe("rr_ae_final", 4, 8);
         add_pipe("rr_enc0_feat", 13, 16);
-        add_pipe("rr_level", 3, 16);
+        add_pipe("rr_level", 13, 64);
         add_pipe("rr_post_prep", 4, 40);
         add_pipe("rr_post", 6, 120);
         add_pipe("rr_downsample", 4, 48);
@@ -358,6 +358,44 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
     c->w_enc0 = create_buffer(dev, phys, 65536, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->w_dec0 = create_buffer(dev, phys, 65536, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
+    if (mode == "rr") {
+        // U-Net and post-input buffers at the oracle's byte sizes (dump buffers.json).  The U-Net
+        // buffers hold W0*H0 >> 2*lvl pixels, so their oracle sizes scale with W0*H0; the post inputs
+        // scale with W*H.  The reference sizes are the oracle's at 256x144 input (W0*H0 = 256*160 =
+        // 40960, W*H = 256*144 = 36864); the scaled size is exact for every input size.
+        struct UeSize { const char* name; size_t ref; bool w0h0; };
+        static const UeSize kUe[] = {
+            {"E0b54", 1310720, true}, {"E0b58", 655360, true}, {"E0b5c", 245760, true},
+            {"E0b60", 81920, true},   {"E0b64", 25600, true},  {"E0b68", 6400, true},
+            {"E0b70", 245760, true},  {"E0b74", 81920, true},  {"E0b78", 25600, true},
+            {"E0b7c", 6400, true},    {"E0b80", 1310720, true}, {"E0b84", 655360, true},
+            {"E0b88", 245760, true},  {"E0b8c", 81920, true},  {"E0b90", 25600, true},
+            {"E0b98", 655360, true},  {"E0b9c", 245760, true}, {"E0ba0", 81920, true},
+            {"E0ba4", 25600, true},   {"E0ba8", 327680, true}, {"E0bac", 81920, true},
+            {"E0bb0", 20480, true},   {"E0bb4", 5120, true},   {"E0bb8", 1280, true},
+            {"E0bbc", 320, true},     {"E0bc0", 81920, true},  {"E0bc4", 20480, true},
+            {"E0bc8", 5120, true},    {"E0bcc", 1280, true},   {"E0bd0", 320, true},
+            {"E0bd4", 327680, true},  {"E0bd8", 81920, true},  {"E0bdc", 20480, true},
+            {"E0be0", 5120, true},    {"E0be4", 1280, true},
+            {"E0c02", 147456, false}, {"E0c16", 147456, false}, {"E0c1a", 147456, false},
+            {"E0c1e", 294912, false},
+        };
+        const size_t w0h0 = size_t(W0) * H0, wh = size_t(W) * H;
+        for (const auto& e : kUe) {
+            size_t bytes = e.w0h0 ? e.ref * w0h0 / 40960 : e.ref * wh / 36864;
+            c->ue[e.name] = create_buffer(dev, phys, bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+            c->ue[e.name].logical = bytes;
+        }
+        // pooled2 output: ((hW15+1)/2) x ((hH15+1)/2) words (rrref: alloc(0xc12, E[11]*E[10]*4)).
+        const size_t e0c12 = size_t(4) * ((hW15 + 1) / 2) * ((hH15 + 1) / 2);
+        c->ue["E0c12"] = create_buffer(dev, phys, e0c12, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        c->ue["E0c12"].logical = e0c12;
+        c->ue["E0d02"] = create_buffer(dev, phys, 8208, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);   // bicubic table
+        c->ue["E0d02"].logical = 8208;
+        c->rr_dummy = create_buffer(dev, phys, 256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        c->expo.logical = 16;   // the oracle's E0c22 is 16 bytes; dumps report that size
+    }
+
     if (!wdir.empty()) {
         if (mode == "sr") {
             std::vector<std::vector<uint8_t>> blob;
@@ -390,10 +428,14 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
             for (int u = 0; u < 16; ++u) {
                 auto b = slurp(wdir + "/blob" + std::to_string(u) + ".bin");
                 if (!b.empty() && offset + b.size() <= c->wbuf.size) {
+                    c->rr_blob_off[u] = offset;
                     std::memcpy(static_cast<uint8_t*>(c->wbuf.mapped) + offset, b.data(), b.size());
                     offset += (b.size() + 255) & ~size_t(255);
                 }
             }
+            auto bc = slurp(wdir + "/bicubic.bin");
+            Buffer& e0d02 = c->ue["E0d02"];
+            if (!bc.empty() && bc.size() <= e0d02.size) std::memcpy(e0d02.mapped, bc.data(), bc.size());
         }
     }
 
@@ -446,6 +488,9 @@ FrameChain::~FrameChain() {
     destroy_buffer(dev, w_enc0);
     destroy_buffer(dev, w_dec0);
 
+    for (auto& kv : ue) destroy_buffer(dev, kv.second);
+    destroy_buffer(dev, rr_dummy);
+
     for (auto& pair : pipelines) {
         vkDestroyPipeline(dev, pair.second.pipeline, nullptr);
         vkDestroyPipelineLayout(dev, pair.second.layout, nullptr);
@@ -496,6 +541,8 @@ void FrameChain::set_injection(const std::string& dir, const std::string& mask) 
             {"E0cf2", &cf2}, {"E0c0a", &ihist[0]}, {"E0c0e", &c0e},
             {"E0cf6", &cf6}, {"E0cfa", &cfa}, {"E0cfe", &out},
         };
+        inj_targets["E0c06"] = &ihist[1];
+        for (auto& kv : ue) inj_targets[kv.first] = &kv.second;
     }
 }
 
@@ -510,8 +557,9 @@ bool FrameChain::read_buffer(const std::string& name, std::vector<uint8_t>* out)
     if (inj_targets.empty()) set_injection("", "");
     auto it = inj_targets.find(name);
     if (it == inj_targets.end() || !it->second->mapped) return false;
+    const size_t n = it->second->logical ? it->second->logical : it->second->size;
     out->assign(static_cast<uint8_t*>(it->second->mapped),
-                static_cast<uint8_t*>(it->second->mapped) + it->second->size);
+                static_cast<uint8_t*>(it->second->mapped) + n);
     return true;
 }
 
@@ -575,6 +623,10 @@ void FrameChain::dispatch(VkCommandBuffer cmd, const std::string& name,
     auto it = pipelines.find(name);
     if (it == pipelines.end()) return;
     const auto& p = it->second;
+    static const bool trace = std::getenv("DLSS5_AMD_TRACE") != nullptr;
+    if (trace)
+        std::fprintf(stderr, "DISPATCH frame%d %-14s %-34s grid %ux%ux%u\n", fc, name.c_str(),
+                     trace_label.c_str(), gx, gy, gz);
 
     VkDescriptorSetAllocateInfo dsai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     dsai.descriptorPool = dpool;
@@ -611,6 +663,59 @@ void FrameChain::dispatch(VkCommandBuffer cmd, const std::string& name,
     mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0, nullptr, 0, nullptr);
+}
+
+// ---- RR U-Net (preset F): the 16 k_level launches -----------------------------------------------
+// Frame 1 has them at launches 5..20 (frame 0 at 4..19).  Template ints, in_ch and the buffer roles
+// are decoded from the oracle's launches.jsonl (identical in both frames) and agree with
+// tools/rr/rrref/rrref.cpp's level().  Role names are oracle buffer names; "" = the argument is null.
+// Args offsets: in +0x10, skip +0x18, out +0x78, out +0x80, in +0x88, in +0x90, out +0x98,
+// out +0xa0, out +0xc0 / +0xc8 / +0xd0 / +0xd8.  rr_level binding 2 takes +0x78, or +0x98 when a
+// unit has no +0x78 (unit 15).
+enum RrRole { R_IN, R_SKIP, R_O78, R_O80, R_I88, R_I90, R_O98, R_OA0, R_OC0, R_OC8, R_OD0, R_OD8, R_N };
+struct RrUnit { int C, g, mode, Cdown, Cup, n, in_ch; const char* role[R_N]; };
+static const int kRrUnitLevel[16] = {0, 1, 2, 3, 4, 5, 4, 4, 3, 3, 2, 2, 1, 1, 0, 0};
+static const RrUnit kRrUnits[16] = {
+    {32, 2, 5, 0, 0, 4, 64,  // unit 0 (launch 5)
+     {"E0be8", "", "E0b54", "", "E0bec", "", "E0ba8", "E0bc0", "", "", "", ""}},
+    {64, 2, 1, 96, 0, 1, 32,  // unit 1 (launch 6)
+     {"E0b54", "", "E0b58", "E0b70", "E0bc0", "", "E0bac", "E0bc4", "", "", "", ""}},
+    {96, 4, 0, 128, 0, 1, 96,  // unit 2 (launch 7)
+     {"E0b70", "", "E0b5c", "E0b74", "E0bc4", "", "E0bb0", "E0bc8", "", "", "", ""}},
+    {128, 4, 0, 160, 0, 1, 128,  // unit 3 (launch 8)
+     {"E0b74", "", "E0b60", "E0b78", "E0bc8", "", "E0bb4", "E0bcc", "", "", "", ""}},
+    {160, 8, 0, 160, 0, 1, 160,  // unit 4 (launch 9)
+     {"E0b78", "", "E0b64", "E0b7c", "E0bcc", "", "E0bb8", "E0bd0", "", "", "", ""}},
+    {160, 8, 0, 0, 0, 1, 160,  // unit 5 (launch 10)
+     {"E0b7c", "", "E0b68", "", "E0bd0", "", "E0bbc", "", "", "", "", ""}},
+    {160, 8, 2, 0, 160, 1, 160,  // unit 6 (launch 11)
+     {"E0b68", "E0b64", "E0b90", "", "", "", "", "", "", "", "", ""}},
+    {160, 8, 3, 0, 0, 1, 160,  // unit 7 (launch 12)
+     {"E0b90", "", "E0ba4", "", "E0bb8", "E0bbc", "E0be4", "", "", "", "", ""}},
+    {128, 4, 2, 0, 160, 1, 160,  // unit 8 (launch 13)
+     {"E0ba4", "E0b60", "E0b8c", "", "", "", "", "", "", "", "", ""}},
+    {128, 4, 3, 0, 0, 1, 128,  // unit 9 (launch 14)
+     {"E0b8c", "", "E0ba0", "", "E0bb4", "E0be4", "E0be0", "", "", "", "", ""}},
+    {96, 4, 2, 0, 128, 1, 128,  // unit 10 (launch 15)
+     {"E0ba0", "E0b5c", "E0b88", "", "", "", "", "", "", "", "", ""}},
+    {96, 4, 3, 0, 0, 1, 96,  // unit 11 (launch 16)
+     {"E0b88", "", "E0b9c", "", "E0bb0", "E0be0", "E0bdc", "", "", "", "", ""}},
+    {64, 2, 2, 0, 96, 1, 96,  // unit 12 (launch 17)
+     {"E0b9c", "E0b58", "E0b84", "", "", "", "", "", "", "", "", ""}},
+    {64, 2, 3, 0, 0, 1, 64,  // unit 13 (launch 18)
+     {"E0b84", "", "E0b98", "", "E0bac", "E0bdc", "E0bd8", "", "", "", "", ""}},
+    {32, 2, 2, 0, 64, 4, 64,  // unit 14 (launch 19)
+     {"E0b98", "E0b54", "E0b80", "", "", "", "", "", "", "", "", ""}},
+    {32, 2, 4, 0, 0, 4, 32,  // unit 15 (launch 20)
+     {"E0b80", "", "", "", "E0ba8", "E0bd8", "E0bd4", "", "E0c02", "E0c16", "E0c1a", "E0c1e"}},
+};
+
+Buffer* FrameChain::rr_buf(const std::string& n) {
+    if (n.empty()) return nullptr;
+    if (n == "E0be8") return &t_act[0];     // enc0 features: the same bytes as t_act[0]
+    if (n == "E0bec") return &bec;          // enc0 bec, read by launch 5 at +0x88
+    auto it = ue.find(n);
+    return it == ue.end() ? nullptr : &it->second;
 }
 
 void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
@@ -814,53 +919,104 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             inject_after(cmd, "downsample", sr_l[14]);
         }
     } else {
-        // RR pipeline.  Dump launch numbers shift by +1 from ae_block onward in frame 1
-        // (its dump carries a k_pooled2 at launch 1 that frame 0 does not have).
-        const int roff = (fc == 0) ? 0 : 1;
-        // 1. Gather
+        // RR pipeline, in NeuralHub's launch order (launches.jsonl of the oracle; rrref.cpp).  Launch 1,
+        // k_pooled2, runs on every frame that is not a reset (rrref: FUN_180127f10), so the dump's launch
+        // numbers are one higher from there on; roff carries that shift.
+        const bool pooled = (reset == 0);
+        const int roff = pooled ? 1 : 0;
+        // 1. Gather (launch 0)
+        trace_label = "launch 0 k_rr_gather";
         {
             uint8_t push[8] = {0};
             std::memcpy(push + 0, &W, 4); std::memcpy(push + 4, &H, 4);
             dispatch(cmd, "rr_gather", {&in_col, &in_mv_, &in_dep, &in_norm, &in_alb, &in_spa, &in_rough_, &g_col, &g_dep, &g_mv, &out_norm, &out_alb, &out_spa, &out_rough_}, push, 8, (W + 15) / 16, (H + 15) / 16, 1);
             inject_after(cmd, "gather", 0);
         }
-        // 2. Auto exposure
+        // 1b. History pooling (launch 1, not on reset): c0e (E0c0e) -> E0c12
+        if (pooled) {
+            trace_label = "launch 1 k_pooled2";
+            uint8_t push[32] = {0};
+            const int inW = hW15, inH = hH15;                      // rrref E[8], E[9]
+            const int oW2 = (hW15 + 1) / 2, oH2 = (hH15 + 1) / 2;  // rrref E[10], E[11]
+            std::memcpy(push + 8, &inW, 4); std::memcpy(push + 12, &inH, 4);
+            std::memcpy(push + 24, &oW2, 4); std::memcpy(push + 28, &oH2, 4);
+            dispatch(cmd, "rr_pooled2", {&c0e, &ue.at("E0c12")}, push, 32, (oW2 + 15) / 16, (oH2 + 15) / 16, 1);
+            inject_after(cmd, "pooled2", 1);
+        }
+        // 2. Auto exposure (launches 1 + roff, 2 + roff)
         {
             uint8_t push[16] = {0};
             std::memcpy(push + 8, &W, 4);
             std::memcpy(push + 12, &H, 4);
+            trace_label = "launch " + std::to_string(1 + roff) + " k_ae_block";
             dispatch(cmd, "rr_ae_block", {&g_col, &dhist}, push, 16, (W + 15) / 16, (H + 15) / 16, 1);
             inject_after(cmd, "ae_block", 1 + roff);
             uint8_t push_final[8] = {0};
             std::memcpy(push_final + 0, &W, 4); std::memcpy(push_final + 4, &H, 4);
+            trace_label = "launch " + std::to_string(2 + roff) + " k_ae_final";
             dispatch(cmd, "rr_ae_final", {&dhist, &expo, &ae_next, &ae_exp}, push_final, 8, 1, 1, 1);
             inject_after(cmd, "ae_final", 2 + roff);
         }
-        // 3. Enc0 feat
+        // 3. Enc0 feat (launch 3 + roff)
         {
             uint8_t push[16] = {0};
             std::memcpy(push + 0, &W0, 4); std::memcpy(push + 4, &H0, 4);
             std::memcpy(push + 8, &W, 4); std::memcpy(push + 12, &H, 4);
+            trace_label = "launch " + std::to_string(3 + roff) + " k_enc0_feat";
             dispatch(cmd, "rr_enc0_feat", {&g_col, &g_mv, &g_dep, &out_norm, &out_alb, &out_spa, &out_rough_, &expo,
                                      &t_act[0], &bec, &bf6, &bfa, &bfe}, push, 16, (W0 + 15) / 16, (H0 + 15) / 16, 1);
             inject_after(cmd, "enc0_feat", 3 + roff);
         }
-        // 4. Levels (U-Net)
-        {
-            uint8_t push[16] = {0};
-            std::memcpy(push + 0, &W, 4); std::memcpy(push + 4, &H, 4);
-            dispatch(cmd, "rr_level", {&wbuf, &t_act[0], &t_act[1]}, push, 16, (W + 15) / 16, (H + 15) / 16, 1);
-            inject_after(cmd, "level", 4 + roff);
+        // 4. U-Net: one rr_level dispatch per oracle k_level launch (launches 4 + roff + u).
+        for (int u = 0; u < 16; ++u) {
+            const RrUnit& U = kRrUnits[u];
+            const int uw = W0 >> kRrUnitLevel[u], uh = H0 >> kRrUnitLevel[u];
+            // Args +8 / +12 (rrref's shift): s6_2 for the encoder, s4_0 for unit 5 and the dec*_0 units
+            // (mode 2), s0_4 for dec*_1 and the last unit (modes 3, 4).  Indexed [class][parity].
+            const int shc = (u == 5 || U.mode == 2) ? 1 : (U.mode == 3 || U.mode == 4) ? 2 : 0;
+            static const int kShift[3][2][2] = {{{2, 6}, {6, 2}}, {{4, 0}, {0, 4}}, {{0, 4}, {4, 0}}};
+            const int sx = kShift[shc][p][0], sy = kShift[shc][p][1];
+            const int gx = (uw + sx + 7) >> 3, gy = (uh + sy + 7) >> 3;
+
+            uint8_t push[64] = {0};
+            const int ints[10] = {uw, uh, sx, sy, U.mode, U.C, U.g, U.Cdown, U.Cup, U.n};
+            std::memcpy(push + 0, ints, sizeof ints);          // offsets 0..39
+            const int in_ch = U.in_ch, blob_off = int(rr_blob_off[u]);
+            std::memcpy(push + 56, &in_ch, 4);                  // offset 56: channels per token of binding 1
+            std::memcpy(push + 60, &blob_off, 4);               // offset 60: this unit's weights in binding 0
+
+            Buffer* in = rr_buf(U.role[R_IN]);
+            Buffer* o78 = rr_buf(U.role[R_O78]);
+            Buffer* o98 = rr_buf(U.role[R_O98]);
+            Buffer* primary = o78 ? o78 : o98;                  // binding 2 is the one the shader writes
+            auto or_in = [&](Buffer* b) { return b ? b : in; };
+            auto or_dummy = [&](Buffer* b) { return b ? b : &rr_dummy; };
+            std::vector<Buffer*> bufs = {
+                &wbuf, in, primary,
+                or_in(rr_buf(U.role[R_SKIP])),
+                or_dummy(rr_buf(U.role[R_O80])),
+                or_in(rr_buf(U.role[R_I88])), or_in(rr_buf(U.role[R_I90])),
+                or_dummy(o98), or_dummy(rr_buf(U.role[R_OA0])),
+                or_dummy(rr_buf(U.role[R_OC0])), or_dummy(rr_buf(U.role[R_OC8])),
+                or_dummy(rr_buf(U.role[R_OD0])), or_dummy(rr_buf(U.role[R_OD8])),
+            };
+            char lbl[96];
+            std::snprintf(lbl, sizeof lbl, "launch %d k_level<%d,%d,%d,%d,%d,%d>", u + 4 + roff,
+                          U.C, U.g, U.mode, U.Cdown, U.Cup, U.n);
+            trace_label = lbl;
+            dispatch(cmd, "rr_level", bufs, push, 64, gx, gy, 1);
+            inject_after(cmd, ("L" + std::to_string(u + 5)).c_str(), u + 4 + roff);
         }
-        // 5. Post prep
+        // 5. Post prep (launch 20 + roff): inputs are the U-Net's own outputs E0bd4, E0c16, E0c1e
         {
             uint8_t push[40] = {0};
             std::memcpy(push + 8, &W0, 4);
             std::memcpy(push + 32, &W, 4); std::memcpy(push + 36, &H, 4);
-            dispatch(cmd, "rr_post_prep", {&bec, &gates, &aniso, &cf2}, push, 40, (W + 15) / 16, (H + 15) / 16, 1);
+            trace_label = "launch " + std::to_string(20 + roff) + " k_post_prep";
+            dispatch(cmd, "rr_post_prep", {&ue.at("E0bd4"), &ue.at("E0c16"), &ue.at("E0c1e"), &cf2}, push, 40, (W + 15) / 16, (H + 15) / 16, 1);
             inject_after(cmd, "post_prep", 20 + roff);
         }
-        // 6. Post
+        // 6. Post (launch 21 + roff)
         {
             uint8_t push[120] = {0};
             std::memcpy(push + 0, &W, 4);
@@ -875,14 +1031,16 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             std::memcpy(push + 28, &jx, 4);
             std::memcpy(push + 32, &jy, 4);
             std::memcpy(push + 36, &exposure_val, 4);
+            trace_label = "launch " + std::to_string(21 + roff) + " k_post";
             dispatch(cmd, "rr_post", {&cf2, &expo, &cf6, &cfa, &ihist[0], &c0e}, push, 120, (W15 + 15) / 16, (H15 + 15) / 16, 1);
             inject_after(cmd, "post", 21 + roff);
         }
-        // 7. Downsample
+        // 7. Downsample (launch 22 + roff)
         {
             uint8_t push[48] = {0};
             std::memcpy(push + 16, &W15, 4); std::memcpy(push + 20, &H15, 4);
             std::memcpy(push + 40, &oW, 4); std::memcpy(push + 44, &oH, 4);
+            trace_label = "launch " + std::to_string(22 + roff) + " k_downsample";
             dispatch(cmd, "rr_downsample", {&cf6, &cfa, &expo, &out}, push, 48, (oW + 15) / 16, (oH + 15) / 16, 1);
             inject_after(cmd, "downsample", 22 + roff);
         }

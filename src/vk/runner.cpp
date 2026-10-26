@@ -146,8 +146,10 @@ int main(int argc, char** argv) {
 
     // Load shaders, create pipelines and allocate the chain's buffers
     std::string chain_err;
+    const char* shader_env = std::getenv("DLSS5_AMD_SHADER_DIR");
+    const std::string shader_dir = (shader_env && *shader_env) ? shader_env : "build/shaders";
     FrameChain* chain = FrameChain::create(dev, picked_phys, mode, preset, W, H, oW, oH,
-                                           wdir, "build/shaders", &chain_err);
+                                           wdir, shader_dir, &chain_err);
     if (!chain) {
         std::fprintf(stderr, "%s\n", chain_err.c_str());
         return 1;
@@ -292,9 +294,14 @@ int main(int argc, char** argv) {
         // Diagnosis: DLSS5_AMD_DUMP_BUF=name:PATH writes that chain buffer's bytes (same
         // names as DLSS5_AMD_INJECT_DIR) after the frame's GPU work completes.  Unset: no-op.
         if (const char* db = std::getenv("DLSS5_AMD_DUMP_BUF")) {
-            std::string spec(db);
-            size_t c = spec.find(':');
-            if (c != std::string::npos) {
+            const std::string all(db);
+            for (size_t pos = 0; pos < all.size();) {
+                size_t comma = all.find(',', pos);
+                if (comma == std::string::npos) comma = all.size();
+                const std::string spec = all.substr(pos, comma - pos);
+                pos = comma + 1;
+                size_t c = spec.find(':');
+                if (c == std::string::npos) continue;
                 std::vector<uint8_t> bytes;
                 if (chain->read_buffer(spec.substr(0, c), &bytes)) {
                     std::ofstream f(spec.substr(c + 1), std::ios::binary);

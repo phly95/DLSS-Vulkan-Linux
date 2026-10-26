@@ -7,20 +7,46 @@
 
 layout(local_size_x = 32, local_size_y = 4, local_size_z = 1) in;
 
-layout(set = 0, binding = 0) readonly buffer InW    { uint8_t w[]; };
-layout(set = 0, binding = 1) readonly buffer InAct  { uint8_t in_act[]; };
+// Bindings follow the oracle's k_level Args roles (RrUnit in pipeline.cpp): 0 weights (this unit's blob,
+// at blob_off), 1 input (+0x10), 2 primary output (+0x78, or +0x98 for the last unit), 3 skip (+0x18),
+// 4 output (+0x80), 5 input (+0x88), 6 input (+0x90), 7 output (+0x98), 8 output (+0xa0), 9..12 outputs
+// (+0xc0, +0xc8, +0xd0, +0xd8).  The arithmetic below reads 0 and 1 and writes 2 only; the other slots
+// are bound so that every buffer of a launch sits where the oracle has it.
+layout(set = 0, binding = 0) readonly buffer InW     { uint8_t w[]; };
+layout(set = 0, binding = 1) readonly buffer InAct   { uint8_t in_act[]; };
 layout(set = 0, binding = 2) writeonly buffer OutAct { uint8_t out_act[]; };
+layout(set = 0, binding = 3) readonly buffer InSkip  { uint8_t skip_act[]; };
+layout(set = 0, binding = 4) writeonly buffer OutB   { uint8_t out_b[]; };
+layout(set = 0, binding = 5) readonly buffer In5     { uint8_t in_5[]; };
+layout(set = 0, binding = 6) readonly buffer In6     { uint8_t in_6[]; };
+layout(set = 0, binding = 7) writeonly buffer OutC   { uint8_t out_c[]; };
+layout(set = 0, binding = 8) writeonly buffer OutD   { uint8_t out_d[]; };
+layout(set = 0, binding = 9) writeonly buffer OutE   { uint8_t out_e[]; };
+layout(set = 0, binding = 10) writeonly buffer OutF  { uint8_t out_f[]; };
+layout(set = 0, binding = 11) writeonly buffer OutG  { uint8_t out_g[]; };
+layout(set = 0, binding = 12) writeonly buffer OutH  { uint8_t out_h[]; };
 
+// Per-launch parameters, 64 bytes of push constants.  0..36: the unit's Args dims and the template ints
+// (W, H, sx, sy, mode, C, g, Cdown, Cup, n); 40..52: the kernel-test fallback fields; 56: channels per
+// token of binding 1 (C_in); 60: the unit's weight offset in binding 0.  Zero C / C_in mean 32, the
+// layout this shader always had.
 layout(push_constant) uniform RrUnitArgs {
-    layout(offset = 0) int W_in;
-    int H_in;
-    int sx_in;
-    int sy_in;
-    int mode_in;
+    layout(offset = 0) int W_in;     // Args +0x00: unit width (pixels)
+    int H_in;                        // Args +0x04: unit height
+    int sx_in;                       // Args +0x08: shift x
+    int sy_in;                       // Args +0x0c: shift y
+    int mode_in;                     // template mode
+    int C_out;                       // template C: channels per token of the primary output
+    int g_in;                        // template g
+    int Cdown_in;                    // template Cdown
+    int Cup_in;                      // template Cup
+    int n_in;                        // template n
     layout(offset = 40) int W_test;
     int H_test;
     int sx_test;
     int sy_test;
+    layout(offset = 56) int C_in;    // channels per token of binding 1
+    int blob_off;                    // byte offset of this unit's weights in binding 0
 };
 
 // LDS staging: 128 tokens covering a workgroup
@@ -93,16 +119,19 @@ void main() {
     int W = (W_in > 0) ? W_in : ((W_test > 0) ? W_test : 16);
     int H = (H_in > 0) ? H_in : ((H_test > 0) ? H_test : 16);
     int total_pixels = W * H;
+    uint in_ch = (C_in > 0) ? uint(C_in) : 32u;
+    uint out_ch = (C_out > 0) ? uint(C_out) : 32u;
 
-    uint wg_id = gl_WorkGroupID.x;
+    // Workgroups are numbered over the launch's 2-D grid, 128 pixels each (a 1-D grid is y = 0).
+    uint wg_id = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
     uint base_pixel = wg_id * 128u;
 
     // 1. Collaborative loading of activations from in_act (FP8) to s_act
     uint p_in = base_pixel + tid;
     for (uint c = 0u; c < 32u; ++c) {
         float16_t val = float16_t(0.0);
-        if (p_in < uint(total_pixels)) {
-            uint in_idx = p_in * 32u + c;
+        if (p_in < uint(total_pixels) && c < in_ch) {
+            uint in_idx = p_in * in_ch + c;
             if (in_idx < in_act.length()) {
                 val = e4m3_lut[uint(in_act[in_idx])];
             }
@@ -169,8 +198,8 @@ void main() {
         float mlp_act = rr_swin_act(norm2);
         float out_val = clamp(float(s_norm[tid][c]) + mlp_act * 0.5, -448.0, 448.0);
 
-        if (p_in < uint(total_pixels)) {
-            uint out_idx = p_in * 32u + c;
+        if (p_in < uint(total_pixels) && c < out_ch) {
+            uint out_idx = p_in * out_ch + c;
             if (out_idx < out_act.length()) {
                 uint e8 = f32_to_e4m3_rne(out_val);
                 if (e8 == 0u) e8 = uint((p_in + c + 1u) & 0x7fu);
