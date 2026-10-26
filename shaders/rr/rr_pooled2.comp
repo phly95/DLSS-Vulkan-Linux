@@ -22,7 +22,13 @@ vec3 inverse_tone(uint packed) {
 }
 
 uint encode_tone(vec3 rgb) {
-    rgb = 0.36 * log2(max(rgb * 100.0 + 1.0, vec3(0.0001))) / log2(10.0);
+    const float kLog10_2 = uintBitsToFloat(0x3e9a209bu);
+    const float k036 = uintBitsToFloat(0x3eb851ecu);
+    const float kInv245 = uintBitsToFloat(0x3ed0fac6u);
+    rgb = log2(max(rgb * 100.0 + 1.0, vec3(0.0001)));
+    rgb *= kLog10_2;
+    rgb *= k036;
+    rgb *= kInv245;
     uvec3 q = uvec3(roundEven(clamp(rgb, vec3(0.0), vec3(1.0)) * 1023.0));
     return q.r | (q.g << 10u) | (q.b << 20u) | 0xc0000000u;
 }
