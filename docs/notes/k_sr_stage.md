@@ -1034,3 +1034,82 @@ its offset (after each of the 8 blocks, and at the end of the MLP region) in the
 cheap, no GPU needed - and if one position moves PSNR materially, verify it on the GPU with
 `vk_runner` + `pipeline_report.py` and `kernel_run` + `launch_report.py`.  In parallel the
 `b1` offsets per block are the same class of question and the same sweep covers them.
+
+### Attempt 15 (2026-10-26): fc2_bias position + topology CONFIRMED; 24768 unread bytes found - session checkpoint
+
+Everything in this section is measured; **nothing landed** (no shader edit since `83a5b91`).
+Session paused here by the operator for external review.
+
+#### Result 1 - the port's `fc2_bias` position is correct (hypothesis REFUTED)
+
+Attempt 14 noted that removing `fc2_bias` gained +0.07 dB and read that as a possible
+*misplaced* bias.  Sweeping which block it sits behind (`STAGE_FC2B_AFTER`, replica only):
+
+| bias behind block | 0 (port) | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| PSNR | **13.5080** | -23.04 | -22.01 | -22.01 | -22.02 | -22.18 | -22.45 | -22.51 |
+
+Block 0 is right by a 35 dB margin - every alternative collapses.  The +0.07 from zeroing it
+was coincidence.  The offset-sweep hint in attempt 14's next step is therefore **closed**.
+
+#### Result 2 - residual topology, `v270`, MLP sign and MLP input source all confirmed
+
+| variant | PSNR | reading |
+|---|---:|---|
+| baseline (`gain_first_gain2_first`) | **13.5080** | - |
+| `ctx_replace` (attention replaces instead of adds) | 12.2806 | topology correct as-is |
+| `no_v270` | 13.3864 | **v270 is used** |
+| MLP sign flip (scale -1) | 10.4256 | sign correct |
+| `mlp_from_preattn` (norm2 over pre-attention `s_act`) | 13.5039 | post-attention input correct |
+| `no_b1` | 13.2791 | **b1 correct** |
+
+Combined with attempt 14's table (all `fc1`/`fc2` layout swaps catastrophic, every alternative
+activation worse than `nr_swin_act`, fp8-activation scale inert), the port's MLP is now
+confirmed correct in: layout (`frag_off` args and row-major), activation, both biases and their
+positions, sign, output topology and input source - **yet it still carries ~76% of the
+remaining error.**  That contradiction is the open problem.
+
+#### Result 3 - the open lead: 24768 bytes of `stage0.bin` are never read
+
+Weight-accounting of the walk the port and replica both perform:
+
+```
+gain1..gain2 end :      13696
+MLP walk end     :      47104     (8 blocks x 4160 + 128 for fc2_bias after block 0)
+stage0.bin size  :      71872
+UNREAD           :      24768 bytes  (~5.95 blocks, ~34% of stage0)
+```
+
+If the oracle's launch-3 dispatch consumes any of those bytes, the port is missing a whole
+component, which is exactly the shape of the contradiction above (everything we can check is
+right, yet the MLP output is wrong).  This was **not** tested - the session paused first.
+
+Probes are already crafted and verified, waiting:
+
+```
+build/work/probe/all_real    # byte-identical to build/re/packed/M   (verified: True)
+build/work/probe/tail_zero   # same, but 47104..71872 zeroed         (verified: 24501 bytes
+                             #  differ, range 47104..71871, tail all zero)
+```
+
+Both were produced with the new `probe_craft.py --no-rewrite` flag, which applies *only* the
+explicit edits and leaves every other byte as packed - the plain path rewrites gains/bias/QK/V
+from CLI defaults, so it could not be used for this test.
+
+#### NEXT STEP (one command deep - do not run anything else first)
+
+The question: **are bytes 47104..71872 live in the oracle's launch 3?**  If yes, the port is
+missing a component worth going after; if no, the unread tail is inert and the MLP mystery
+needs a different explanation.  Two dumps then one comparison:
+
+```bash
+podman run --rm --device /dev/kfd --device /dev/dri --group-add keep-groups --security-opt label=disable   -v "$PWD":/w docker.io/rocm/dev-ubuntu-24.04:7.2.4 bash -c 'cd /w &&   for d in all_real tail_zero; do rm -rf build/work/probe/${d}_dump;     build/work/srref artifacts/neuralhub-v0.8.0/gfx1201/sr.gfx1201.co build/work/probe/$d       build/work/probe/frames1 build/work/probe/${d}_out --dump build/work/probe/${d}_dump       >/dev/null 2>&1 && echo "$d ok" || echo "$d FAILED"; done'
+```
+
+then compare the two `frame0/003.t1.bin` with the same differencing `probe_attn.py` /
+`probe_ctx.py` already use (`ctx = e4(t1) - e4(t0)`, mean|diff| against the ~0.146 fp8-step
+noise floor): **identical => inert, drop the lead**; **different => those bytes are live and the
+port is missing a component, which becomes the new primary thread.**
+
+Do not start another thread before this is answered - it decides whether the contradiction in
+Result 2 has a known cause.
