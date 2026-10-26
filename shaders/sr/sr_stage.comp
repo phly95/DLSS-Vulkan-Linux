@@ -191,15 +191,22 @@ void main() {
     }
 
     // 2. RMSNorm 1
+    // gain1 is applied BEFORE the normalisation (s_norm = g*x / ||g*x||), not after
+    // ((x/||x||) * g).  The two agree for a uniform gain1 and differ the moment it is
+    // non-uniform, which is every real weight file.  Measured against the oracle through
+    // the probe harness: applying it first lifts the replica from corr 0.4551 to 0.5663 on
+    // real weights and from 0.57 to 0.97 on every gain1-isolated 8-row probe.  See
+    // docs/notes/k_sr_stage.md attempt 12.
     float sum_sq1 = 0.0;
     for (uint c = 0; c < C; ++c) {
-        float v = float(s_act[tid][c]);
-        sum_sq1 += v * v;
+        float16_t gain1 = read_f16(cur_w + c * 2u);
+        float16_t gx = s_act[tid][c] * gain1;   // f16 product, then used as the norm input
+        s_norm[tid][c] = gx;                    // s_norm doubles as scratch for the input
+        sum_sq1 += float(gx) * float(gx);
     }
     float rs1 = inversesqrt(sum_sq1 + 6.103515625e-05);
     for (uint c = 0; c < C; ++c) {
-        float16_t gain1 = read_f16(cur_w + c * 2u);
-        s_norm[tid][c] = s_act[tid][c] * float16_t(rs1) * gain1;
+        s_norm[tid][c] = s_norm[tid][c] * float16_t(rs1);
     }
     cur_w += 2u * C;
     barrier();
