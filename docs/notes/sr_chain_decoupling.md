@@ -197,6 +197,69 @@ So the practical milestone path is `k_sr_stage`.  For RR, the port first needs t
 `rr_pooled2` is never dispatched) with buffers shaped like the oracle's - already recorded as
 break 4's neighbourhood above and in `docs/PORT-STATUS.md`.
 
+## Step E: decode - start state (2026-10-26)
+
+**Instruments, ranked (unchanged by the emulator lift, reaffirmed by the operator):** srref
+synthetic-weight probing **primary** - it settled `k_sr_stage` attempt 5 faster than four
+attempts of ISA reading and its results verify directly against oracle dumps; the emulator
+(`build/work/enc0emu.py`) secondary; ISA reading last.  Order by measured leverage.
+
+**The primary instrument is validated and live.**  The probe reproduces the oracle exactly:
+
+```bash
+podman run --rm --device /dev/kfd --device /dev/dri --group-add keep-groups \
+  --security-opt label=disable -v "$PWD":/w docker.io/rocm/dev-ubuntu-24.04:7.2.4 \
+  bash -c "cd /w && rm -rf build/work/probe/smoke_dump2 && \
+    build/work/srref artifacts/neuralhub-v0.8.0/gfx1201/sr.gfx1201.co build/re/packed/M \
+      build/work/probe/frames1 build/work/probe/smoke_out2 --dump build/work/probe/smoke_dump2"
+cmp build/work/probe/smoke_dump2/frame0/003.t1.bin \
+    build/oracle/oracle-8dbf027a9e-s20261025/sr_M/dump/frame0/003.t1.bin   # identical, 655360 B
+```
+
+Scaffolding still present: `build/work/srref`, `build/work/stage_model.py`,
+`build/work/probe/frames1`, `build/work/probe/{w,r,s}*` (crafted weight dirs).
+
+**Break 4 is shader-side, not a wrong push constant (confirmed from the oracle's own
+argument block).**  `StageArgs` words 40/44/48/52 are dimW/dimH/s0/s1, and they are:
+
+| launch | instantiation | dimW | dimH | s0 | s1 | what `pipeline.cpp` passes |
+|---|---|---:|---:|---:|---:|---|
+| 3 | mode-0 st0 | 128 | 80 | 2 | 2 | L1w/L1h, pe, 2 - match |
+| 4 | mode-0 st1 | 64 | 40 | 2 | 2 | L2w/L2h, pe, 2 - match |
+| 5 | tube0 | 32 | 20 | 2 | 2 | L3w/L3h, pe, 2 - match |
+| 6 | tube1 | 32 | 20 | 0 | 0 | L3w/L3h, po, 0 - match |
+| 11 | mode-2 st8 | 64 | 40 | 0 | 0 | L2w/L2h, po, 0 - match |
+| 12 | mode-2 st9 | 128 | 80 | 0 | 0 | L1w/L1h, po, 0 - match |
+
+So the oracle really does hand st8 the **output** resolution (64x40) while its input `t6` is
+32x20 at 128 channels.  The gap is therefore entirely inside `sr_stage.comp`: the load loop
+indexes `in_act` with output dims and output `num_cg`, and there is no mode-2 input path
+(`mode == 2u` appears only for the weight-pointer skip, the skip add, and mode 0's
+`out_act2`).  Fixing break 4 means decoding the 2x upsample and the 128 -> 96 projection -
+**not** editing push constants, which are already right.
+
+**Refuted, do not repeat this way:** extracting the embedded denominator table by adding the
+prolog's PC-relative literal.  `s_getpc_b64 s[0:1]` at `0x1C1B8` + `s_add_co_u32 s0, s0,
+0xe125c` gives `0xFD414` (or `0xFD418` if getpc yields the next instruction) - but in
+`artifacts/neuralhub-v0.8.0/gfx1201/sr.gfx1201.co`, `.text` spans VA `0xbc00..0xfb3a0`
+and `.bss` spans `0xfd410..0xfd429`, so both land in `.bss`, past the end of `.text`, not
+at a table.  The link-time VA to file-offset mapping (or the runtime base) has to be
+resolved before that base means anything; patching `wbuf[0x20000..0x40000]` already showed
+the table is not in the weight buffer either.  Either resolve the mapping properly or
+characterise the function by probing instead.
+
+**One next step:** characterise the denominator function by probing rather than by reading
+it out of the binary - `srref --dump` on crafted weight dirs, sweeping Sigma, recording
+g = ctx/S for each (attempt 5 sampled only {2.0, 2.69, 3.13, 3.25, 5.63} -> {195, 85, 65,
+61, 68}), and fitting one formula that covers both the equal-logit regime (which needs
+max-subtraction: `q1`/`s4` give exactly zero context, reproduced bit-exact by
+`prob = fp8(32*(exp-max)/sum(exp-max))`) and the active regime (plain softmax x32 fits
+sAB at corr 0.9983).  The two regimes are the open contradiction; nothing should be landed
+into `sr_stage.comp` until one formula covers both, because the earlier `inv_sum = 32.0`
+edit measured *worse* on real inputs when landed piecemeal (1.1595% -> 0.4305% bit-exact).
+Judge every probe result with `tools/report/launch_report.py` against the Step C baselines
+(st0 4.9783 dB / r 0.455124; st8 7.8425 dB / 0.093988; st9 4.6123 dB / 0.058489).
+
 ## Amendments 2026-10-26 (three, from the orchestrator)
 
 **1. The 40 dB per-launch metric is defined here, before any measurement.**  A per-launch
