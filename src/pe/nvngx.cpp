@@ -64,6 +64,8 @@ NGXD_VK_FUNCS(NGXD_VK_DEFINE)
 
 static PFN_vkGetInstanceProcAddr g_gipa = nullptr;
 static PFN_vkGetDeviceProcAddr g_gdpa = nullptr;
+static HMODULE g_vk_module = nullptr;   // the module the entry points came from
+static bool g_vk_loaded = false;         // entry points resolved once
 
 // Parameter value representation with type cross-conversion
 struct ParamValue {
@@ -295,20 +297,73 @@ static bool load_vk_entry_points() {
     return g_gdpa != nullptr;
 }
 
+// Per-symbol GetProcAddress from a module, the way reference-nr-vulkan's nr_vk_load() does it: the
+// D3D12 path never gets a gipa/gdpa (the host only passes those to NVSDK_NGX_VULKAN_Init), and
+// vkd3d-proton's instance/device/command buffers are winevulkan's own objects -- Proton's
+// vulkan-1.dll only forwards to winevulkan.dll, so either module hands back the same function
+// pointers.  winevulkan is taken only when it exports everything; the winevulkan.dll *forwarder*
+// exports a few symbols and leaves the rest on vulkan-1.dll.
+static bool load_from_module() {
+    HMODULE m = GetModuleHandleA("winevulkan.dll");
+    const char* src = "winevulkan.dll";
+    bool complete = (m != nullptr);
+    if (m) {
+#define NGXD_VK_CHECK(f) if (!GetProcAddress(m, #f)) { complete = false; }
+        NGXD_VK_FUNCS(NGXD_VK_CHECK)
+#undef NGXD_VK_CHECK
+    }
+    if (!complete) {
+        m = GetModuleHandleA("vulkan-1.dll");
+        if (!m) m = LoadLibraryA("vulkan-1.dll");
+        src = "vulkan-1.dll";
+    }
+    if (!m) {
+        ngx_log("no winevulkan.dll and no vulkan-1.dll in this process, and NVSDK_NGX_VULKAN_Init "
+                "passed no gipa/gdpa");
+        return false;
+    }
+    const char* missing = nullptr;
+#define NGXD_VK_GET(f)                                                                     \
+    if (!f) {                                                                              \
+        f = reinterpret_cast<PFN_##f>(GetProcAddress(m, #f));                              \
+        if (!f && !missing) missing = #f;                                                  \
+    }
+    NGXD_VK_FUNCS(NGXD_VK_GET)
+#undef NGXD_VK_GET
+    if (missing) {
+        ngx_log("%s does not export %s", src, missing);
+        return false;
+    }
+    g_vk_module = m;
+    g_vk_loaded = true;
+    ngx_log("vulkan entry points from %s", src);
+    return true;
+}
+
 static bool load_vk_for_device(VkInstance inst, VkPhysicalDevice phys, VkDevice dev) {
-    if (!inst || !dev || !load_vk_entry_points()) {
+    if (g_vk_loaded) return true;   // NVSDK_NGX_VULKAN_Init and build_chain both ask
+    if (!inst || !dev) {
         ngx_log("no Vulkan entry points: NVSDK_NGX_VULKAN_Init must pass gipa/gdpa, or winevulkan must be loaded");
         return false;
     }
-    bool ok = true;
+    // Route 1: the loader the Vulkan host handed us -- correct for the objects that loader made.
+    if (g_gipa && g_gdpa && !g_vk_module) {
+        bool ok = true;
 #define NGXD_VK_LOAD(f)                                                                       \
     f = reinterpret_cast<PFN_##f>(g_gdpa(dev, #f));                                           \
     if (!f) { f = reinterpret_cast<PFN_##f>(g_gipa(inst, #f)); if (!f) { ok = false; } }
-    NGXD_VK_FUNCS(NGXD_VK_LOAD)
+        NGXD_VK_FUNCS(NGXD_VK_LOAD)
 #undef NGXD_VK_LOAD
+        if (ok) {
+            g_vk_loaded = true;
+            ngx_log("vulkan entry points from the host's gipa/gdpa");
+            return true;
+        }
+        ngx_log("the host's gipa/gdpa did not resolve every entry point, falling back to the module");
+    }
     (void)phys;
-    if (!ok) ngx_log("the Vulkan device does not export the entry points the chain needs");
-    return ok;
+    // Route 2: per-symbol GetProcAddress, which is the only route the D3D12 path has.
+    return load_from_module();
 }
 
 struct FeatureState {
@@ -709,6 +764,8 @@ __declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_D3D12_CreateFeature(
     *out = nullptr;
 
     if (!check_nvidia_dll(feature)) {
+        ngx_log("D3D12 CreateFeature refused: %s is missing or not its expected size next to _nvngx.dll",
+                feature == NVSDK_NGX_Feature_RayReconstruction ? "nvngx_dlssd.dll" : "nvngx_dlss.dll");
         return NVSDK_NGX_Result_Fail;
     }
 
@@ -825,6 +882,8 @@ static NVSDK_NGX_Result vulkan_create(VkDevice device, NVSDK_NGX_Feature feature
     *out = nullptr;
 
     if (!check_nvidia_dll(feature)) {
+        ngx_log("Vulkan CreateFeature refused: %s is missing or not its expected size next to _nvngx.dll",
+                feature == NVSDK_NGX_Feature_RayReconstruction ? "nvngx_dlssd.dll" : "nvngx_dlss.dll");
         return NVSDK_NGX_Result_Fail;
     }
 
