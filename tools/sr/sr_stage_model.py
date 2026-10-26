@@ -33,6 +33,8 @@ The --set switches (defaults = the best measured configuration):
   v8=0           V (= K) to fp8 before prob @ V (0: f16, as the ISA's 8 f16 WMMAs suggest)
   prob8=0        probabilities to fp8              proj_in=f32|fp8  what the mode-0 projection reads
   proj_clamp=6.28125   the projection's output clamp (0 = none)
+  ss16=0 rs16=0 acc16=0   rounding-closure candidates (Review R1.8): f16 sum-of-squares tree,
+                 f16 rsqrt, GEMM K=32 chunks summed through f16
   act=gelu|erfgelu|nr                              up_order=qc|cq   mode-2 sub-pixel channel order
   up_pix=xy|yx   mode-2 sub-pixel order          skip_at=before|after|both|none   where mode 2 adds the skip
 """
@@ -53,7 +55,7 @@ ORACLE = REPO / "build/oracle/oracle-8dbf027a9e-s20261025"
 P = np.array([0, 1, 16, 17, 2, 3, 18, 19, 4, 5, 20, 21, 6, 7, 22, 23,
               8, 9, 24, 25, 10, 11, 26, 27, 12, 13, 28, 29, 14, 15, 30, 31])
 IP = np.argsort(P)
-DEFAULTS = dict(deperm=1, snorm8=1, qk8=1, ctx8=1, prob8=0, v8=0, proj_in="fp8", proj_clamp="6.28125", maxsub=0, act="gelu",
+DEFAULTS = dict(deperm=1, snorm8=1, qk8=1, ctx8=1, prob8=0, v8=0, proj_in="fp8", proj_clamp="6.28125", maxsub=0, ss16=0, rs16=0, acc16=0, act="gelu",
                 up_order="qc", up_pix="xy", skip_at="before")
 
 
@@ -213,17 +215,33 @@ def run_stage(X, Wt, W, H, sx, sy, tile, cfg, skip=None, low=None, attn_only=Fal
     PX, PY = reflect(TX, W), reflect(TY, H)
     s_act = f16(X[PY, PX])                                      # (N, 16, C)
 
+    def mm(a, Wm):
+        """a @ Wm.T; acc16: K=32 chunks in f32, each rounded to f16, the chunks added in f16."""
+        if not cfg["acc16"] or a.shape[-1] <= 32:
+            return a @ Wm.T
+        acc = None
+        for k0 in range(0, a.shape[-1], 32):
+            part = f16(a[..., k0:k0 + 32] @ Wm[:, k0:k0 + 32].T)
+            acc = part if acc is None else f16(acc.astype(np.float32) + part.astype(np.float32))
+        return acc.astype(np.float32)
+
     def rmsnorm(x, gain):
         xf = x.astype(np.float32)
-        rs = np.float32(1.0) / np.sqrt((xf * xf).sum(-1, keepdims=True) + np.float32(2.0 ** -14))
+        if cfg["ss16"]:
+            ss = f16_pair_sum(f16(xf * xf)).astype(np.float32)[..., None]
+        else:
+            ss = (xf * xf).sum(-1, keepdims=True)
+        rs = np.float32(1.0) / np.sqrt(ss + np.float32(2.0 ** -14))
+        if cfg["rs16"]:
+            rs = f16(rs).astype(np.float32)
         s = f16(f16(xf * rs).astype(np.float32) * gain)
         return f16(q8(s.astype(np.float32))) if cfg["snorm8"] else s
 
     s_norm = rmsnorm(s_act, Wt.gain1).astype(np.float32)
     attn = np.zeros(s_act.shape, np.float32)
     for (Wq, Wk, rel, Wo) in Wt.heads:
-        Q = s_norm @ Wq.T
-        K = f16(s_norm @ Wk.T).astype(np.float32)
+        Q = mm(s_norm, Wq)
+        K = f16(mm(s_norm, Wk)).astype(np.float32)
         V = K                                     # V = K (Review R1.4), taken before the fp8 step
         if cfg["qk8"]:
             Q, K = q8(Q), q8(K)
@@ -253,7 +271,7 @@ def run_stage(X, Wt, W, H, sx, sy, tile, cfg, skip=None, low=None, attn_only=Fal
         s_n2 = rmsnorm(s_act, Wt.gain2).astype(np.float32)
         s_mlp = np.zeros(s_act.shape, np.float16)
         for (W1, b1, W2) in Wt.mlp:
-            h1 = q8(act_fn((s_n2 @ W1.T + b1).astype(np.float32), cfg["act"]))
+            h1 = q8(act_fn((mm(s_n2, W1) + b1).astype(np.float32), cfg["act"]))
             s_mlp = f16(s_mlp.astype(np.float32) + f16(h1 @ W2.T).astype(np.float32))
         out = np.clip(s_act.astype(np.float32) + s_mlp.astype(np.float32) + Wt.fc2_bias, -448, 448)
     # scatter in-bounds tokens back to the image (each pixel belongs to exactly one window)
