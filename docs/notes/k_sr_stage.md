@@ -955,3 +955,82 @@ shortfall, now the largest term left after the MLP landed.  Sweep what scales at
 structurally (an attention-side analogue of the two gain-order fixes: the logit scale, the
 denominator's reduction, and whether the attention output itself passes a gain/norm), always
 judged on the three metrics with the replica that now reproduces the GPU triple exactly.
+
+### Attempt 14 (2026-10-26): error budget and ceilings after gain2 - the MLP is 76% of it
+
+All measurements below run against the landed `gain_first_gain2_first` state (13.5080 dB) and
+exist to say *where the remaining dB is*, not to propose a landing.
+
+#### Ceilings: what each half of the stage is worth
+
+The `--isolate` probe gives the oracle's own attention for the same input (mlp and v270 are
+zeroed there, and neither affects attention, so `ctx = t1 - t0` *is* the attention).  Adding it
+at the store with `STAGE_ORACLE_CTX` replaces the port's attention by a perfect one; the same
+hook with a precomputed array gives the mirror test for the MLP.
+
+| configuration | PSNR | vs current |
+|---|---:|---:|
+| port (landed state) | **13.5080** | - |
+| attention removed | 13.5403 | +0.03 |
+| **perfect (oracle) attention** | **13.7736** | **+0.27** |
+| **perfect (oracle) MLP** | **17.1832** | **+3.64** |
+
+Decomposition of the oracle's own stage change (isolate probe for attention, `v270` read from
+the weight file at 13440..13568, remainder = MLP):
+
+```
+oracle total change 1.938 rms = attention 1.121 + v270 0.141 + MLP ~1.841 (implied)
+port   total change 0.775 rms = attention 0.159 + v270 0.141 + MLP  0.778
+total error 1.689 rms  ->  MLP share ~1.28 (76%), attention share ~0.41
+```
+
+So **the MLP is ~76% of the remaining error**, and attention - despite being 7x too small in
+magnitude - is worth only +0.27 dB when made perfect, because it is currently small.  Scaling
+attention up instead makes it worse monotonically (scale 2 -> 13.41, 4 -> 13.16, 7 -> 12.75),
+so its problem is content, and it is not where the milestone dB is.  Likewise scaling the MLP
+toward the oracle's magnitude (x1.5 -> 13.48, x2 -> 13.02, x3 -> 11.30) makes it worse: **both
+errors are structural, not scalar.**
+
+#### Families ruled out since gain2 landed (all measured, none landed)
+
+| family | best variant | result vs baseline 13.5080 |
+|---|---|---|
+| V read (`frag_off` args swapped, plain, plainT, bias-region) | `v_plain` | 13.5164 (+0.008, noise) |
+| MLP read `fc1`/`fc2` swapped | `fc2_swap` | 12.2316; `fc_swap` **-11.27** |
+| MLP read row-major | `fc_plain` | 11.7256 |
+| activation family | relu / gelu / silu / identity | 13.5372 / 13.2616 / 13.1451 / 13.0802 - all worse than `nr_swin_act` |
+| fp8 activation scale (x2..x32) | - | inert, 13.5080 for every N |
+| fc1 bias `b1` removed | - | 13.2791 (worse -> **b1 correct**) |
+| `fc2_bias` removed | - | **13.5794 (+0.07, better)** -> probably read from the wrong offset |
+| attention normalization families | `subminnorm` | 13.5081 (tie) |
+| Q5 x32 probability scale | `q5`/`q5c` | **-32.69** (catastrophic) |
+| `head_swap`, `v_neg`, ctx-scale | - | 13.4463 / 13.4954 / peak at scale 0-0.25 (13.54) |
+
+The port's `frag_off` reads for `fc1`/`fc2` and its `nr_swin_act` are therefore **confirmed
+correct** (every alternative is decisively worse), and `b1` is correct too.
+
+#### Trajectory toward 2026-11-02 (condition-(c) input)
+
+| step | per-launch PSNR | rRMSE | commit |
+|---|---:|---:|---|
+| session start | 4.9783 | 2.225339 | `a903817` (HEAD) |
+| gain1 before RMSNorm1 | 4.5099 | 2.348655 | `a903817` |
+| **gain2 before RMSNorm2** | **13.5080** | **0.833516** | `83a5b91` |
+
+Two landed structural decodes: **+8.53 dB** net, **rRMSE 2.23 -> 0.83 (2.7x)**.  Milestone is
+40 dB = rRMSE ~0.0395 at peak 8 / oracle rms 2.027, i.e. a further **21x** RMSE reduction.
+
+Honest reading of the ceilings: perfect MLP alone gets to 17.18 and perfect attention alone to
+13.77, but the two are the *only* additive terms left (feed the model `input + v270` and inject
+both and it reproduces the oracle exactly), so together they span the whole remaining gap - the
+question is how exact each can be made, not whether something else is missing.  The last landed
+step was worth +9 dB, so the trajectory is not flat, but the families that are cheap to test are
+being exhausted and the remaining gap needs a *near-exact* MLP, not an approximate one.
+
+**Next step (one command from resumable):** the `fc2_bias` hint - it is read from
+`cur + (32*C + 64 + C*32)` (i.e. after block 0, where the model skips `2*C` bytes); zeroing it
+gains +0.07 dB, which is the signature of a *misplaced* bias rather than an absent one.  Sweep
+its offset (after each of the 8 blocks, and at the end of the MLP region) in the replica -
+cheap, no GPU needed - and if one position moves PSNR materially, verify it on the GPU with
+`vk_runner` + `pipeline_report.py` and `kernel_run` + `launch_report.py`.  In parallel the
+`b1` offsets per block are the same class of question and the same sweep covers them.
