@@ -1183,15 +1183,24 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             }
         }
 
-        // 6. Post: NeuralHub's k_sr_post<false,12,16,false,false> (SR M, oracle launch 14). The 256-byte push
-        //    is PostArgs at the oracle's own offsets (tools/sr/srref/srref.cpp, "post (FUN_180117ee0)"), so an
-        //    oracle args hex passes verbatim. The shader reads 0x10, 0x88..0xa4, 0xa8, 0xac, 0xb0, 0xb4, 0xb8
-        //    and 0xcc; every other int/float offset is filled as the oracle does where the host has the value.
-        //    The pointers (0x00..0x87) stay zero: the shader does not read them. 0xd0 (depth_inverted) and 0xf0
-        //    (mv_scale) are not in FrameParams and stay zero; the shader does not read them either. 0xf8 is the
-        //    oracle's mv_offset_kernel value, 0 on both dumped frames (srref: "0 for unjittered MVs"). The
-        //    previous build's stand-in offsets (136..252) are gone. DLSS5_AMD_POST_PUSH_DUMP=<file> appends each
-        //    frame's push (256 bytes) to <file>, for the byte-for-byte comparison with the oracle's args.
+        // 6. Post: NeuralHub's k_sr_post<false,12,16,false,false> (SR M, oracle launch 14) or
+        //    <true,12,16,false,false> (SR L, oracle sr_L launch 15): one shader, two template
+        //    instances selected by the push's isL at +0xd0 (see shaders/sr/sr_post.comp; the models are
+        //    tools/sr/sr_post_model.py / sr_postL_model.py). The 256-byte push is PostArgs at the
+        //    oracle's own offsets (tools/sr/srref/srref.cpp, "post (FUN_180117ee0)"), so an oracle args
+        //    hex passes verbatim except the port-only +0xd0 flag (the oracle dumps carry 0 there; both
+        //    oracle instances read +0xd0 only as a ==0 test that masks four guards the port does not
+        //    implement - with the dumps' 0 it passes everything; the L fixtures patch +0xd0 to 1, mk_fix
+        //    pattern). The shader
+        //    reads 0x10, 0x88..0xa4, 0xa8, 0xac, 0xb0, 0xb4, 0xb8, 0xcc and 0xd0; every other
+        //    int/float offset is filled as the oracle does where the host has the value. The pointers
+        //    (0x00..0x87) stay zero: the shader does not read them (the oracle ISA proves neither
+        //    instance reads +0xe0 g_mvhi / +0xf0 mv_scale either - docs/notes/k_sr_post.md, l-post
+        //    decode). 0xd4 (ldr) and 0xf0 (mv_scale) are not in FrameParams and stay zero. 0xf8 is the
+        //    oracle's mv_offset_kernel value, 0 on both dumped frames (srref: "0 for unjittered MVs").
+        //    The previous build's stand-in offsets (136..252) are gone. DLSS5_AMD_POST_PUSH_DUMP=<file>
+        //    appends each frame's push (256 bytes) to <file>, for the byte-for-byte comparison with the
+        //    oracle's args.
         {
             uint8_t push[256] = {0};
             const uint64_t p64 = uint64_t(p);
@@ -1210,6 +1219,8 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             std::memcpy(push + 0xc4, &i15w, 4); std::memcpy(push + 0xc8, &i15h, 4);
             const uint32_t log2_10 = 0x40549a78u;
             std::memcpy(push + 0xcc, &log2_10, 4);
+            const uint32_t isL = (preset == "L") ? 1u : 0u;      // sr_post.comp's port-only instance flag
+            std::memcpy(push + 0xd0, &isL, 4);
             std::memcpy(push + 0xd4, &ldr, 4);
             const uint64_t mvhi64 = uint64_t(mvhi);
             std::memcpy(push + 0xd8, &mvhi64, 8);

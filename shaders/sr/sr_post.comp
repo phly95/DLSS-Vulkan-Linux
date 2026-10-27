@@ -6,20 +6,29 @@
 #extension GL_EXT_shader_8bit_storage : enable
 #extension GL_EXT_control_flow_attributes : enable
 
-// sr_post.comp: NeuralHub's k_sr_post<false,12,16,false,false> (SR preset M, oracle launch 14).
-// The spec is tools/sr/sr_post_model.py (SPEC sections 1-7); every step below is written in the
-// model's order, with rh() at each f16 rounding point and fma() where the spec says fma.
+// sr_post.comp: NeuralHub's k_sr_post<false,12,16,false,false> (SR preset M, oracle launch 14) and
+// k_sr_post<true,12,16,false,false> (SR preset L, oracle sr_L launch 15) - one source, two template
+// instances selected by the push's isL flag (0xd0, below). The spec of the M instance is
+// tools/sr/sr_post_model.py (SPEC sections 1-7), of the L instance tools/sr/sr_postL_model.py (same
+// spec with a 4x4 tap grid); every step below is written in the models' order, with rh() at each f16
+// rounding point and fma() where the spec says fma.
 //
 // Thread layout: 16x16 threads per group. Thread (tx, ty) of group (gx, gy) owns output column
 // x15 = 16*gx + tx and the PAIR r = 16*gy + ty, i.e. output rows 2r and 2r+1. Both rows take their
-// source rows from ONE base row Yb (the even row's Y0), so the nine source records are shared.
-// The 2x2 dhist block of columns 2c, 2c+1 lives in lanes tx, tx+1 of the same group: shared memory.
+// source rows from ONE base row Yb (the even row's Y0), so the nine (M) / sixteen (L) source records
+// are shared. The 2x2 dhist block of columns 2c, 2c+1 lives in lanes tx, tx+1 of the same group:
+// shared memory.
 //
 // PostArgs: the push block is NeuralHub's 256-byte PostArgs at its own offsets, so an oracle
-// launch's args hex can be passed verbatim. Read here: 0x10 (parity), 0x88..0xa4 (W, H, W15, H15,
-// hW15, hH15), 0xa8 (dec0_f1), 0xac/0xb0 (scale), 0xb4/0xb8 (F20 jitter), 0xcc (log2 10).
-// Not read: the pointers (0x00..0x87), ldr (0xd4) and mvhi (0xd8): this kernel instance is
-// k_sr_post<false,..,ldr=false,mvhi=false>, and the model applies no mvoff (0xf8 is 0 in the oracle).
+// launch's args hex can be passed verbatim (the fixtures patch ONLY 0xd0). Read here: 0x10 (parity),
+// 0x88..0xa4 (W, H, W15, H15, hW15, hH15), 0xa8 (dec0_f1), 0xac/0xb0 (scale), 0xb4/0xb8 (F20
+// jitter), 0xcc (log2 10). Not read: the pointers (0x00..0x87), ldr (0xd4) and mvhi (0xd8): both
+// oracle instances load the same scalars (proved from the ISA: neither reads past +0xd3), and the
+// model applies no mvoff (0xf8 is 0 in the oracle).
+// isL (0xd0): the PORT's instance selector, not an oracle field. Both oracle instances leave +0xd0
+// at 0 (depth_inverted) and neither reads it; the host writes 1 there iff preset L, whose oracle
+// args hex the fixture patches at 0xd0 only. Every field the kernel reads stays byte-equal to the
+// oracle's launch args in both presets.
 //
 // Bindings (kept from the stand-in): 0 g_col, 1 expo, 2 gates, 4 aniso, 5 ihist (history, read),
 // 8 mv_nondil, 9 ihist out, 10 full15, 11 dhist. Bindings 3 (factors), 6 (prev_mvec) and 7 (mv_ero)
@@ -55,6 +64,8 @@ layout(push_constant) uniform PostArgs {
     layout(offset = 0xb4) float jitterX;   // F20: this frame's jitter
     float jitterY;
     layout(offset = 0xcc) float log2_10;   // f32 bits 0x40549a78
+    layout(offset = 0xd0) uint isL;        // PORT-ONLY instance flag (see the header): 0 = M's 3x3 taps
+                                           // (the oracle dumps carry 0 here), 1 = L's 4x4 taps
 };
 
 // f32 constants of the spec, as their bit patterns (macros: glslang rejects uintBitsToFloat in a global const)
@@ -227,41 +238,77 @@ void main() {
     const float dybE = dy0e;                              // Y0e == Yb, shift 0
     const float dybO = rh(dy0o - float(Y0o - Yb));        // the odd row's shift onto Yb
 
-    // ---- SPEC 3 and 4: nine taps, kx-major. Records (tm RGB, gates, A'B'C') once per source pixel.
-    vec3 rtm[9];
-    vec3 rgt[9];
-    vec3 rabc[9];
-    float wE[9];
-    float wO[9];
-    [[unroll]] for (int k = 0; k < 9; ++k) {
-        const int kx = k / 3 - 1;
-        const int ky = k - (k / 3) * 3 - 1;
-        const int sxi = clamp(X0 + kx, 0, W - 1);
-        const int syi = clamp(Yb + ky, 0, H - 1);
-        const uint si = uint(syi * W + sxi);
+    // ---- SPEC 3 and 4: the taps, kx-major. Records (tm RGB, gates, A'B'C') once per source pixel.
+    // isL == 0: k_sr_post<false,..> (M) - a 3x3 splat, dx/dy in {-1,0,1} (build/k_sr_post.s add
+    // literals -1.0/0/1.0). isL != 0: k_sr_post<true,..> (L) - a 4x4 splat, dx/dy in {-1,0,1,2}
+    // (k_sr_post_L.s add literals at 317-321,362,379-385,564; the L model's tap grid). The two
+    // instances' record staging, MV/history sampling, gate blend and encodes are identical.
+    vec3 rtm[16];
+    vec3 rgt[16];
+    vec3 rabc[16];
+    float wE[16];
+    float wO[16];
+    if (isL == 0u) {
+        [[unroll]] for (int k = 0; k < 9; ++k) {
+            const int kx = k / 3 - 1;
+            const int ky = k - (k / 3) * 3 - 1;
+            const int sxi = clamp(X0 + kx, 0, W - 1);
+            const int syi = clamp(Yb + ky, 0, H - 1);
+            const uint si = uint(syi * W + sxi);
 
-        const f16vec4 cg = g_col[si];
-        rtm[k] = vec3(tm_rec(float(cg.x), e), tm_rec(float(cg.y), e), tm_rec(float(cg.z), e));
+            const f16vec4 cg = g_col[si];
+            rtm[k] = vec3(tm_rec(float(cg.x), e), tm_rec(float(cg.y), e), tm_rec(float(cg.z), e));
 
-        const u8vec4 gg = gates[si];
-        rgt[k] = vec3(rh(fdiv_ieee(float(gg.x), 255.0)), rh(fdiv_ieee(float(gg.y), 255.0)), rh(fdiv_ieee(float(gg.z), 255.0)));
+            const u8vec4 gg = gates[si];
+            rgt[k] = vec3(rh(fdiv_ieee(float(gg.x), 255.0)), rh(fdiv_ieee(float(gg.y), 255.0)), rh(fdiv_ieee(float(gg.z), 255.0)));
 
-        const f16vec4 an = aniso[si];
-        rabc[k] = vec3(rh(C_ANISO1 * float(an.x)), rh(C_ANISO1 * float(an.y)), rh(C_ANISO2 * float(an.z)));
+            const f16vec4 an = aniso[si];
+            rabc[k] = vec3(rh(C_ANISO1 * float(an.x)), rh(C_ANISO1 * float(an.y)), rh(C_ANISO2 * float(an.z)));
 
-        const float dx = rh(dx0 + float(kx));
-        const float dyE = rh(dybE + float(ky));
-        const float dyO = rh(dybO + float(ky));
-        wE[k] = exp2(quad_q(dx, dyE, rabc[k]));
-        wO[k] = exp2(quad_q(dx, dyO, rabc[k]));
+            const float dx = rh(dx0 + float(kx));
+            const float dyE = rh(dybE + float(ky));
+            const float dyO = rh(dybO + float(ky));
+            wE[k] = exp2(quad_q(dx, dyE, rabc[k]));
+            wO[k] = exp2(quad_q(dx, dyO, rabc[k]));
+        }
+    } else {
+        [[unroll]] for (int k = 0; k < 16; ++k) {
+            const int kx = k / 4 - 1;
+            const int ky = k - (k / 4) * 4 - 1;
+            const int sxi = clamp(X0 + kx, 0, W - 1);
+            const int syi = clamp(Yb + ky, 0, H - 1);
+            const uint si = uint(syi * W + sxi);
+
+            const f16vec4 cg = g_col[si];
+            rtm[k] = vec3(tm_rec(float(cg.x), e), tm_rec(float(cg.y), e), tm_rec(float(cg.z), e));
+
+            const u8vec4 gg = gates[si];
+            rgt[k] = vec3(rh(fdiv_ieee(float(gg.x), 255.0)), rh(fdiv_ieee(float(gg.y), 255.0)), rh(fdiv_ieee(float(gg.z), 255.0)));
+
+            const f16vec4 an = aniso[si];
+            rabc[k] = vec3(rh(C_ANISO1 * float(an.x)), rh(C_ANISO1 * float(an.y)), rh(C_ANISO2 * float(an.z)));
+
+            const float dx = rh(dx0 + float(kx));
+            const float dyE = rh(dybE + float(ky));
+            const float dyO = rh(dybO + float(ky));
+            wE[k] = exp2(quad_q(dx, dyE, rabc[k]));
+            wO[k] = exp2(quad_q(dx, dyO, rabc[k]));
+        }
     }
 
     // Wsum (f32, kx-major) and the IEEE reciprocal (SPEC 3, 4)
     precise float wsumE = 0.0;
     precise float wsumO = 0.0;
-    [[unroll]] for (int k = 0; k < 9; ++k) {
-        wsumE = wsumE + wE[k];
-        wsumO = wsumO + wO[k];
+    if (isL == 0u) {
+        [[unroll]] for (int k = 0; k < 9; ++k) {
+            wsumE = wsumE + wE[k];
+            wsumO = wsumO + wO[k];
+        }
+    } else {
+        [[unroll]] for (int k = 0; k < 16; ++k) {
+            wsumE = wsumE + wE[k];
+            wsumO = wsumO + wO[k];
+        }
     }
     precise float invE = fdiv_ieee(1.0, wsumE);
     precise float invO = fdiv_ieee(1.0, wsumO);
@@ -269,13 +316,24 @@ void main() {
     // SPEC 4: the f16 numerator chains, n = f16(n + f16(w) * v), one rounding per tap
     vec3 nE = vec3(0.0), nO = vec3(0.0);     // colour (fields 0..2)
     vec3 gE = vec3(0.0), gO = vec3(0.0);     // gates (fields 6..8)
-    [[unroll]] for (int k = 0; k < 9; ++k) {
-        const float weE = rh(wE[k]);
-        const float weO = rh(wO[k]);
-        nE = rh3(nE + weE * rtm[k]);
-        nO = rh3(nO + weO * rtm[k]);
-        gE = rh3(gE + weE * rgt[k]);
-        gO = rh3(gO + weO * rgt[k]);
+    if (isL == 0u) {
+        [[unroll]] for (int k = 0; k < 9; ++k) {
+            const float weE = rh(wE[k]);
+            const float weO = rh(wO[k]);
+            nE = rh3(nE + weE * rtm[k]);
+            nO = rh3(nO + weO * rtm[k]);
+            gE = rh3(gE + weE * rgt[k]);
+            gO = rh3(gO + weO * rgt[k]);
+        }
+    } else {
+        [[unroll]] for (int k = 0; k < 16; ++k) {
+            const float weE = rh(wE[k]);
+            const float weO = rh(wO[k]);
+            nE = rh3(nE + weE * rtm[k]);
+            nO = rh3(nO + weO * rtm[k]);
+            gE = rh3(gE + weE * rgt[k]);
+            gO = rh3(gO + weO * rgt[k]);
+        }
     }
 
     // SPEC 4: the spatial colour average S = n * inv, then B = decode(S)
