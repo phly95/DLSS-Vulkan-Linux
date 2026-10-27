@@ -221,23 +221,85 @@ def make_test(name, out_dir):
                 {"binding": 11, "bytes": n_pix * 4, "output": "dhist", "type": "u32"}
             ]
         }
-    elif name in ("sr_stage", "sr_tube_split", "rr_level"):
+    elif name == "sr_tube_split":
         in_act = np.linspace(1, 250, 4096, dtype=np.uint8).tobytes()
         open(os.path.join(out_dir, "in_act.bin"), "wb").write(in_act)
         open(os.path.join(out_dir, "wbuf.bin"), "wb").write(np.zeros(4096, dtype=np.uint8).tobytes())
         push = bytearray(56)
         struct.pack_into("<4i", push, 40, 16, 16, 0, 0)
-        bindings = [
-            {"binding": 0, "file": "wbuf.bin"},
-            {"binding": 1, "file": "in_act.bin"},
-            {"binding": 2, "bytes": 4096, "output": "out_act", "type": "u8"}
-        ]
-        if name == "sr_stage":
-            bindings.append({"binding": 3, "bytes": 4096, "output": "out_act2", "type": "u8"})
         cfg = {
             "groups": [64, 1, 1],
             "push": push.hex(),
-            "bindings": bindings
+            "bindings": [
+                {"binding": 0, "file": "wbuf.bin"},
+                {"binding": 1, "file": "in_act.bin"},
+                {"binding": 2, "bytes": 4096, "output": "out_act", "type": "u8"}
+            ]
+        }
+    elif name == "sr_stage":
+        # Mode 0 (wbuf_lo = 0, st0): C = 64, 2 heads, 8 MLP blocks, 2x2 patch merge, on a 16x16
+        # level. The stage reads five buffers: the f16 vector blob (0), the token bytes (1), the
+        # mode-2 skip tensor (4; never read in mode 0, but statically used, so the launcher must
+        # bind it) and the row-major matrix copy (5). Sizes cover every access the shader makes
+        # here: the f16 blob up to ~72 KB, the matrix copy up to ~68 K elements (~135 KB when the
+        # operand-probe build reads the same buffer as halfs).
+        open(os.path.join(out_dir, "in_act.bin"), "wb").write(
+            np.tile(np.linspace(1, 250, 4096, dtype=np.uint8), 4).tobytes())   # [C/32][16][16][32]
+        # Non-zero synthetic data so no code path collapses to a constant output: the f16 vector
+        # blob is halfs in [0.5, 2], the matrix copy halfs in [0.05, 0.5] - finite both as halfs
+        # and as the (low, high) byte pairs the fp8 build reads.
+        open(os.path.join(out_dir, "wbuf.bin"), "wb").write(
+            np.linspace(0.5, 2.0, 65536, dtype=np.float16).tobytes())          # 128 KiB
+        open(os.path.join(out_dir, "wrep.bin"), "wb").write(
+            np.tile(np.linspace(0.05, 0.5, 16384, dtype=np.float16).tobytes(), 8))  # 256 KiB
+        push = bytearray(56)
+        struct.pack_into("<4i", push, 40, 16, 16, 0, 0)
+        cfg = {
+            "groups": [64, 1, 1],
+            "push": push.hex(),
+            "bindings": [
+                {"binding": 0, "file": "wbuf.bin"},
+                {"binding": 1, "file": "in_act.bin"},
+                {"binding": 2, "bytes": 16384, "output": "out_act", "type": "u8"},
+                {"binding": 3, "bytes": 8192, "output": "out_act2", "type": "u8"},
+                {"binding": 4, "file": "in_act.bin"},
+                {"binding": 5, "file": "wrep.bin"}
+            ]
+        }
+    elif name == "rr_level":
+        # One k_level unit, mode 0 ("the input is the unit's own level"), C = 32 (a 0 template int
+        # falls back to 32), g = 1 head so the attention path runs, Cdown = Cup = 0 (no down or up
+        # projection): 2 x 2 workgroups of one 8x8 window over the 16x16 level. Every binding the
+        # shader declares (0..13) must be bound; only binding 2 is written and checked. Weights (0)
+        # and the per-unit item table (13, 24 uints for unit 0) stay zero, so every projection is
+        # zero and the output is the input level through the block's residual path - the input is a
+        # ramp, so the output is neither constant nor empty. The push reaches offset 64 (unit index).
+        open(os.path.join(out_dir, "in_act.bin"), "wb").write(
+            np.tile(np.linspace(1, 250, 4096, dtype=np.uint8), 2).tobytes())   # [C/32][16][16][32]
+        open(os.path.join(out_dir, "wbuf.bin"), "wb").write(np.zeros(4096, dtype=np.uint8).tobytes())
+        push = bytearray(68)
+        struct.pack_into("<10i", push, 0, 16, 16, 0, 0, 0, 32, 1, 0, 0, 0)    # W H sx sy mode C g Cdown Cup n
+        struct.pack_into("<4i", push, 40, 16, 16, 0, 0)                       # kernel-test fallback dims
+        struct.pack_into("<3i", push, 56, 32, 0, 0)                           # C_in, blob_off, unit
+        cfg = {
+            "groups": [2, 2, 1],
+            "push": push.hex(),
+            "bindings": [
+                {"binding": 0, "file": "wbuf.bin", "bytes": 16384},
+                {"binding": 1, "file": "in_act.bin"},
+                {"binding": 2, "bytes": 8192, "output": "out_act", "type": "u8"},
+                {"binding": 3, "bytes": 256},
+                {"binding": 4, "bytes": 256},
+                {"binding": 5, "bytes": 256},
+                {"binding": 6, "bytes": 256},
+                {"binding": 7, "bytes": 256},
+                {"binding": 8, "bytes": 256},
+                {"binding": 9, "bytes": 256},
+                {"binding": 10, "bytes": 256},
+                {"binding": 11, "bytes": 256},
+                {"binding": 12, "bytes": 256},
+                {"binding": 13, "bytes": 256}
+            ]
         }
     elif name == "sr_enc0L_in":
         w0 = ((w + 7) // 8) * 8

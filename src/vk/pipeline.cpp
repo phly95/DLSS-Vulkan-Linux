@@ -29,6 +29,43 @@ std::vector<uint8_t> slurp(const std::string& p) {
     return v;
 }
 
+// RR U-Net item table from build/rr/packed/params.json: for each of the 16 units, the 21 meta offsets
+// (-1 = absent) and s1d2 / s1d4 / s1d6 as u16 bits, 24 uint32 per unit (rr_level binding 13).
+static bool rr_table_from_params(const std::string& pj, uint32_t* tab) {
+    size_t cur = 0;
+    for (int k = 0; k < 16; ++k) {
+        size_t m = pj.find("\"meta\"", cur);
+        if (m == std::string::npos) return false;
+        size_t i = pj.find('[', m);
+        if (i == std::string::npos) return false;
+        ++i;
+        for (int j = 0; j < 21; ++j) {
+            while (i < pj.size() && !(pj[i] == '-' || (pj[i] >= '0' && pj[i] <= '9'))) ++i;
+            char* e = nullptr;
+            long v = std::strtol(pj.c_str() + i, &e, 10);
+            if (e == pj.c_str() + i) return false;
+            tab[k * 24 + j] = uint32_t(int32_t(v));
+            i = size_t(e - pj.c_str());
+        }
+        cur = i;
+        static const char* const keys[3] = {"\"s1d2\"", "\"s1d4\"", "\"s1d6\""};
+        for (int s = 0; s < 3; ++s) {
+            size_t q = pj.find(keys[s], cur);
+            if (q == std::string::npos) return false;
+            size_t c = pj.find(':', q);
+            if (c == std::string::npos) return false;
+            ++c;
+            while (c < pj.size() && (pj[c] == ' ' || pj[c] == '\n' || pj[c] == '\t' || pj[c] == '\r')) ++c;
+            char* e = nullptr;
+            long v = std::strtol(pj.c_str() + c, &e, 10);
+            if (e == pj.c_str() + c) return false;
+            tab[k * 24 + 21 + s] = uint32_t(v) & 0xFFFFu;
+            cur = size_t(e - pj.c_str());
+        }
+    }
+    return true;
+}
+
 // Flat JSON parser
 std::vector<double> jget(const std::string& txt, const std::string& key) {
     std::vector<double> v;
@@ -242,7 +279,7 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         // device the NGX host hands over.  Push stays 8 bytes, as it always was.
         add_pipe("rr_ae_final", 4, 8);
         add_pipe("rr_enc0_feat", 13, 16);
-        add_pipe("rr_level", 13, 64);
+        add_pipe("rr_level", 14, 68);
         add_pipe("rr_post_prep", 4, 40);
         add_pipe("rr_post", 6, 120);
         add_pipe("rr_downsample", 4, 48);
@@ -393,6 +430,7 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         c->ue["E0d02"] = create_buffer(dev, phys, 8208, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);   // bicubic table
         c->ue["E0d02"].logical = 8208;
         c->rr_dummy = create_buffer(dev, phys, 256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        c->rr_tab = create_buffer(dev, phys, 16 * 24 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         c->expo.logical = 16;   // the oracle's E0c22 is 16 bytes; dumps report that size
     }
 
@@ -432,6 +470,13 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
                     std::memcpy(static_cast<uint8_t*>(c->wbuf.mapped) + offset, b.data(), b.size());
                     offset += (b.size() + 255) & ~size_t(255);
                 }
+            }
+            // rr_level's item table (rr_tab, binding 13) from the packer's params.json next to the blobs.
+            auto pj_units = slurp(wdir + "/params.json");
+            if (!pj_units.empty() && c->rr_tab.mapped) {
+                std::string pj(pj_units.begin(), pj_units.end());
+                if (!rr_table_from_params(pj, static_cast<uint32_t*>(c->rr_tab.mapped)))
+                    std::fprintf(stderr, "rr_level: params.json does not hold 16 units with meta and s1d2/4/6\n");
             }
             auto bc = slurp(wdir + "/bicubic.bin");
             Buffer& e0d02 = c->ue["E0d02"];
@@ -490,6 +535,7 @@ FrameChain::~FrameChain() {
 
     for (auto& kv : ue) destroy_buffer(dev, kv.second);
     destroy_buffer(dev, rr_dummy);
+    destroy_buffer(dev, rr_tab);
 
     for (auto& pair : pipelines) {
         vkDestroyPipeline(dev, pair.second.pipeline, nullptr);
@@ -978,12 +1024,13 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             const int sx = kShift[shc][p][0], sy = kShift[shc][p][1];
             const int gx = (uw + sx + 7) >> 3, gy = (uh + sy + 7) >> 3;
 
-            uint8_t push[64] = {0};
+            uint8_t push[68] = {0};
             const int ints[10] = {uw, uh, sx, sy, U.mode, U.C, U.g, U.Cdown, U.Cup, U.n};
             std::memcpy(push + 0, ints, sizeof ints);          // offsets 0..39
-            const int in_ch = U.in_ch, blob_off = int(rr_blob_off[u]);
+            const int in_ch = U.in_ch, blob_off = int(rr_blob_off[u]), unit_idx = u;
             std::memcpy(push + 56, &in_ch, 4);                  // offset 56: channels per token of binding 1
             std::memcpy(push + 60, &blob_off, 4);               // offset 60: this unit's weights in binding 0
+            std::memcpy(push + 64, &unit_idx, 4);               // offset 64: this unit's row of binding 13 (rr_tab)
 
             Buffer* in = rr_buf(U.role[R_IN]);
             Buffer* o78 = rr_buf(U.role[R_O78]);
@@ -999,12 +1046,13 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                 or_dummy(o98), or_dummy(rr_buf(U.role[R_OA0])),
                 or_dummy(rr_buf(U.role[R_OC0])), or_dummy(rr_buf(U.role[R_OC8])),
                 or_dummy(rr_buf(U.role[R_OD0])), or_dummy(rr_buf(U.role[R_OD8])),
+                &rr_tab,
             };
             char lbl[96];
             std::snprintf(lbl, sizeof lbl, "launch %d k_level<%d,%d,%d,%d,%d,%d>", u + 4 + roff,
                           U.C, U.g, U.mode, U.Cdown, U.Cup, U.n);
             trace_label = lbl;
-            dispatch(cmd, "rr_level", bufs, push, 64, gx, gy, 1);
+            dispatch(cmd, "rr_level", bufs, push, 68, gx, gy, 1);
             inject_after(cmd, ("L" + std::to_string(u + 5)).c_str(), u + 4 + roff);
         }
         // 5. Post prep (launch 20 + roff): inputs are the U-Net's own outputs E0bd4, E0c16, E0c1e

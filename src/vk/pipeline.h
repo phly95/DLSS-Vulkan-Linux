@@ -185,6 +185,7 @@ private:
     // E0c12 pooled2 output, E0d02 bicubic table), allocated at the oracle's byte sizes.
     std::map<std::string, Buffer> ue;
     Buffer rr_dummy;                 // bound to the rr_level slots a unit leaves unused
+    Buffer rr_tab;                   // rr_level binding 13: 16 units x 24 uints (21 item offsets, s1d2, s1d4, s1d6)
     size_t rr_blob_off[16] = {};     // byte offset of unit u's weights inside wbuf
     std::string trace_label;         // DLSS5_AMD_TRACE: which oracle launch the next dispatch is
     Buffer* rr_buf(const std::string& oracle_name);   // nullptr for "" or an unknown name

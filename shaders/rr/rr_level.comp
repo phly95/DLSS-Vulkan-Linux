@@ -1,40 +1,57 @@
 #version 460
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
-#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
 #extension GL_EXT_shader_16bit_storage : enable
 #extension GL_EXT_shader_8bit_storage : enable
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_control_flow_attributes : require
 
-layout(local_size_x = 32, local_size_y = 4, local_size_z = 1) in;
+#include "rh.glsl"
 
-// Bindings follow the oracle's k_level Args roles (RrUnit in pipeline.cpp): 0 weights (this unit's blob,
-// at blob_off), 1 input (+0x10), 2 primary output (+0x78, or +0x98 for the last unit), 3 skip (+0x18),
-// 4 output (+0x80), 5 input (+0x88), 6 input (+0x90), 7 output (+0x98), 8 output (+0xa0), 9..12 outputs
-// (+0xc0, +0xc8, +0xd0, +0xd8).  The arithmetic below reads 0 and 1 and writes 2 only; the other slots
-// are bound so that every buffer of a launch sits where the oracle has it.
+// rr_level: one rrk::k_level launch of DLSS-RR's U-Net (preset F). The spec is tools/rr/rr_level_model.py
+// (DEFAULT configuration, block_v2): one 8 x 8 window (64 tokens, token = dy*8 + dx) per workgroup, grid
+// ((W+sx+7)/8, (H+sy+7)/8), reflected coordinates at the borders. Per head: Q = q8(clamp(X Wq^T)), V = q8(f16(
+// clamp(X Wv^T))), logits = Q Q^T + relpos (f16 table), f16 softmax (nr_swin_exp, f16 pair-tree sum, f16
+// reciprocal), prob and V in fp8, ctx = q8(prob V), attn += ctx Wo_h^T. Then X1 = f16(X + f16(s1d2 * f16(attn
+// + v128))); MLP h = q8(nhgelu(X1 W1^T + b1)), out = clamp(X1 + f16(s1d4 * f16(h W2^T + b2))) stored fp8 RNE.
+// Down projection (modes 0/1, Cdown > 0): e4m3(clamp(mA8 . merge2x2(q8(out)) + v170, +-6.28125)).
+// Entries: mode 5 (enc0): m1f8 . gelu(m1d8 . F + v218) + v230; mode 1: mC8 . merge2x2(in) + v188;
+// mode 2: x = f16(up + f16(s1d6 * skip)), up = f16(mE8 . low + v1a0), pixel-shuffled.
+// Mode 4 (unit 15): the block output goes to binding 2 as the model's O98 (f16 lanes 0..2, lane 3 = 0).
+// The per-level heads (o98 / oa0 of the other units) and the render-resolution outputs are not written.
+//
+// Weights (binding 0) are read in the packer's fragment order (tools/rr/rr_layout.py, frag_closed):
+// the per-unit item offsets and the three LayerScale scalars come from the table in binding 13 (24 uints
+// per unit: 21 item offsets with -1 = absent, then s1d2, s1d4, s1d6 as u16 bits).
+//
+// Activations: [C/32][H][W][32] fp8, stored index i of group cg = logical channel cg*32 + P(i), with
+// P(i) = (i&1) | ((i&2)<<3) | ((i&0x1c)>>1) | (i&0xe0); the inverse is pinv() below.
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
 layout(set = 0, binding = 0) readonly buffer InW     { uint8_t w[]; };
 layout(set = 0, binding = 1) readonly buffer InAct   { uint8_t in_act[]; };
-layout(set = 0, binding = 2) writeonly buffer OutAct { uint8_t out_act[]; };
-layout(set = 0, binding = 3) readonly buffer InSkip  { uint8_t skip_act[]; };
-layout(set = 0, binding = 4) writeonly buffer OutB   { uint8_t out_b[]; };
-layout(set = 0, binding = 5) readonly buffer In5     { uint8_t in_5[]; };
-layout(set = 0, binding = 6) readonly buffer In6     { uint8_t in_6[]; };
-layout(set = 0, binding = 7) writeonly buffer OutC   { uint8_t out_c[]; };
-layout(set = 0, binding = 8) writeonly buffer OutD   { uint8_t out_d[]; };
-layout(set = 0, binding = 9) writeonly buffer OutE   { uint8_t out_e[]; };
-layout(set = 0, binding = 10) writeonly buffer OutF  { uint8_t out_f[]; };
-layout(set = 0, binding = 11) writeonly buffer OutG  { uint8_t out_g[]; };
-layout(set = 0, binding = 12) writeonly buffer OutH  { uint8_t out_h[]; };
+layout(set = 0, binding = 2) writeonly buffer OutAct { uint8_t out_act[]; };   // +0x78, or +0x98 for unit 15
+layout(set = 0, binding = 3) readonly buffer InSkip  { uint8_t skip_act[]; };  // +0x18
+layout(set = 0, binding = 4) writeonly buffer OutB   { uint8_t out_b[]; };     // +0x80 (down)
+layout(set = 0, binding = 5) readonly buffer In5     { uint8_t in_5[]; };      // +0x88 (not consumed)
+layout(set = 0, binding = 6) readonly buffer In6     { uint8_t in_6[]; };      // +0x90 (not consumed)
+layout(set = 0, binding = 7) writeonly buffer OutC   { uint8_t out_c[]; };     // +0x98 (heads: not written)
+layout(set = 0, binding = 8) writeonly buffer OutD   { uint8_t out_d[]; };     // +0xa0 (not written)
+layout(set = 0, binding = 9) writeonly buffer OutE   { uint8_t out_e[]; };     // +0xc0 (not written)
+layout(set = 0, binding = 10) writeonly buffer OutF  { uint8_t out_f[]; };     // +0xc8 (not written)
+layout(set = 0, binding = 11) writeonly buffer OutG  { uint8_t out_g[]; };     // +0xd0 (not written)
+layout(set = 0, binding = 12) writeonly buffer OutH  { uint8_t out_h[]; };     // +0xd8 (not written)
+layout(set = 0, binding = 13) readonly buffer RrTab  { uint tab[]; };          // per-unit item table
 
-// Per-launch parameters, 64 bytes of push constants.  0..36: the unit's Args dims and the template ints
-// (W, H, sx, sy, mode, C, g, Cdown, Cup, n); 40..52: the kernel-test fallback fields; 56: channels per
-// token of binding 1 (C_in); 60: the unit's weight offset in binding 0.  Zero C / C_in mean 32, the
-// layout this shader always had.
+// Per-launch parameters (68 bytes). 0..36: the unit's Args dims and template ints; 40..52: the kernel-test
+// fallback; 56: channels per token of binding 1 (C_in); 60: the unit's weight offset in binding 0; 64: the
+// unit index (row of the table in binding 13).
 layout(push_constant) uniform RrUnitArgs {
     layout(offset = 0) int W_in;     // Args +0x00: unit width (pixels)
     int H_in;                        // Args +0x04: unit height
-    int sx_in;                       // Args +0x08: shift x
-    int sy_in;                       // Args +0x0c: shift y
+    int sx_in;                       // Args +0x08: shift x (even)
+    int sy_in;                       // Args +0x0c: shift y (even)
     int mode_in;                     // template mode
     int C_out;                       // template C: channels per token of the primary output
     int g_in;                        // template g
@@ -47,163 +64,357 @@ layout(push_constant) uniform RrUnitArgs {
     int sy_test;
     layout(offset = 56) int C_in;    // channels per token of binding 1
     int blob_off;                    // byte offset of this unit's weights in binding 0
+    int unit_in;                     // unit index
 };
 
-// LDS staging: 128 tokens covering a workgroup
-shared float16_t s_act[128][32];  // 8192 bytes
-shared float16_t s_norm[128][32]; // 8192 bytes
-shared float16_t s_kv[2][16][16]; // 1024 bytes (2 heads, 16 tokens/window, 16 channels)
+const uint CM = 160u;                   // LDS row stride: C <= 160 in every unit
+shared float16_t s_a[64 * 160];         // residual stream X (f16 values; q8 values after the block)
+shared uint8_t   s_n[64 * 160];         // fp8 codes of the normalised stream (q8 of X)
+shared float16_t s_h[64 * 64];          // MLP hidden chunk (q8 values); mode 5 hidden
+shared float16_t s_p[64 * 64];          // fp8 probabilities of the current head
+shared float16_t s_q[64 * 32];          // Q of the current head, then its context
+shared float16_t s_v[64 * 32];          // V of the current head (fp8 values)
 
-const float16_t e4m3_lut[256] = float16_t[256](
-    float16_t(0), float16_t(0.001953125), float16_t(0.00390625), float16_t(0.005859375), float16_t(0.0078125), float16_t(0.009765625), float16_t(0.01171875), float16_t(0.013671875),
-    float16_t(0.015625), float16_t(0.017578125), float16_t(0.01953125), float16_t(0.021484375), float16_t(0.0234375), float16_t(0.025390625), float16_t(0.02734375), float16_t(0.029296875),
-    float16_t(0.03125), float16_t(0.03515625), float16_t(0.0390625), float16_t(0.04296875), float16_t(0.046875), float16_t(0.05078125), float16_t(0.0546875), float16_t(0.05859375),
-    float16_t(0.0625), float16_t(0.0703125), float16_t(0.078125), float16_t(0.0859375), float16_t(0.09375), float16_t(0.1015625), float16_t(0.109375), float16_t(0.1171875),
-    float16_t(0.125), float16_t(0.140625), float16_t(0.15625), float16_t(0.171875), float16_t(0.1875), float16_t(0.203125), float16_t(0.21875), float16_t(0.234375),
-    float16_t(0.25), float16_t(0.28125), float16_t(0.3125), float16_t(0.34375), float16_t(0.375), float16_t(0.40625), float16_t(0.4375), float16_t(0.46875),
-    float16_t(0.5), float16_t(0.5625), float16_t(0.625), float16_t(0.6875), float16_t(0.75), float16_t(0.8125), float16_t(0.875), float16_t(0.9375),
-    float16_t(1), float16_t(1.125), float16_t(1.25), float16_t(1.375), float16_t(1.5), float16_t(1.625), float16_t(1.75), float16_t(1.875),
-    float16_t(2), float16_t(2.25), float16_t(2.5), float16_t(2.75), float16_t(3), float16_t(3.25), float16_t(3.5), float16_t(3.75),
-    float16_t(4), float16_t(4.5), float16_t(5), float16_t(5.5), float16_t(6), float16_t(6.5), float16_t(7), float16_t(7.5),
-    float16_t(8), float16_t(9), float16_t(10), float16_t(11), float16_t(12), float16_t(13), float16_t(14), float16_t(15),
-    float16_t(16), float16_t(18), float16_t(20), float16_t(22), float16_t(24), float16_t(26), float16_t(28), float16_t(30),
-    float16_t(32), float16_t(36), float16_t(40), float16_t(44), float16_t(48), float16_t(52), float16_t(56), float16_t(60),
-    float16_t(64), float16_t(72), float16_t(80), float16_t(88), float16_t(96), float16_t(104), float16_t(112), float16_t(120),
-    float16_t(128), float16_t(144), float16_t(160), float16_t(176), float16_t(192), float16_t(208), float16_t(224), float16_t(240),
-    float16_t(256), float16_t(288), float16_t(320), float16_t(352), float16_t(384), float16_t(416), float16_t(448), float16_t(480),
-    float16_t(-0), float16_t(-0.001953125), float16_t(-0.00390625), float16_t(-0.005859375), float16_t(-0.0078125), float16_t(-0.009765625), float16_t(-0.01171875), float16_t(-0.013671875),
-    float16_t(-0.015625), float16_t(-0.017578125), float16_t(-0.01953125), float16_t(-0.021484375), float16_t(-0.0234375), float16_t(-0.025390625), float16_t(-0.02734375), float16_t(-0.029296875),
-    float16_t(-0.03125), float16_t(-0.03515625), float16_t(-0.0390625), float16_t(-0.04296875), float16_t(-0.046875), float16_t(-0.05078125), float16_t(-0.0546875), float16_t(-0.05859375),
-    float16_t(-0.0625), float16_t(-0.0703125), float16_t(-0.078125), float16_t(-0.0859375), float16_t(-0.09375), float16_t(-0.1015625), float16_t(-0.109375), float16_t(-0.1171875),
-    float16_t(-0.125), float16_t(-0.140625), float16_t(-0.15625), float16_t(-0.171875), float16_t(-0.1875), float16_t(-0.203125), float16_t(-0.21875), float16_t(-0.234375),
-    float16_t(-0.25), float16_t(-0.28125), float16_t(-0.3125), float16_t(-0.34375), float16_t(-0.375), float16_t(-0.40625), float16_t(-0.4375), float16_t(-0.46875),
-    float16_t(-0.5), float16_t(-0.5625), float16_t(-0.625), float16_t(-0.6875), float16_t(-0.75), float16_t(-0.8125), float16_t(-0.875), float16_t(-0.9375),
-    float16_t(-1), float16_t(-1.125), float16_t(-1.25), float16_t(-1.375), float16_t(-1.5), float16_t(-1.625), float16_t(-1.75), float16_t(-1.875),
-    float16_t(-2), float16_t(-2.25), float16_t(-2.5), float16_t(-2.75), float16_t(-3), float16_t(-3.25), float16_t(-3.5), float16_t(-3.75),
-    float16_t(-4), float16_t(-4.5), float16_t(-5), float16_t(-5.5), float16_t(-6), float16_t(-6.5), float16_t(-7), float16_t(-7.5),
-    float16_t(-8), float16_t(-9), float16_t(-10), float16_t(-11), float16_t(-12), float16_t(-13), float16_t(-14), float16_t(-15),
-    float16_t(-16), float16_t(-18), float16_t(-20), float16_t(-22), float16_t(-24), float16_t(-26), float16_t(-28), float16_t(-30),
-    float16_t(-32), float16_t(-36), float16_t(-40), float16_t(-44), float16_t(-48), float16_t(-52), float16_t(-56), float16_t(-60),
-    float16_t(-64), float16_t(-72), float16_t(-80), float16_t(-88), float16_t(-96), float16_t(-104), float16_t(-112), float16_t(-120),
-    float16_t(-128), float16_t(-144), float16_t(-160), float16_t(-176), float16_t(-192), float16_t(-208), float16_t(-224), float16_t(-240),
-    float16_t(-256), float16_t(-288), float16_t(-320), float16_t(-352), float16_t(-384), float16_t(-416), float16_t(-448), float16_t(-480)
-);
+// e4m3 (OCP, bias 7; code 0x7f = 480 as in launch_report's LUT) decoded exactly by bit arithmetic.
+float e4m3_dec(uint c) {
+    uint e = (c >> 3u) & 15u, m = c & 7u;
+    float v = (e == 0u) ? float(m) * (1.0 / 512.0) : uintBitsToFloat(((e + 120u) << 23u) | (m << 20u));
+    return ((c & 0x80u) != 0u) ? -v : v;
+}
 
-uint f32_to_e4m3_rne(float x) {
-    if (isnan(x)) return 0x7fu;
-    uint sign = (x < 0.0) ? 0x80u : 0u;
+// f32 -> e4m3, as tools/sr/sr_pack.py to_e4m3: |x| clamped to 448, RNE on normals (bit trick),
+// roundEven(|x| * 512) on subnormals, the sign bit of x kept.
+uint e4m3_enc(float x) {
+    if (isnan(x)) return 0x7Fu;
+    uint sgn = (floatBitsToUint(x) >> 24u) & 0x80u;
     float a = min(abs(x), 448.0);
-    if (a < 0.015625) {
-        uint sub = uint(floor(a * 512.0 + 0.5));
-        return sign | sub;
-    }
-    uint bits = floatBitsToUint(a);
-    uint norm = uint((bits + 0x407ffffu + ((bits >> 20u) & 1u)) >> 20u);
-    return sign | (norm & 0x7fu);
+    uint ab = floatBitsToUint(a);
+    uint code;
+    if (a >= 0.015625) code = ((ab + 0x407FFFFu + ((ab >> 20u) & 1u)) >> 20u) & 0xFFu;
+    else code = uint(roundEven(a * 512.0));
+    return sgn | code;
 }
 
-float rr_swin_exp(float x) {
-    float y = clamp(fma(x, 0.044921875, 1.30078125), 1.03125, 1.5693359375);
-    uint h = packHalf2x16(vec2(y, 0.0)) & 0xffffu;
-    return unpackHalf2x16((h & 0x03ffu) << 5u).x;
+float q8f(float x) { return e4m3_dec(e4m3_enc(x)); }
+
+// f16 bits -> f32 (exact, subnormals and inf/NaN included).
+float f16_dec(uint b) {
+    uint s = (b >> 15u) & 1u, e = (b >> 10u) & 31u, m = b & 1023u;
+    float v;
+    if (e == 0u) v = float(m) * (1.0 / 16777216.0);
+    else if (e == 31u) v = (m == 0u) ? uintBitsToFloat(0x7f800000u) : uintBitsToFloat(0x7fc00000u);
+    else v = uintBitsToFloat(((e + 112u) << 23u) | (m << 13u));
+    return (s != 0u) ? -v : v;
 }
 
-float rr_swin_act(float x) {
-    float t = clamp(x, -4.0, 4.0);
-    float u = fma(-0.055908203125, abs(t), 0.447265625);
-    return x * fma(t, u, 0.89453125);
+// f32 -> f16 bits of a value that is already f16-exact (callers round with rh() first).
+uint f16_enc(float x) {
+    if (isnan(x)) return 0x7E00u;
+    uint s = (floatBitsToUint(x) >> 16u) & 0x8000u;
+    float a = abs(x);
+    if (a > 65504.0) return s | 0x7C00u;
+    if (a == 0.0) return s;
+    if (a < 6.103515625e-05) return s | uint(roundEven(a * 16777216.0));
+    uint ab = floatBitsToUint(a);
+    return s | (((ab >> 23u) - 112u) << 10u) | ((ab >> 13u) & 1023u);
+}
+
+// P^-1: logical channel k of a 32-group -> stored index.
+uint pinv(uint k) {
+    return (k & 1u) | ((k & 0x10u) >> 3u) | ((k & 2u) << 1u) | ((k & 4u) << 1u) | ((k & 8u) << 1u);
+}
+
+// Byte index of logical channel c at pixel (x, y) of a [C/32][hd][wd][32] activation.
+uint pidx(uint c, uint x, uint y, uint wd, uint hd) {
+    return (((c >> 5u) * hd + y) * wd + x) * 32u + pinv(c & 31u);
+}
+
+// FRAG(r, c) of frag_rr (permute_rows): byte offset of element (row r, col c) in a matrix with `cols` columns.
+uint frag_off(uint r, uint c, uint cols) {
+    uint u = ((r & 0x7FFFFFE1u) | ((r >> 3u) & 2u)) + (r & 0xEu) * 2u;
+    return 16u * (u & 15u) + 256u * ((c >> 2u) & 1u) + 8u * ((c >> 3u) & 1u) + 4u * ((c >> 1u) & 1u)
+         + 2u * ((c >> 4u) & 1u) + (c & 1u) + 512u * (c >> 5u) + 16u * cols * (u >> 4u);
+}
+
+float wfp8(uint boff) { return e4m3_dec(uint(w[boff])); }
+float wf16(uint boff) { return f16_dec(uint(w[boff]) | (uint(w[boff + 1u]) << 8u)); }
+
+uint wbase(int item) { return uint(blob_off + int(tab[uint(unit_in) * 24u + uint(item)])); }
+
+// Logical element L of an f16 vector (P within 32-groups) at item `item` of this unit.
+float vec16(int item, uint L) {
+    return wf16(wbase(item) + 2u * ((L & ~31u) + pinv(L & 31u)));
+}
+
+float s1d(int k) { return f16_dec(tab[uint(unit_in) * 24u + 21u + uint(k)] & 0xFFFFu); }  // 0: s1d2, 1: s1d4, 2: s1d6
+
+int refl(int p, int n) {
+    if (p < 0) p = -p;
+    if (p >= n) p = 2 * (n - 1) - p;
+    return clamp(p, 0, n - 1);
+}
+
+// NeuralHub's bit-built exp (tools/rr/rr_level_model.py nr_swin_exp).
+float nr_exp(float x) {
+    float hx = rh(x);
+    float y = clamp(rh(hx * 0.017181396484375), -0.55615234375, 0.55615234375);
+    float base = rh(-y * y + 0.92724609375);
+    float p = rh(y * base + 1.375);
+    uint bits = ((f16_enc(p) << 5u) + 0x8000u) & 0xffffu;
+    return f16_dec(bits);
+}
+
+// NeuralHub's f16 GELU spline (act_fn 'nhgelu'), every f16 op rounded.
+float nh_gelu(float z) {
+    float zh = rh(z);
+    float t = clamp(zh, -2.0, 2.0);
+    float u = rh(rh(abs(t) * -0.0810546875) + 0.412109375);
+    float gt = rh(rh(t * u) + 0.5);
+    return rh(zh * gt);
+}
+
+// act_fn 'gelu' (tanh form, f32): the mode 5 entry activation (enc0_act default).
+float gelu_tanh(float z) {
+    return 0.5 * z * (1.0 + tanh(0.7978845608 * (z + 0.044715 * z * z * z)));
 }
 
 void main() {
-    uint tid = gl_LocalInvocationIndex; // 0..127
-    int W = (W_in > 0) ? W_in : ((W_test > 0) ? W_test : 16);
-    int H = (H_in > 0) ? H_in : ((H_test > 0) ? H_test : 16);
-    int total_pixels = W * H;
-    uint in_ch = (C_in > 0) ? uint(C_in) : 32u;
-    uint out_ch = (C_out > 0) ? uint(C_out) : 32u;
+    const uint tid = gl_LocalInvocationIndex;
+    const int W = (W_in > 0) ? W_in : ((W_test > 0) ? W_test : 16);
+    const int H = (H_in > 0) ? H_in : ((H_test > 0) ? H_test : 16);
+    const uint Wu = uint(W), Hu = uint(H);
+    const uint C = (C_out > 0) ? uint(C_out) : 32u;
+    const uint Cin = (C_in > 0) ? uint(C_in) : 32u;
+    const uint G = uint(g_in);
+    const uint Cdown = uint(Cdown_in);
+    const uint Cup = uint(Cup_in);
+    const int mode = mode_in;
+    const int ox = int(gl_WorkGroupID.x) * 8 - sx_in;
+    const int oy = int(gl_WorkGroupID.y) * 8 - sy_in;
+    const uint npair = C / 4u;      // (token, channel) pairs owned by each thread: 64 C / 256
+    float acc[40];                  // per-thread accumulators of the owned pairs (attention, then the MLP)
+    [[unroll]] for (uint i = 0u; i < 40u; ++i) acc[i] = 0.0;
 
-    // Workgroups are numbered over the launch's 2-D grid, 128 pixels each (a 1-D grid is y = 0).
-    uint wg_id = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
-    uint base_pixel = wg_id * 128u;
+    // ---- 1. entry: the residual stream of the 64 tokens (at their reflected pixels)
+    if (mode == 5) {
+        // enc0: h = q8(gelu(m1d8 F + v218)) (64 hidden), X = f16(m1f8 h + v230) (C = 32)
+        for (uint i = 0u; i < 16u; ++i) {
+            uint p = tid + 256u * i;
+            uint t = p >> 6u, j = p & 63u;
+            uint px = uint(refl(ox + int(t & 7u), W)), py = uint(refl(oy + int(t >> 3u), H));
+            float z = vec16(17, j);
+            uint mb = wbase(16);
+            for (uint k = 0u; k < 64u; ++k)
+                z += wfp8(mb + frag_off(j, k, 64u)) * e4m3_dec(uint(in_act[pidx(k, px, py, Wu, Hu)]));
+            s_h[t * 64u + j] = float16_t(q8f(gelu_tanh(z)));
+        }
+        barrier();
+        for (uint i = 0u; i < npair; ++i) {
+            uint p = tid + 256u * i;
+            uint t = p / C, c = p % C;
+            float z = vec16(19, c);
+            uint mb = wbase(18);
+            for (uint j = 0u; j < 64u; ++j) z += wfp8(mb + frag_off(c, j, 64u)) * float(s_h[t * 64u + j]);
+            s_a[t * CM + c] = float16_t(rh(z));
+        }
+    } else if (mode == 1) {
+        // level 0 -> level 1: X = f16(mC8 . merge2x2(in) + v188); the concatenation index q * Cin + ci, q = dx + 2 dy
+        for (uint i = 0u; i < npair; ++i) {
+            uint p = tid + 256u * i;
+            uint t = p / C, c = p % C;
+            uint px = uint(refl(ox + int(t & 7u), W)), py = uint(refl(oy + int(t >> 3u), H));
+            float z = vec16(11, c);
+            uint mb = wbase(10);
+            for (uint j = 0u; j < 4u * Cin; ++j) {
+                uint q = j / Cin, ci = j % Cin;
+                uint x0 = 2u * px + (q & 1u), y0 = 2u * py + (q >> 1u);
+                z += wfp8(mb + frag_off(c, j, 4u * Cin)) * e4m3_dec(uint(in_act[pidx(ci, x0, y0, 2u * Wu, 2u * Hu)]));
+            }
+            s_a[t * CM + c] = float16_t(rh(z));
+        }
+    } else if (mode == 2) {
+        // decoder: x = f16(up + f16(s1d6 * skip)); up = f16(mE8 . low + v1a0), row q * C + c, q = dx + 2 dy
+        const float s6 = s1d(2);
+        for (uint i = 0u; i < npair; ++i) {
+            uint p = tid + 256u * i;
+            uint t = p / C, c = p % C;
+            uint px = uint(refl(ox + int(t & 7u), W)), py = uint(refl(oy + int(t >> 3u), H));
+            uint q = (px & 1u) + 2u * (py & 1u);
+            uint lx = px >> 1u, ly = py >> 1u;
+            uint row = q * C + c;
+            float u = vec16(13, row);
+            uint mb = wbase(12);
+            for (uint k = 0u; k < Cup; ++k)
+                u += wfp8(mb + frag_off(row, k, Cup)) * e4m3_dec(uint(in_act[pidx(k, lx, ly, Wu / 2u, Hu / 2u)]));
+            float sk = e4m3_dec(uint(skip_act[pidx(c, px, py, Wu, Hu)]));
+            s_a[t * CM + c] = float16_t(rh(rh(u) + rh(s6 * sk)));
+        }
+    } else {
+        // 0, 3, 4: the input is the unit's own level
+        for (uint i = 0u; i < npair; ++i) {
+            uint p = tid + 256u * i;
+            uint t = p / C, c = p % C;
+            uint px = uint(refl(ox + int(t & 7u), W)), py = uint(refl(oy + int(t >> 3u), H));
+            s_a[t * CM + c] = float16_t(e4m3_dec(uint(in_act[pidx(c, px, py, Wu, Hu)])));
+        }
+    }
+    barrier();
+    for (uint i = 0u; i < npair; ++i) {
+        uint p = tid + 256u * i;
+        uint t = p / C, c = p % C;
+        s_n[t * CM + c] = uint8_t(e4m3_enc(float(s_a[t * CM + c])));
+    }
+    barrier();
 
-    // 1. Collaborative loading of activations from in_act (FP8) to s_act
-    uint p_in = base_pixel + tid;
-    for (uint c = 0u; c < 32u; ++c) {
-        float16_t val = float16_t(0.0);
-        if (p_in < uint(total_pixels) && c < in_ch) {
-            uint in_idx = p_in * in_ch + c;
-            if (in_idx < in_act.length()) {
-                val = e4m3_lut[uint(in_act[in_idx])];
+    // ---- 2. attention, one head at a time (Q/V projections, logits, softmax, PV, Wo)
+    for (uint h = 0u; h < G; ++h) {
+        const uint gb = wbase(0) + h * 64u * C;
+        for (uint i = 0u; i < 16u; ++i) {
+            uint p = tid + 256u * i;
+            uint t = p >> 6u, j = p & 63u;
+            float z = 0.0;
+            for (uint k = 0u; k < C; ++k)
+                z += e4m3_dec(uint(s_n[t * CM + k])) * wfp8(gb + frag_off(j, k, C));
+            z = clamp(z, -448.0, 448.0);
+            if (j < 32u) s_q[t * 32u + j] = float16_t(q8f(z));
+            else s_v[t * 32u + (j - 32u)] = float16_t(q8f(rh(z)));
+        }
+        barrier();
+        if (tid < 64u) {
+            const uint q = tid;
+            const uint rb = wbase(1) + h * 8192u;
+            float pe[64];
+            float e[64];
+            [[unroll]] for (uint k = 0u; k < 64u; ++k) {
+                float d = 0.0;
+                for (uint j = 0u; j < 32u; ++j) d += float(s_q[q * 32u + j]) * float(s_q[k * 32u + j]);
+                pe[k] = nr_exp(d + wf16(rb + 2u * (q * 64u + k)));
+                e[k] = pe[k];
+            }
+            // pair_sum16: adjacent pairs, f16 rounding at every level
+            [[unroll]] for (uint s = 0u; s < 32u; ++s) e[s] = rh(e[2u * s] + e[2u * s + 1u]);
+            [[unroll]] for (uint s = 0u; s < 16u; ++s) e[s] = rh(e[2u * s] + e[2u * s + 1u]);
+            [[unroll]] for (uint s = 0u; s < 8u; ++s) e[s] = rh(e[2u * s] + e[2u * s + 1u]);
+            [[unroll]] for (uint s = 0u; s < 4u; ++s) e[s] = rh(e[2u * s] + e[2u * s + 1u]);
+            [[unroll]] for (uint s = 0u; s < 2u; ++s) e[s] = rh(e[2u * s] + e[2u * s + 1u]);
+            e[0] = rh(e[0] + e[1]);
+            const float inv = rh(1.0 / max(e[0], 1e-4));
+            [[unroll]] for (uint k = 0u; k < 64u; ++k) s_p[q * 64u + k] = float16_t(q8f(rh(pe[k] * inv)));
+        }
+        barrier();
+        for (uint i = 0u; i < 8u; ++i) {
+            uint p = tid + 256u * i;
+            uint t = p >> 5u, j = p & 31u;
+            float z = 0.0;
+            for (uint k = 0u; k < 64u; ++k) z += float(s_p[t * 64u + k]) * float(s_v[k * 32u + j]);
+            s_q[t * 32u + j] = float16_t(q8f(z));
+        }
+        barrier();
+        const uint wo = wbase(2);
+        [[unroll]] for (uint i = 0u; i < 40u; ++i) {
+            if (i < npair) {
+                uint p = tid + 256u * i;
+                uint t = p / C, c = p % C;
+                float d = 0.0;
+                for (uint j = 0u; j < 32u; ++j)
+                    d += float(s_q[t * 32u + j]) * wfp8(wo + frag_off(c, 32u * h + j, 32u * G));
+                acc[i] += d;
             }
         }
-        s_act[tid][c] = val;
+        barrier();
     }
-    barrier();
 
-    // 2. Pre-RMSNorm 1: sum of squares across 32 channels
-    float sum_sq = 0.0;
-    for (uint c = 0u; c < 32u; ++c) {
-        float v = float(s_act[tid][c]);
-        sum_sq += v * v;
-    }
-    float rms = inversesqrt(sum_sq * (1.0 / 32.0) + 1e-6);
-    for (uint c = 0u; c < 32u; ++c) {
-        s_norm[tid][c] = float16_t(float(s_act[tid][c]) * rms);
-    }
-    barrier();
-
-    // 3. Multi-Head Attention (g = 2 heads, 16 tokens/window, 16 channels/head)
-    uint win_idx = tid / 16u; // 0..7
-    uint token_idx = tid % 16u; // 0..15
-
-    // Stage K and V in shared memory for head 0
-    if (token_idx < 16u && win_idx < 2u) {
-        for (uint c = 0u; c < 16u; ++c) {
-            s_kv[win_idx][token_idx][c] = s_norm[win_idx * 16u + token_idx][c];
+    // ---- 3. X1 = f16(X + f16(s1d2 * f16(attn + v128)))
+    const float ls1 = s1d(0), ls2 = s1d(1);
+    [[unroll]] for (uint i = 0u; i < 40u; ++i) {
+        if (i < npair) {
+            uint p = tid + 256u * i;
+            uint t = p / C, c = p % C;
+            float a = rh(acc[i] + vec16(3, c));
+            float x1 = rh(float(s_a[t * CM + c]) + rh(ls1 * a));
+            s_a[t * CM + c] = float16_t(x1);
+            s_n[t * CM + c] = uint8_t(e4m3_enc(x1));
+            acc[i] = 0.0;
         }
     }
     barrier();
 
-    // Self-attention context accumulation
-    for (uint c = 0u; c < 32u; ++c) {
-        float ctx = 0.0;
-        uint head = c / 16u;
-        uint head_c = c % 16u;
-
-        float q_val = float(s_norm[tid][c]);
-        float score_sum = 0.0;
-        for (uint k = 0u; k < 16u; ++k) {
-            float k_val = float(s_kv[head][k][head_c]);
-            float score = rr_swin_exp(q_val * k_val * 0.25);
-            ctx += score * float(s_kv[head][k][head_c]);
-            score_sum += score;
+    // ---- 4. MLP: 4C hidden in chunks of 64; out = clamp(X1 + f16(s1d4 * f16(h W2^T + b2)))
+    for (uint ch = 0u; ch < 4u * C / 64u; ++ch) {
+        for (uint i = 0u; i < 16u; ++i) {
+            uint p = tid + 256u * i;
+            uint t = p >> 6u, jj = p & 63u;
+            uint j = ch * 64u + jj;
+            float z = vec16(5, j);
+            uint mb = wbase(4);
+            for (uint k = 0u; k < C; ++k) z += e4m3_dec(uint(s_n[t * CM + k])) * wfp8(mb + frag_off(j, k, C));
+            s_h[t * 64u + jj] = float16_t(q8f(nh_gelu(z)));
         }
-        ctx /= max(score_sum, 1e-5);
-        // Residual 1
-        s_norm[tid][c] = float16_t(clamp(float(s_act[tid][c]) + ctx, -448.0, 448.0));
+        barrier();
+        const uint mb2 = wbase(6);
+        [[unroll]] for (uint i = 0u; i < 40u; ++i) {
+            if (i < npair) {
+                uint p = tid + 256u * i;
+                uint t = p / C, c = p % C;
+                float d = 0.0;
+                for (uint jj = 0u; jj < 64u; ++jj)
+                    d += float(s_h[t * 64u + jj]) * wfp8(mb2 + frag_off(c, ch * 64u + jj, 4u * C));
+                acc[i] += d;
+            }
+        }
+        barrier();
+    }
+
+    // ---- 5. out; fp8 copy of out kept in s_a for the down projection; in-range tokens written
+    const bool m4 = (mode == 4);
+    [[unroll]] for (uint i = 0u; i < 40u; ++i) {
+        if (i < npair) {
+            uint p = tid + 256u * i;
+            uint t = p / C, c = p % C;
+            float mo = rh(acc[i] + vec16(7, c));
+            float x1 = float(s_a[t * CM + c]);
+            float ov = clamp(x1 + rh(ls2 * mo), -448.0, 448.0);
+            int tx = ox + int(t & 7u), ty = oy + int(t >> 3u);
+            bool in_range = tx >= 0 && tx < W && ty >= 0 && ty < H;
+            if (in_range) {
+                if (!m4) {
+                    out_act[pidx(c, uint(tx), uint(ty), Wu, Hu)] = uint8_t(e4m3_enc(ov));
+                } else {
+                    uint base = (uint(ty) * Wu + uint(tx)) * 8u;   // O98: [N][4] f16, lane 3 = 0
+                    if (c < 3u) {
+                        uint bits = f16_enc(rh(ov));
+                        out_act[base + 2u * c] = uint8_t(bits & 0xFFu);
+                        out_act[base + 2u * c + 1u] = uint8_t(bits >> 8u);
+                    }
+                    if (c == 0u) {
+                        out_act[base + 6u] = uint8_t(0);
+                        out_act[base + 7u] = uint8_t(0);
+                    }
+                }
+            }
+            s_a[t * CM + c] = float16_t(q8f(ov));
+        }
     }
     barrier();
 
-    // 4. Pre-RMSNorm 2
-    sum_sq = 0.0;
-    for (uint c = 0u; c < 32u; ++c) {
-        float v = float(s_norm[tid][c]);
-        sum_sq += v * v;
-    }
-    rms = inversesqrt(sum_sq * (1.0 / 32.0) + 1e-6);
-
-    // 5. MLP with SiLU activation and Residual 2
-    for (uint c = 0u; c < 32u; ++c) {
-        float norm2 = float(s_norm[tid][c]) * rms;
-        float mlp_act = rr_swin_act(norm2);
-        float out_val = clamp(float(s_norm[tid][c]) + mlp_act * 0.5, -448.0, 448.0);
-
-        if (p_in < uint(total_pixels) && c < out_ch) {
-            uint out_idx = p_in * out_ch + c;
-            if (out_idx < out_act.length()) {
-                uint e8 = f32_to_e4m3_rne(out_val);
-                if (e8 == 0u) e8 = uint((p_in + c + 1u) & 0x7fu);
-                out_act[out_idx] = uint8_t(e8);
+    // ---- 6. down projection (modes 0 / 1): 2 x 2 blocks of the window, each a whole down pixel
+    if ((mode == 0 || mode == 1) && Cdown > 0u) {
+        for (uint i = 0u; i < 10u; ++i) {
+            uint p = tid + 256u * i;
+            if (p < 16u * Cdown) {
+                uint pos = p / Cdown, d = p % Cdown;
+                uint ix = pos & 3u, iy = pos >> 2u;
+                float y = vec16(9, d);
+                uint mb = wbase(8);
+                for (uint j = 0u; j < 4u * C; ++j) {
+                    uint q = j / C, c = j % C;
+                    uint tk = (2u * iy + (q >> 1u)) * 8u + (2u * ix + (q & 1u));
+                    y += float(s_a[tk * CM + c]) * wfp8(mb + frag_off(d, j, 4u * C));
+                }
+                float dv = clamp(y, -6.28125, 6.28125);
+                int xd = ox / 2 + int(ix), yd = oy / 2 + int(iy);
+                if (xd >= 0 && xd < W / 2 && yd >= 0 && yd < H / 2)
+                    out_b[pidx(d, uint(xd), uint(yd), Wu / 2u, Hu / 2u)] = uint8_t(e4m3_enc(dv));
             }
         }
     }
