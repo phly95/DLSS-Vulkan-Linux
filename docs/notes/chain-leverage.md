@@ -137,3 +137,49 @@ residual (the model's own 99.08-99.99% vs oracle); (4) post's 1-ULP hardware res
 (`tools/rr/rr_post_model.py`, in flight) + rewrite `rr_post.comp` - post's own error is the
 whole gap; (2) `k_enc0_feat`'s E0be8; (3) the U-Net is no longer a lever (R9b made every block
 99.7-99.9% and the image moved ~0.2-4.8 dB).
+
+## 2026-10-27: preset L's leverage table - and the L chain's structural gap
+
+The L table (same method, `sr_L/dump`, refs `build/breadth-baseline/sr_L_ref`) is **mostly flat and
+must not be read as leverage** until the host's injection indices are made preset-aware:
+
+| mask -> actual L launch | f0 | f1 |
+|---|---:|---:|
+| (baseline) | 23.08 | 27.06 |
+| stage0-mask -> 3 = `k_sr_l0<0>` | 23.08 | 29.40 |
+| stage1-mask -> 4 = stage0 | 25.18 | 27.98 |
+| tube0-mask -> 5 = stage1 | 24.44 | 29.52 |
+| dec0-mask -> 13 = stage9 | 23.08 | 27.06 |
+| post-mask -> 14 = `k_sr_l0<2>` | 23.08 | 27.06 |
+| downsample-mask -> 15 = post | 23.08 | 36.70 |
+| every other row | 23.08 | 27.06 |
+
+Two reasons the rows are not what their names say:
+
+1. **`sr_l[]` and the `st_pt` points are preset M's launch numbers** (`src/vk/pipeline.cpp:899`).
+   L inserts `k_sr_l0` at launches 3 and 14, so every mask from `stage0` on is shifted (the correct
+   mapping is in the table above). Additionally the L dump's launch 2 (`enc0L_in`) contains **no
+   `t0.bin`** (only `l0_in` + the three MV outputs), and `l0_in` is not in `inj_targets`, so the
+   `enc0` mask can inject nothing that reaches the image - hence that flat row.
+2. **The port's L chain is structurally different from the oracle's** (all verified from
+   `launches.jsonl` pointers and the sources today):
+   - oracle: `enc0L_in`(2) writes `t0` + `l0_in`; `k_sr_l0<0,2>`(3) reads `l0_in`/`l0_skip` and
+     writes **`t0`**; stage0(4) reads `t0`. The port: `sr_enc0L_in` writes only `l0_in` content
+     into `t_act[0]`, **`shaders/sr/sr_l0.comp` is a pass-through stub** (`out_act[idx] =
+     in_act[idx]`), and stage0 reads `t_act[0]` - so the real `k_sr_l0<0>` computation never
+     happens.
+   - oracle: stage9(13) -> **`k_sr_l0<2,2>`(14)** reads `t8`/`l0_skip` and writes
+     `gates`/`factors`/`aniso`/`hidden0`; `k_sr_post<true,...>`(15) reads them (plus `g_mvhi` at
+     0xe0). The port: **`sr_dec0` (M's kernel) is dispatched unconditionally** where the oracle has
+     `l0<2>` (`pipeline.cpp` section 5 has no preset branch), and `sr_post` runs M's variant without
+     `g_mvhi`. This is the L analogue of the old M decoupling: `docs/notes/k_sr_dec0.md` already
+     says "Preset L has no dec0. Its equivalent heads come from `k_sr_l0` (launch 14), not yet
+     decoded" - the chain substitution itself was not written down until here.
+
+**Consequence for the campaign:** preset L (a V4 cell set: `sr_L_seq`, `sr_L_static`, `sr_L_q15`,
+`sr_L_q15_ae`) cannot pass while `k_sr_l0` (both template variants) is a pass-through stub and the
+chain runs M's dec0 in its place. Work order: decode `k_sr_l0<0,2>` (l0_in -> t0) and
+`k_sr_l0<2,2>` (t8 -> heads) against the sr_L dump, then rewire the L branch (stage0 input from
+l0's t0, dispatch l0<2> instead of sr_dec0, L's post + `g_mvhi`), and make the injection indices
+preset-aware so L's leverage becomes measurable. The kernel itself is at 0.0266% bit-exact today
+(PORT-STATUS `k_sr_l0` row).
