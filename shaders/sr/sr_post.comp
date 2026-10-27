@@ -155,8 +155,8 @@ void cr_axis(float f0, out float wm1, out float w2, out float a, out float rq) {
 vec3 bil(int xi0, int yi0, float rx, float ry) {
     int xi = clamp(xi0, 0, W15 - 1);
     int yi = clamp(yi0, 0, H15 - 1);
-    int x1 = clamp(xi + 1, 0, W15 - 1);
-    int y1 = clamp(yi + 1, 0, H15 - 1);
+    int x1 = clamp(xi0 + 1, 0, W15 - 1);
+    int y1 = clamp(yi0 + 1, 0, H15 - 1);
     vec3 h00 = vec3(in_ihist[yi * W15 + xi].xyz);
     vec3 h01 = vec3(in_ihist[yi * W15 + x1].xyz);
     vec3 h10 = vec3(in_ihist[y1 * W15 + xi].xyz);
