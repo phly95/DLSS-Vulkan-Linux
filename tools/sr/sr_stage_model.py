@@ -235,9 +235,12 @@ def encode_act(x):
 
 
 def reflect(p, n):
-    p = np.where(p < 0, -p, p)
-    p = np.where(p >= n, 2 * (n - 1) - p, p)
-    return np.clip(p, 0, n - 1)
+    """The kernel's border rule (k_sr_stage ISA 0x78..0xdc; k_level's is the same): a = |p|,
+    b = 2(n-1) - a, r = min(a, b, n-1), and r = n-1 when b < 0 (beyond a double fold)."""
+    a = np.abs(p)
+    b = 2 * (n - 1) - a
+    r = np.minimum(np.minimum(a, b), n - 1)
+    return np.where(b < 0, n - 1, r)
 
 
 # ------------------------------------------------------------------ the stage

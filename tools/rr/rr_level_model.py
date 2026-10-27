@@ -413,9 +413,13 @@ def act_fn(z, kind):
 
 
 def reflect(p, n):
-    p = np.where(p < 0, -p, p)
-    p = np.where(p >= n, 2 * (n - 1) - p, p)
-    return np.clip(p, 0, n - 1)
+    """k_level's border rule (ISA 0x1d0..0x280 of k_level<160,8,0,0,0,1>): a = |p|,
+    b = 2(n-1) - a, r = min(a, b, n-1), and r = n-1 when b < 0 (beyond a double fold: the far edge).
+    Identical to a single reflection whenever |p| <= 2(n-1)."""
+    a = np.abs(p)
+    b = 2 * (n - 1) - a
+    r = np.minimum(np.minimum(a, b), n - 1)
+    return np.where(b < 0, n - 1, r)
 
 
 def merge2x2(x):

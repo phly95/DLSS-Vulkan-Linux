@@ -233,3 +233,9 @@ Open:
   GUESS of R7, and the ISA must be read;
 - unit 5 (the C=160 bottleneck) is 99.86% on frame 0 but 81% on frame 1, a frame-dependent
   border case, as mode 2 was.
+
+R9b addendum: the border rule. k_level (ISA 0x1d0..0x280 of `<160,8,0,0,0,1>`) and k_sr_stage
+(0x78..0xdc) reflect a token coordinate p as a = |p|, b = 2(n-1) - a, r = min(a, b, n-1), and
+r = n-1 when b < 0. The model's old single reflection clipped beyond the double fold to 0.
+Unit 5 (8 x 5, frame-1 shift (0,4): rows 8..11) goes from 81.03% to **99.875%**. Both models now
+use the ISA rule, which is identical to a single reflection whenever |p| <= 2(n-1).
