@@ -10,7 +10,8 @@ only ever run by srref, and nothing they produce is committed.
 OFFSET is kernel-relative (the address column of tools/re/ssa.py). The bytes at OFFSET are
 overwritten with the assembled instructions (llvm-mc gfx1201 in the ROCm container). Nothing after
 them runs, so the patch must end with s_endpgm. The run's dump (srref --dump, frame 0, the 1-frame
-directory build/work/probe/frames1, packed M weights) goes to build/work/review/patch/runs/RUN_dump/.
+directory build/work/probe/frames1 by default, or --frames DIR; packed M weights) goes to
+build/work/review/patch/runs/RUN_dump/frameF/. In a multi-frame run every frame is patched.
 
 Writing a patch:
 - Store the register that holds the value you want (tools/re/ssa.py's listing names each value's
@@ -72,7 +73,7 @@ def assemble(asm):
     return bytes(out)
 
 
-def run(kernel, at, asm, name):
+def run(kernel, at, asm, name, frames="build/work/probe/frames1", weights="build/re/packed/M"):
     data = bytearray(CO.read_bytes())
     off, size = elf_symbol(data, kernel)
     code = assemble(asm)
@@ -85,13 +86,13 @@ def run(kernel, at, asm, name):
     rel = lambda p: str(Path(p).relative_to(REPO))
     cmd = ["podman", "run", "--rm", "--device", "/dev/kfd", "--device", "/dev/dri", "--group-add", "keep-groups",
            "--security-opt", "label=disable", "-v", f"{REPO}:/w", IMG, "bash", "-c",
-           f"cd /w && build/work/srref {rel(co)} build/re/packed/M build/work/probe/frames1 "
+           f"cd /w && build/work/srref {rel(co)} {weights} {frames} "
            f"{rel(OUT / (name + '_out'))} --dump {rel(OUT / (name + '_dump'))}"]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode:
         raise SystemExit(f"srref failed:\n{r.stdout[-1500:]}\n{r.stderr[-1500:]}")
     print(f"patched {len(code)} bytes at {kernel}+{at:#x}; dump {OUT / (name + '_dump')}")
-    return OUT / f"{name}_dump" / "frame0"
+    return OUT / f"{name}_dump"
 
 
 def main():
@@ -100,8 +101,11 @@ def main():
     ap.add_argument("--at", required=True, type=lambda s: int(s, 0))
     ap.add_argument("--asm", required=True)
     ap.add_argument("--name", required=True)
+    ap.add_argument("--frames", default="build/work/probe/frames1",
+                    help="srref frames dir (repo-relative); e.g. a 2-frame dir to reach frame 1's history")
+    ap.add_argument("--weights", default="build/re/packed/M")
     a = ap.parse_args()
-    run(a.kernel, a.at, a.asm, a.name)
+    run(a.kernel, a.at, a.asm, a.name, a.frames, a.weights)
 
 
 if __name__ == "__main__":
