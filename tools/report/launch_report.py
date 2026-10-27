@@ -79,10 +79,16 @@ def decode(raw, dtype):
         return np.frombuffer(raw, np.uint32).astype(np.float32)
     if dtype == "u8":
         return np.frombuffer(raw, np.uint8).astype(np.float32)
+    if dtype == "i8":
+        # signed activations (rr unit 15's E0c02 tanh head stores rndne(127*tanh) as int8).  Scored
+        # as u8 the two's-complement negatives read as 128..255 and the PSNR loses ~12 dB for
+        # nothing, so the element type has to be stated, like every other one here.
+        return np.frombuffer(raw, np.uint8).view(np.int8).astype(np.float32)
     raise ValueError(dtype)
 
 
-ELEM = {"fp8": np.uint8, "u8": np.uint8, "f16": np.uint16, "f32": np.uint32, "u32": np.uint32}
+ELEM = {"fp8": np.uint8, "u8": np.uint8, "i8": np.uint8, "f16": np.uint16, "f32": np.uint32,
+        "u32": np.uint32}
 
 
 # ---------------------------------------------------------------- measurement
@@ -199,14 +205,16 @@ def self_test():
           math.copysign(1.0, float(fp8_to_f32(bytes([0x80]))[0])) == -1.0)
     check("fp8 all 256 codes decode finite", np.isfinite(fp8_to_f32(bytes(range(256)))).all())
 
-    # Tie the decoder to the shader it must agree with: every code against the literal
-    # e4m3_lut in shaders/sr/sr_stage.comp, when that file is present.
+    # Tie the decoder to the shader it must agree with: every code against the literal e4m3_lut in
+    # shaders/sr/sr_stage.comp when that file still carries one, else against the analytic
+    # e4m3_to_f32 that replaced it in 1720a08 (the coopmat rewrite dropped the 256-entry table;
+    # the bit arithmetic below is that function evaluated directly, not a restatement of Python).
     lut_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__)))), "shaders", "sr", "sr_stage.comp")
     if os.path.isfile(lut_path):
         import re
-        body = re.search(r'const float16_t e4m3_lut\[256\] = float16_t\[256\]\((.*?)\);',
-                         open(lut_path).read(), re.S)
+        src = open(lut_path).read()
+        body = re.search(r'const float16_t e4m3_lut\[256\] = float16_t\[256\]\((.*?)\);', src, re.S)
         codes = re.findall(r'float16_t\(([^)]*)\)', body.group(1)) if body else []
         if len(codes) == 256:
             def _f(s):
@@ -216,10 +224,26 @@ def self_test():
             mine = fp8_to_f32(bytes(range(256))).astype(np.float32)
             check("fp8 decode matches sr_stage.comp e4m3_lut (all 256 codes, bit-exact)",
                   np.array_equal(mine.view(np.uint32), ref.view(np.uint32)))
+        elif re.search(r'float e4m3_to_f32\(uint b\)\s*\{', src):
+            # the shader's exact two expressions, evaluated here: e==0 -> m * 2**-9, else
+            # uintBitsToFloat(((e+120) << 23) | (m << 20)), negated when the sign bit is set
+            ref = np.empty(256, np.uint32)
+            for b in range(256):
+                e, m = (b >> 3) & 15, b & 7
+                v = (np.uint32(m) * np.uint32(5033165)) if e == 0 else (   # m * 0.001953125 in f32
+                    np.uint32((e + 120) << 23) | np.uint32(m << 20))
+                ref[b] = (np.uint32(0x80000000) if b & 0x80 else np.uint32(0)) | np.uint32(v)
+            # m * 2**-9 is not a bit pattern; build it as the float it is
+            for b in range(8):
+                ref[b] = np.uint32(np.float32(b * 0.001953125).view(np.uint32))
+                ref[b | 0x80] = np.uint32((-np.float32(b * 0.001953125)).view(np.uint32))
+            mine = fp8_to_f32(bytes(range(256))).astype(np.float32)
+            check("fp8 decode matches sr_stage.comp e4m3_to_f32 (all 256 codes, bit-exact)",
+                  np.array_equal(mine.view(np.uint32), ref))
         else:
-            check("fp8 decode matches sr_stage.comp e4m3_lut (all 256 codes)", False)
+            check("fp8 decode matches sr_stage.comp's E4M3 decoder (all 256 codes)", False)
     else:
-        print("  (sr_stage.comp not present: skipped the e4m3_lut cross-check)")
+        print("  (sr_stage.comp not present: skipped the e4m3 cross-check)")
 
     rng = np.random.default_rng(7)
     ref = rng.normal(0.0, 1.0, 4096).astype(np.float32)
