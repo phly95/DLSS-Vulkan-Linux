@@ -9,22 +9,41 @@ Launch: oracle launch 21 in frame 0 (rst = 1), launch 22 in frame 1 (rst = 0), s
 build/oracle/oracle-8dbf027a9e-s20261025/rr_F/dump. Inputs are the oracle's own bytes as they stood
 before the launch (newest NNN.<buffer>.bin with NNN < launch, else start.<buffer>.bin).
 
-STATUS (2026-10-27, rr-post-model; numbers from `--self-check` on the oracle dump, launch 21 frame 0).
+STATUS (2026-10-27, rr-post-model-2; numbers from `--self-check` on the oracle dump, runtime 2.4 s).
   Frame 0 (reset, no history): A1 PASS. E0cf6 99.9424%, E0cfa 99.9659%, E0c0a 99.9773%, E0c0e 99.9891%.
-  Frame 1 (history):           NOT MODELLED (A2 FAIL). The history fetch (E0d02 table + five
-                               image_sample_lz) and the blend against it are only partly decoded (SPEC
-                               section 6, open). The frame-1 numbers printed by --self-check are the
-                               frame-0 law applied to frame-1 inputs with no history term: a baseline, not
-                               this model.
+  Frame 1 (history):           A2 PASS. E0cf6 99.6293%, E0cfa 99.6977%, E0c0a 99.7825%, E0c0e 99.7372%.
+                               Frame 1 = the CR history fetch (SPEC 6a-c), H = e0*decode(h)/e1 (6d),
+                               TWO gate blend weights t1/t2 (6e-f: hist+E0c0e from t1, E0cf6/E0cfa
+                               from t2), encodes identical to frame 0 (6g).
+  Probe notes: build/agents/rr-post-model-2/progress.md (incl. the patchprobe frame-0 poisoning
+  caveat: a probe whose patch fires in frame 0 changes frame 1's env; probes listed in A3 below are
+  the ones validated for their env).
 
 A3 VERIFICATION TABLE (stage, what it was checked against, match):
-  stage 1  tap geometry dx0/dy0, odd-row shift      verified only through stage 2 (the probe reads q, which uses them)
-  stage 2  tap quadratic q, both lanes, tap (-1,-1)  hardware probe rrp_q151 (patchprobe, RR +0x48c, v12):
-           even lane 100%, odd lane 100% over all 216 x 768 pairs of frame 0
-  stage 3  weights, f16 numerators, Wsum            oracle E0cf6 R/G and E0cfa: 99.96-99.97% through S (frame 0)
-  stage 4  normalised average S = N * (1/Wsum)       oracle E0c0a R/G/B 99.97-99.98% (frame 0, f16(decode/tm))
+  stage 1  tap geometry px/py/dx0/dy0             hardware probes rrp2_px (+0xc4), rrp2_pye (+0x98),
+            rrp2_dx0 (+0x358), rrp2_dy0 (+0x2e4): px, py, f16(dx0), f16(dy0) 100.00% bit-exact on all
+            216x768 even rows, frames 0 AND 1 (geometry depends only on the launch args)
+  stage 2  tap quadratic q, both lanes, tap (-1,-1)  hardware probe rrp2_q (+0x48c, v12 packed):
+            even lane 100%, odd lane 100% over all 216x768 pairs of frame 0
+  stage 3  weights, f16 numerators, Wsum            hardware probe rrp2_inv (+0x18d4, v24 = 1/Wsum):
+            100.00% f16-exact frame 0 even rows; oracle E0cf6 R/G and E0cfa 99.96-99.97% (frame 0)
+  stage 4  normalised average S = N * (1/Wsum)       hardware probe rrp2_S (+0x18d4, v4 = S_R):
+            99.97% f16-exact frame 0 even rows; oracle E0c0a R/G/B 99.97-99.98% (frame 0)
   stage 5  packed E0c0e = 2x2 average of decode(S)   oracle E0c0e 99.99% (frame 0)
-  stage 6  history fetch + blend                     NOT VERIFIED (frame 1 open)
+  stage 6  history endpoint + blend + CR            - rrp2_hsrc (+0x2da0): v5 = decode(h)/e1 (frame 1
+              probe env has zero history: 4.571886e-6 == decode(0)/e1) and = decode(S)/e0 on frame 0
+              (so the frame-0 blend is an identity via H == cur);
+            - rrp2_t (+0x2dac): t1 = fma(conf,1-u1,u1) with conf = clamp01((dec0*Wsum)*(inv*f16(n_w0))),
+              u1 = inv*f16(n_w1): 100.00% <=1e-4, 99.99% <=1e-6, 98.06% bit-exact (frame 1 probe env);
+            - rrp_xG/rrp_xR/rrp_xB (old, +0x2e9c..): x1 = fma(cur-H,t1,H) per channel: 99.97-99.98%
+              <=1e-6, 99.99% <=1e-4 (probe env; the probe NAMES xR/xG are channel-swapped);
+            - CR fetch structure: previous-agent probes rrp_posx/posy (pos), rrp_t5tmp (weights,
+              oracle env) + the ISA (SPEC 6a-c); the t2/E0cf6-vs-hist output routing was closed
+              against the ORACLE itself: tm(x1) gives only 21-27% on frame-1 E0cf6/E0cfa while
+              tm(x2) gives 99.63-99.70% (hist keeps tm(x1) at 99.78%).
+            - end-to-end vs oracle frame 1 (A2): E0cf6 99.63%, E0cfa 99.70%, E0c0a 99.78%, E0c0e 99.74%
+  CAUTION: probe runs whose patch fires in frame 0 poison frame 1's env (frame1 tap md5 e05b4237 !=
+  oracle 7eaaa924); progress.md section 3 lists which probes are valid for which env.
 
 SPEC (all constants are immediates of the ISA or the PostArgs; f16 = IEEE half, round to nearest even)
 
@@ -81,25 +100,71 @@ Inputs (PostArgs, 0xb8 bytes, read by the kernel; field names from tools/rr/rrre
      (The ISA reads the 2x2 neighbours with ds_bpermute and divides by the lane count: the 4-pixel
       block is complete for every even/even pixel.)
 
-6. Frame 1 (history). OPEN (A2 not met). Verified by hardware probes on the 2-frame directory
-   (build/agents/rr-post-model/frames2; an unpatched run reproduces all 55 frame-1 oracle buffers byte for byte):
-   a. CR position (output texels, probed at ISA 0x1514/0x151c): pos = (x15 + 0.5 + mvx, y15 + 0.5 + mvy)
-      with mv = E0bf6 (-0.2861328125, -0.07501220703125) exactly; no scale. Verified on every even row.
-   b. CR table index (ISA 0x0fa0-0x1040): fraction f = pos - (floor(pos - 0.5) + 0.5), clamped to [0,1];
-      k = min(512, floor(512*f + 0.5)) (fma, then truncation). Entry k of the E0d02 table (513 x 4 f32):
-      (w(-1), a = w0+w1, w2, r), where lane 3 is the bilinear fraction r (w1/a, to 1/512).
-   c. Five taps (ISA 0x1738-0x179c, image_sample_lz): main (Ix+0.5+r_x, Iy+0.5+r_y) with weight a_x*a_y;
-      pure centres (Ix-0.5, Iy+0.5+r_y) weight w(-1)_x*a_y; (Ix+2.5, ...) weight w2_x*a_y;
-      (Ix+0.5+r_x, Iy-0.5) weight a_x*w(-1)_y; (Ix+0.5+r_x, Iy+2.5) weight a_x*w2_y. Coordinates probed:
-      t1 u = -1.5/768 (outside the texture), t2 u = 1.5/768 and v = 0.4530/432, t3 v = -1.5/432.
-      Sum of the five weights = 0.99642 at every pixel (= 1/inv probe, 1.0035897); h = sum(W*t)/sum(W).
-   d. The history texel values are nonzero everywhere, and the frame-1 history input equals the
-      frame-0 output 021.E0c0a byte for byte.
-   OPEN: (i) the probed CR numerators/h are zero at ISA 0x1890 and later although the t2/t1 sample
-   values read nonzero at 0x1880 (the probe cause is not resolved); (ii) the sampler addressing mode
-   (clamp vs border for the -1.5 texel) is not decided; (iii) the blend between S, h and the frame-0
-   tm history (E0c1a factors, gates, exposure expo0/expo1 with 1/expo1) is not fitted: the linear and
-   tm-domain lerps with the modelled h give t outside [0,1] on most pixels.
+6. Frame 1 (history): VERIFIED (A2 PASS: E0cf6 99.6293%, E0cfa 99.6977%, E0c0a 99.7825%, E0c0e 99.7372%).
+   Every formula below is an immediate of the ISA or a probe-fitted value (A3 lists the probes).
+
+   a. CR position (per OUTPUT pixel, both rows): pos = (x15 + 0.5 + mvx, y15 + 0.5 + mvy), f32.
+      mv from the parity-selected record (PostArgs 0x58 = Q(0xbf2 + 4*(parity^1)): frame 0 -> E0bf6,
+      frame 1 -> E0bf2); ALL FOUR mv records (E0bf2/E0bf6/E0bfa/E0bfe) are identical and constant in
+      the oracle: (-0.2861328125, -0.07501220703125), f16 (probed: rrp_posx/posy at 0x1514).
+      On-screen guard: 0 <= pos.x <= W15 and 0 <= pos.y <= H15 (ISA 0x1520/0x1528 tests). On frames
+      0/1 the mv is sub-texel so every pixel is on-screen; the off-screen fallback is NOT exercised
+      (cr_history raises if it would fire - not modelled, reported per the brief).
+
+   b. CR table index (per axis): f = clamp(pos - (floor(pos - 0.5) + 0.5), 0, 1)  [the `max(a,a) clamp`
+      at 0x159c = clamp to [0,1], the same modifier as the conf clamp]; k = min(512, trunc(fma(512, f, 0.5)))
+      (0x15b4/0x15e0/0x15f0); entry = E0d02[k] (513 x 4 f32, bicubic.bin) = (wm1, a = w0+w1, w2, r).
+
+   c. The five taps (image_sample_lz x5; sampler = bilinear + clamp-to-edge + NORMALIZED coords,
+      rrref.cpp:351-362), Ix = floor(pos.x-0.5), Iy = floor(pos.y-0.5):
+        t5 main   (Ix+0.5+rx, Iy+0.5+ry)                 weight W5 = ax*ay
+        t1        (Ix-0.5,    main y)  (pure centre x-1)  weight W1 = wm1x*ay
+        t2        (Ix+2.5,    main y)  (pure centre x+2)  weight W2 = w2x*ay
+        t3        (main x, Iy-0.5)     (pure centre y-1)  weight W3 = ax*wm1y
+        t4        (main x, Iy+2.5)     (pure centre y+2)  weight W4 = ax*w2y
+      The bilinear sub-texel fraction is the table's r quantised to 8 bits ROUND-TO-NEAREST
+      (rq = round(r*256)/256): the same GPU sampler precision measured on sr_post (whose -1/+2 taps
+      are likewise pure centres); pure taps pass fraction 0. The +2/-1 taps are texel CENTRES, i.e.
+      the taps at (Ix-0.5)/ (Ix+2.5) have no x-blend (only the y blend where stated).
+      wsum add order (ISA 0x17ac-0x17c0): (((W3 + W1) + W5) + W4) + W2
+      numerator (fma chain, ISA 0x183c-0x18ac): num = t1*W1; num = fma(t3, W3, num);
+        num = fma(t5, W5, num); num = fma(t4, W4, num); num = fma(t2, W2, num)
+      h = num / wsum (f32).  (Previous-agent probes rrp_t1R..t5, rrp_W3, rrp_inv confirm the taps.)
+
+   d. History endpoint (probe rrp2_hsrc +0x2da0):     v5 = decode(h) / e1      (f32 division)
+                                                      H  = e0 * v5              (f32)
+      i.e. H = e0 * decode(h) / e1 with e0 = E0c22[0], e1 = E0c22[1]; decode(h) clamps to [1e-4, 3]
+      exactly like decode(S) (SPEC 5). E0c22 = (e0, e1, 1/e0, ...): frame 0 = (1.3994141, 1.0, ...),
+      frame 1 = (1.390625, 1.3994141, ...). On frame 0 (rst) the CR blocks are skipped and the
+      register holds decode(S)/e0 instead, so H = e0*(decode(S)/e0) = cur - the frame-0 blend is an
+      identity for ANY t (this is why frame 0 needs no history term).
+
+   e. TWO blend weights (shared by the 3 channels; the sr_post two-weight pattern; conf from gate0,
+      u1 from gate1, u2 from gate2 - tap fields 3/4/5, i.e. the post_prep w0/w1/w2):
+        conf    = clamp01( f32(f32(dec0 * Wsum) * f32(inv * f16(n_w0))) ), NaN -> 0
+                  dec0 = PostArgs 0x34 = 1.126047134399414 (ISA 0x2b58); the clamp is the
+                  `v_max_num(a,a) clamp` at 0x2d7c (same modifier as 6b); n_w0 = the f16 numerator of
+                  gate field 3 (stage-4 chain); inv = 1/Wsum (hardware division, stage 3).
+        u1      = f32(inv * f16(n_w1))         (n_w1 = field 4; ISA 0x2d30/0x2d70)
+        t1      = fma(conf, 1 - u1, u1)         (ISA 0x2dac)   [probe rrp2_t: 100.00% <=1e-4]
+        u2      = f32(inv * f16(n_w2))         (n_w2 = field 5; ISA 0x2e08/0x2e14)
+        t2      = fma(conf, 1 - u2, u2)         (ISA 0x2ecc op2, v24)
+
+   f. The two blended colours (per channel, one fma each; NaN guard: if the 3-channel sum of the
+      selected x is unordered the hardware keeps the unblended decode(S)):
+        x1 = fma(cur - H, t1, H)     (ISA 0x2dd4/0x2dc8/0x2df4 with t = t1)  -> HISTORY + E0c0e
+        x2 = fma(cur - H, t2, H)     (0x2efc/0x2ef8/0x2f00 with t = t2)       -> E0cf6/E0cfa
+        cur = decode(S) (SPEC 5).  Routing proved against the oracle: on frame 1 tm(x1) matches the
+        history write at 99.78% but E0cf6/E0cfa only at 21-27%, while tm(x2) matches E0cf6/E0cfa at
+        99.63/99.70% (both blends share the same H and cur; only the t differs).
+
+   g. Outputs (frame-0 encode chains, unchanged):
+        E0cf6 = f16(tm(x2_R)) | f16(tm(x2_G)) << 16        (tm = (log2(max(100x+1,1e-4))*log10(2))*0.36)
+        E0cfa = f16(tm(x2_B))
+        history write (E0c06 on frame 1, E0c0a on frame 0) = f16(tm(x1_R/G/B)), alpha 0
+        E0c0e = frame-0 encode of the 2x2 mean of x1 (the 2x2 gather at 0x31xx reads the x1 packs)
+      Frame 0: x1 == x2 == decode(S) by (d), so all four outputs reduce to SPEC 5 (A1 unchanged).
+
 """
 import argparse
 import json
@@ -167,8 +232,18 @@ def load_inputs(frame):
     rst = struct.unpack_from("<i", a, 0x10)[0]
     expo = np.frombuffer(buffer_before(fdir, "E0c22", launch), np.float32)
     tap = np.frombuffer(buffer_before(fdir, "E0cf2", launch), np.float16).reshape(H, W, 16)
-    return dict(frame=frame, fdir=fdir, launch=launch, sx=F(sx), sy=F(sy), jx=F(jx), jy=F(jy), rst=rst,
-                expo=expo, tap=tap, ptr=ptr)
+    inp = dict(frame=frame, fdir=fdir, launch=launch, sx=F(sx), sy=F(sy), jx=F(jx), jy=F(jy), rst=rst,
+               expo=expo, tap=tap, ptr=ptr)
+    if frame == 1:
+        # frame-1 only inputs: the previous history (frame0's E0c0a output), the CR weight table,
+        # the MV (parity selects E0bf2 on frame1; all MV candidates are identical in these frames),
+        # and dec0 (PostArgs 0x34, constant).
+        inp["hist"] = np.frombuffer(buffer_before(fdir, "E0c0a", launch), np.float16).reshape(H15, W15, 4)
+        inp["cr_table"] = np.frombuffer(buffer_before(fdir, "E0d02", launch), np.float32).reshape(513, 4)
+        mv = np.frombuffer(buffer_before(fdir, "E0bf2", launch), np.float16)
+        inp["mv"] = (F(mv[0]), F(mv[1]))
+        inp["dec0"] = F(struct.unpack_from("<f", a, 0x34)[0])
+    return inp
 
 
 # ------------------------------------------------------------------ stages 1-2: geometry and tap quadratic
@@ -214,7 +289,9 @@ def taps(inp):
 
 # ------------------------------------------------------------------ stages 3-4: weights and the normalised average
 def spatial(inp, tp):
-    """S[lane][pair, x15, field] for fields 0..5 (colour tm, gates), lane 0 = even row, 1 = odd row."""
+    """S[lane][pair, x15, field] for fields 0..5 (colour tm, gates), lane 0 = even row, 1 = odd row.
+    Also returns res[("w", lane)] = Wsum (f32) and res[("n", lane)] = the f16 numerators (216,768,6),
+    the inputs of the frame-1 blend weight t; frame-0 S arithmetic is unchanged."""
     res = {}
     for lane, qk in ((0, "qe"), (1, "qo")):
         ws = {k: np.exp2(tp[k][qk].astype(F)).astype(F) for k in KX}
@@ -223,12 +300,16 @@ def spatial(inp, tp):
             wsum = (wsum + ws[k]).astype(F)
         inv = (F(1.0) / wsum).astype(F)
         S = np.zeros(ws[KX[0]].shape + (6,), F)
+        N = np.zeros(ws[KX[0]].shape + (6,), np.float16)
         for fi in range(6):
             n = np.zeros(ws[KX[0]].shape, F)
             for k in KX:
                 n = f16(n + f16(ws[k]).astype(F) * tp[k]["rec"][..., fi].astype(F)).astype(F)
+            N[..., fi] = n
             S[..., fi] = (n * inv).astype(F)
         res[lane] = S
+        res[("w", lane)] = wsum
+        res[("n", lane)] = N
     return res
 
 
@@ -277,13 +358,147 @@ def frame_outputs_frame0(S):
     return dict(E0cf6=e_cf6, E0cfa=e_cfa, E0c0a=hist, E0c0e=e_c0e)
 
 
+# ------------------------------------------------------------------ frame 1: history fetch + blend
+def _cr_bilinear(hist, xi, yi, rx, ry):
+    """Bilinear sample of hist (H15, W15, 3) f32 at texel lower-left (xi, yi) with sub-texel weights
+    rx, ry (f32, broadcast over the channel axis); clamp-to-edge addressing (rrref: hipAddressModeClamp)."""
+    xi = np.clip(xi, 0, W15 - 1); yi = np.clip(yi, 0, H15 - 1)
+    x1 = np.clip(xi + 1, 0, W15 - 1); y1 = np.clip(yi + 1, 0, H15 - 1)
+    one = F(1.0)
+    if np.ndim(rx):
+        rx = rx[..., None]
+    if np.ndim(ry):
+        ry = ry[..., None]
+    h00 = hist[yi, xi]; h01 = hist[yi, x1]
+    h10 = hist[y1, xi]; h11 = hist[y1, x1]
+    top = (h00 * (one - rx) + h01 * rx).astype(F)
+    bot = (h10 * (one - rx) + h11 * rx).astype(F)
+    return (top * (one - ry) + bot * ry).astype(F)
+
+
+def cr_history(inp):
+    """h (H15, W15, 3) f32: the 5-tap bilinear Catmull-Rom fetch of the previous history at
+    pos = (x15 + 0.5 + mvx, y15 + 0.5 + mvy) per OUTPUT pixel (SPEC section 6). The ISA:
+    f = clamp(pos - (floor(pos-0.5) + 0.5), 0, 1); k = min(512, trunc(fma(512, f, 0.5)));
+    entry = E0d02[k] = (wm1, a, w2, r); the bilinear sub-texel fraction = quantised r (8 bits,
+    round-to-nearest - the measured sampler precision of SR post, same GPU sampler); the -1/+2
+    taps are pure texel fetches at the texel centres (fraction 0)."""
+    mvx, mvy = inp["mv"]
+    tab = inp["cr_table"]
+    hist = inp["hist"][..., :3].astype(F)
+    px = (np.arange(W15, dtype=F)[None, :] + F(0.5)) + mvx        # (1, W15)
+    py = (np.arange(H15, dtype=F)[:, None] + F(0.5)) + mvy        # (H15, 1)
+    if not (bool(np.all(px >= 0)) and bool(np.all(px <= F(W15))) and
+            bool(np.all(py >= 0)) and bool(np.all(py <= F(H15)))):
+        raise NotImplementedError("off-screen history fetch (never fires on oracle frames 0/1: mv sub-texel)")
+    Ix = np.floor(px - F(0.5)).astype(np.int64)
+    Iy = np.floor(py - F(0.5)).astype(np.int64)
+    fx = (px - (Ix.astype(F) + F(0.5))).astype(F)
+    fy = (py - (Iy.astype(F) + F(0.5))).astype(F)
+    fcx = np.clip(fx, F(0.0), F(1.0))
+    fcy = np.clip(fy, F(0.0), F(1.0))
+    kx = np.minimum(fma(F(512.0), fcx, F(0.5)).astype(np.int64), 512)
+    ky = np.minimum(fma(F(512.0), fcy, F(0.5)).astype(np.int64), 512)
+    ex = tab[kx]                                     # (1, W15, 4): (wm1, a, w2, r) per x
+    ey = tab[ky]                                     # (H15, 1, 4): per y
+    rx = ex[..., 3]; ry = ey[..., 3]
+    rxq = (np.round(rx.astype(np.float64) * 256) / 256.0).astype(F)
+    ryq = (np.round(ry.astype(np.float64) * 256) / 256.0).astype(F)
+    ix, iy = np.broadcast_arrays(Ix, Iy)
+    rxq, ryq = np.broadcast_arrays(rxq, ryq)
+    z = F(0.0)
+    t1 = _cr_bilinear(hist, ix - 1, iy, z, ryq)      # pure texel x-1, main y
+    t2 = _cr_bilinear(hist, ix + 2, iy, z, ryq)      # pure texel x+2, main y
+    t3 = _cr_bilinear(hist, ix, iy - 1, rxq, z)      # main x, pure texel y-1
+    t4 = _cr_bilinear(hist, ix, iy + 2, rxq, z)      # main x, pure texel y+2
+    t5 = _cr_bilinear(hist, ix, iy, rxq, ryq)        # the main bilinear
+    W1 = (ex[..., 0] * ey[..., 1])                   # wm1x * ay
+    W2 = (ex[..., 2] * ey[..., 1])                   # w2x  * ay
+    W3 = (ex[..., 1] * ey[..., 0])                   # ax   * wm1y
+    W4 = (ex[..., 1] * ey[..., 2])                   # ax   * w2y
+    W5 = (ex[..., 1] * ey[..., 1])                   # ax   * ay
+    num = (t1 * W1[..., None]).astype(F)
+    num = fma(t3, W3[..., None], num)
+    num = fma(t5, W5[..., None], num)
+    num = fma(t4, W4[..., None], num)
+    num = fma(t2, W2[..., None], num)
+    wcr = (W3 + W1).astype(F)                        # ISA add order: (((W3 + W1) + W5) + W4) + W2
+    wcr = (wcr + W5).astype(F)
+    wcr = (wcr + W4).astype(F)
+    wcr = (wcr + W2).astype(F)
+    return (num / wcr[..., None]).astype(F)
+
+
+def blend_weight(inp, sp):
+    """(t1, t2)[lane] (216, 768): the TWO blend weights of the pair (the gate1/gate2 pattern of
+    sr_post, ISA 0x2b58/0x2d30-0x2ecc):
+      conf    = clamp01((dec0 * Wsum) * (inv * f16(n_w0)))   (gate field 3; NaN -> 0)
+      u1      = inv * f16(n_w1)      (gate field 4)  -> t1 = fma(conf, 1-u1, u1) -> the HISTORY write
+      u2      = inv * f16(n_w2)      (gate field 5)  -> t2 = fma(conf, 1-u2, u2) -> E0cf6/E0cfa
+    t1 fitted100.00% <=1e-4 against hardware probe rrp2_t (+0x2dac; progress.md 6); t2 is the
+    same formula on the w2 chain (%531/%1516/%1599/@0x2ecc) - E0cf6/E0cfa are tm(x2) (SPEC 6)."""
+    dec0 = inp["dec0"]
+    out = {}
+    for lane in (0, 1):
+        wsum = sp[("w", lane)]
+        n = sp[("n", lane)]
+        inv = (F(1.0) / wsum).astype(F)
+        conf_raw = ((dec0 * wsum) * (inv * f16(n[..., 3]).astype(F))).astype(F)
+        conf = np.where(np.isfinite(conf_raw), np.clip(conf_raw, F(0.0), F(1.0)), F(0.0)).astype(F)
+        one = F(1.0)
+        u1 = (inv * f16(n[..., 4]).astype(F)).astype(F)
+        u2 = (inv * f16(n[..., 5]).astype(F)).astype(F)
+        out[lane] = (fma(conf, one - u1, u1), fma(conf, one - u2, u2))
+    return out
+
+
+def frame_outputs_from_x(x1, x2):
+    """The four outputs of frame 1 from the two blended linear colours (SPEC section 6):
+    the history write and E0c0e use x1 (t1 blend), E0cf6/E0cfa use tm(x2) (t2 blend) -
+    the hardware has two tm pack chains (0x2e9c.. for hist, 0x2f4c.. for E0cf6/E0cfa);
+    on frame 0 x1 == x2 == cur so this reduces to the frame-0 law."""
+    tm2 = tonemap(x2)
+    e_cf6 = (f16(tm2[..., 0]).view(np.uint16).astype(np.uint32)
+             | (f16(tm2[..., 1]).view(np.uint16).astype(np.uint32) << 16))
+    e_cfa = f16(tm2[..., 2])
+    tm = tonemap(x1)
+    hist = np.zeros((H15, W15, 4), np.float16)
+    hist[..., :3] = f16(tm)
+    x = x1
+    xb = x.reshape(H15 // 2, 2, W15 // 2, 2, 3)
+    xs = (xb[:, 0] + xb[:, 1]).astype(F)
+    xs = ((xs[:, :, 0] + xs[:, :, 1]) * F(0.25)).astype(F)
+    tmb = tonemap(xs)
+    val = encode10(tmb[..., 0]) | (encode10(tmb[..., 1]) << 10) | (encode10(tmb[..., 2]) << 20)
+    e_c0e = (val | np.uint32(0xC0000000)).astype(np.uint32)
+    return dict(E0cf6=e_cf6, E0cfa=e_cfa, E0c0a=hist, E0c0e=e_c0e)
+
+
 def model(frame):
+    """frame 0 (rst): the frame-0 law. frame 1: h = CR history, H = e0*decode(h)/e1,
+    x = fma(cur - H, t, H) per channel with cur = decode(S) and the gate weight t (SPEC 6)."""
     inp = load_inputs(frame)
-    if frame != 0:
-        raise NotImplementedError("frame 1 (history) is not modelled yet: see SPEC section 6")
     tp = taps(inp)
-    S = interleave(spatial(inp, tp))
-    return frame_outputs_frame0(S), inp
+    sp = spatial(inp, tp)
+    if frame == 0:
+        return frame_outputs_frame0(interleave({k: v for k, v in sp.items() if isinstance(k, int)})), inp
+    h = cr_history(inp)
+    e0, e1 = F(inp["expo"][0]), F(inp["expo"][1])
+    t1t2 = blend_weight(inp, sp)
+    x1 = np.zeros((H15, W15, 3), F)
+    x2 = np.zeros((H15, W15, 3), F)
+    for lane in (0, 1):
+        S = sp[lane]
+        cur = decode_lin(S[..., :3])
+        rows = slice(lane, None, 2)
+        v = (decode_lin(h[rows]) / e1).astype(F)      # the hardware computes decode(h)/e1 (probe rrp2_hsrc)
+        Hh = (e0 * v).astype(F)                      # H = e0 * decode(h) / e1 (f32, probe-confirmed shape)
+        t1, t2 = (tt[..., None] for tt in t1t2[lane])
+        d = np.float64(cur) - np.float64(Hh)
+        hh = np.float64(Hh)
+        x1[rows] = (d * np.float64(t1) + hh).astype(F)
+        x2[rows] = (d * np.float64(t2) + hh).astype(F)
+    return frame_outputs_from_x(x1, x2), inp
 
 
 def model_baseline_frame1():
@@ -339,12 +554,12 @@ def self_check():
         good = v >= thr[0]
         ok &= good
         print(f"  -> {k} {v:.4f}% >= {thr[0]:.1f}%: {'PASS' if good else 'FAIL'}")
-    print("[frame 1, launch 22: NOT MODELLED; baseline = frame-0 law without history]")
-    r1 = run(1, baseline=True)
+    print("[frame 1, launch 22: the model]")
+    r1 = run(1)
     for k, v in r1.items():
         good = v >= thr[1]
         ok &= good
-        print(f"  -> {k} {v:.4f}% >= {thr[1]:.1f}%: {'PASS' if good else 'FAIL'} (baseline, not the model)")
+        print(f"  -> {k} {v:.4f}% >= {thr[1]:.1f}%: {'PASS' if good else 'FAIL'}")
     print("SELF-CHECK:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
