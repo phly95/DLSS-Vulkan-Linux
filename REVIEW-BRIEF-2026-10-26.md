@@ -1,0 +1,133 @@
+# Review brief — 2026-10-26, for external review of the SR/RR parity campaign
+
+**Purpose.** You are reviewing the trajectory of the quality-parity campaign since the previous
+external review (the one whose feedback is summarized below under "Plan as adopted"). The working
+subagent is paused at the operator's request. This file is scratch (not committed); the repository
+itself is the record.
+
+**Read first, in this order:** `HANDOFF.md` (source of truth, refreshed this session), then
+`docs/notes/k_sr_stage.md` (the active decode thread), `docs/notes/perf_1080p4k.md`,
+`docs/notes/sr_chain_decoupling.md`, `docs/notes/chain-leverage.md`, then `docs/PORT-STATUS.md`
+and `docs/notes/k_sr_enc0.md` if needed. Full campaign history: `git log --oneline` (the phase
+since the last review runs roughly `a34ab72..HEAD`).
+
+## Fixed decisions (operator-set; do not relitigate without new evidence)
+
+- Parity bar: **V4, min >= 50.0 dB / mean >= 55.0 dB every cell** vs the oracle (NeuralHub's own
+  binaries on the same RX 9070 XT), measured only by `tools/report/pipeline_report.py`.
+- **Both SR and RR remain in scope.**
+- One worker subagent, model `opencode-go/mimo-v2.6-flash` (operator's deliberate choice for
+  marathon usage limits). Every claimed number is independently re-run by the orchestrator before
+  acceptance (provenance trio: commit SHA + `sha256sum build/shaders/*.spv | sha256sum` + input dirs).
+- `tools/verify/` frozen (one operator-authorized exception: the Proton probe, `774fd8a`).
+- ISA-emulator ban **lifted by operator 2026-10-26**, recorded in `HANDOFF.md` "Do not retry".
+- Instrument ranking: srref synthetic-weight probing primary, emulator secondary, ISA reading last.
+- **Milestone: 2026-11-02, >= 40 dB per-launch on `k_sr_stage` or `k_rr_level`** — metric defined as
+  PSNR with peak = oracle tensor max |x|, plus Pearson r, plus relative RMSE, all from the committed
+  `tools/report/launch_report.py`. Miss = condition-(c) report to the operator with data, not a rush.
+- Pre-committed no-revert rule: wiring the network was expected to drop the pipeline number; it did;
+  reverting to recover the number is forbidden.
+
+## Plan as adopted (from the previous external review)
+
+Wire the network first / profile before wiring / judge kernels per-launch with oracle inputs /
+refresh `HANDOFF.md` / explicit emulator decision / provenance on every number. All adopted,
+including the follow-up clarifications: metric definition fixed (peak specified), performance
+target corrected (distance from NeuralHub's own timing on this card, not NVIDIA-class 1–3 ms).
+
+## What has landed since (all independently re-run by the orchestrator)
+
+- **Step A** `a7a14e7`: `HANDOFF.md` refreshed; every claim re-verified against `git log`;
+  emulator lift recorded.
+- **Step D** `4c9a082`/`7a9d286`, note `docs/notes/perf_1080p4k.md`: at real 1920x1080->3840x2160,
+  GPU timestamps per dispatch, setup/uploads excluded, controls showing <=3.5% instrumentation
+  overhead:
+
+  | | port | NeuralHub | ratio |
+  |---|---:|---:|---:|
+  | SR frame | 1092.33 ms | 5.34 ms | **204.6x** |
+  | - `sr_stage` alone | 1054.02 ms | 1.69 ms | **623x, 96.5% of frame** |
+  | other SR kernels | 38.3 ms | 3.65 ms | 3.9x-29.8x |
+  | RR frame | 21.59 ms | 12.05 ms | 1.8x (flattering: rr_pooled2 never dispatched, 1/16 rr_level) |
+
+  Cause is in the shader, not launch geometry: port `sr_stage` has **0 coopmat/WMMA vs the
+  reference's 152 `v_wmma_f32_16x16x16_fp8_fp8`** — every GEMM is a scalar `e4m3_lut` loop.
+- **Step B** `f0c244f`/`b8e4866`: network wired (mode-2 skips + `sr_post` consuming dec0). The
+  byte-identical wall is gone: oracle injection at all 12 network points went 9/9 out_i identical
+  -> 9/9 different. Pipeline dropped as pre-committed: SR M 27.51/29.55/30.97 (from 32.20/33.76).
+- **Step C** `a56987d`: `tools/report/launch_report.py` (self-test PASS 14 checks). Per-launch,
+  oracle inputs, frame0, `k_sr_stage`: st0 **4.98 dB** r 0.455124, st8 7.84 dB r 0.094,
+  st9 4.61 dB r 0.058. Historical 0.455 reproduced independently. `k_rr_level` **not yet
+  measurable**: oracle dump is 128ch, chain is 64ch, and `rr_level.comp`'s bounds guard silently
+  truncates (real bug, queued).
+- **Step E started**: probe-regime gap established — real kernel logits reach +33.4 (64/1024 past
+  exp saturation at 11); synthetic probes never exceeded 13.4 with most head-batches at exactly
+  0. Probe-favored and real-weight-favored variants contradict each other; one formula must fit
+  both regimes before any landing.
+- **`a903817` (gain_first)**: `gain1` is applied **before** RMSNorm1 in the oracle, not after.
+  Probes 0.57 -> 0.966-0.978; replica prediction matched measured GPU r to 5 dp. Pipeline all-up
+  (SR M **27.61/30.00/31.54**, SR L **26.43/29.71/31.77**, re-run and verified); per-launch PSNR
+  fell 4.98 -> **4.51 dB** while r rose 0.455 -> 0.566 — recorded honestly as not-a-milestone-step.
+  Baselines were regenerated by stashing the change (comparator validated both directions).
+- **`089eb8c` (attempt 14)**: gain2 landed; note claims **MLP is 76% of the remaining error** —
+  read the note yourself.
+- Four bugs found and fixed in the subagent's own probe tooling (incl. `PS` computed but never
+  applied — which had invalidated two earlier store-permutation conclusions, now re-tested).
+
+## Post-brief final checkpoint — worker's pause report, HEAD `dac531e` (ALL numbers below independently re-run and verified by the orchestrator)
+
+Written after the sections above; supersedes the 4.51 dB figure where they disagree.
+
+- **`83a5b91` — gain2 before RMSNorm2** (same bug class as gain1): the MLP was 99.9% of the
+  port's stage change against an oracle whose entire stage change is smaller; fix takes the MLP
+  from 5.621 to 0.778 rms (oracle band 0.8-1.6).
+  - per-launch `k_sr_stage` launch 3: **4.5099 -> 13.5080 dB (+9.00)**, r flat 0.5661, rRMSE
+    2.3487 -> **0.8335** (2.8x). Orchestrator re-ran `kernel_run` + `launch_report.py` from
+    scratch: **13.5080 / 0.566140 / 0.833516 reproduced exactly**.
+  - pipeline: SR M **29.30 / 31.36 / 33.29**, SR L **27.14 / 30.33 / 32.43** (both re-run and
+    exact). Baselines via stash-and-rerun, both previous states reproduced first.
+  - A tuned MLP scale x0.15 (+0.51) was **deliberately not landed** — a constant, not a decode.
+- **Attempts 14/15 refutations (all measured, none landed):** V-layout family, fc1/fc2 layout
+  swaps, all alternative activations, fp8-activation scale (inert), b1 (correct), `fc2_bias`
+  position (block 0 right by 35 dB; every other block -22..-23 dB), residual topology, v270, MLP
+  sign/input/magnitude (monotone worse), attention-normalization families, Q5 x32 (-32.69), and
+  Exp B's `gain_first` prediction **falsified** (0.4011 -> 0.4013, both sides' controls
+  reproduce attempt 8 to 3 decimals).
+- **Error budget / ceilings after gain2:** total remainder 1.689 rms = MLP ~1.28 (76%) +
+  attention ~0.41. Perfect MLP alone = 17.18 dB; perfect attention alone = 13.77 dB; both
+  perfect = the oracle exactly (they are the complete additive remainder).
+- **Worker's milestone estimate (its own words, for you to judge):** 40 dB by 2026-11-02
+  **unlikely — ~15-20% (roughly 4:1 against)**; median landing 16-18 dB, 20-28 if the open lead
+  pays off. Trajectory: 4.98 -> 4.51 -> **13.51** dB in three landed steps (+8.53 net), last
+  step +9.00. Condition-(c) miss judged the more likely outcome, **not yet declared** — the
+  worker explicitly left the declaration to the operator/review.
+- **The single open lead (binary, decides everything):** 24,768 bytes of `stage0.bin`
+  (offsets 47104..71872, ~34%) are **never read by the port**. If the oracle reads them, a whole
+  component is missing (potentially several dB); if inert, no known path to a large gain remains
+  and 40 dB would need three more flawless major decodes in 7 days. Probes already crafted and
+  verified (`build/work/probe/all_real` byte-identical to `packed/M`; `tail_zero` differs only
+  in that range); the two `srref --dump` commands are pasted verbatim in attempt 15 of
+  `docs/notes/k_sr_stage.md`; verdict = compare `e4(t1)-e4(t0)` against the ~0.146 fp8-step
+  noise floor. **Nothing else should start before this is answered.**
+- Orchestrator gate at `dac531e`: shader hash `dcdf482a…52f3c0` match; both pipeline cells exact;
+  per-launch triple exact; `offline_check` = **PASS 27 pipelines** re-run at HEAD.
+
+**Questions 2 and 5 above are now the live ones**: given this trajectory and the unread-tail
+experiment, is the milestone/bar structure still right, and what should the condition-(c)
+reassessment ask for if the tail comes back inert?
+
+## Questions for this review
+
+1. Trajectory verdict since the previous review: are the adopted changes (wiring-first, per-launch
+   metric, profiling-first, no-revert, provenance gate) working or failing in practice?
+2. Milestone realism: from the dB-per-step history in `k_sr_stage.md`, is >= 40 dB by 2026-11-02
+   reachable? If not, what should the condition-(c) reassessment ask for?
+3. Does the 204.6x / 0-WMMA performance finding change priorities? (Fidelity-first is standing.)
+4. What would you change next: instruments, kernel order, SR-vs-RR sequencing, or the
+   review/verification setup itself?
+5. Anything in the current plan that is now wrong, redundant, or under-specified?
+
+Constraints on your output: a structured assessment (verdict / tightened decisions / any dated
+decision point), like the review that shaped the current phase. You may re-run measurement commands
+(`build/venv/bin/python -I ...`) — the GPU is free while the worker is paused — but do not edit or
+commit anything; you are read-only on the repository.
