@@ -14,6 +14,12 @@ acceptance command itself before anything is committed.
 - Write outputs (builds, dumps, logs, scratch scripts) **only under `build/agents/<your-name>/`**.
 - Never delete anything outside that directory, and never use `rm -rf` on a path you have not
   just created.
+- **Do not delete at all when you can avoid it**: use a fresh directory name per run (`run2/`,
+  `run3/`, ...) instead of clearing an old one. Never write `rm` with a shell variable in the
+  path (`rm -rf $A/$d`, `rm -rf "$OUT"/*`): the harness stops and asks the user for permission
+  every time. If a removal is truly needed, spell the literal path out
+  (`rm -rf build/agents/<you>/run1`), or do it from Python with `shutil.rmtree` on a path built
+  under your own directory.
 - **Do not run `git commit`, `git push`, `git stash`, `git checkout -- <file>` or `git reset`.**
   The orchestrator commits. Other agents' uncommitted work is in the same tree, so `git stash`
   or `git checkout` destroys it. To compare against HEAD, use `git show HEAD:<path> > build/agents/<you>/<file>`.
