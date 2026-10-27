@@ -531,22 +531,58 @@ def make_test(name, out_dir):
             ]
         }
     elif name == "rr_post":
-        col = np.linspace(0.1, 1.0, n_pix * 4, dtype=np.float16).tobytes()
-        expo = np.array([1.0, 1.0, 1.0, 0.0], dtype=np.float32).tobytes()
-        open(os.path.join(out_dir, "in_feat.bin"), "wb").write(col)
-        open(os.path.join(out_dir, "in_expo.bin"), "wb").write(expo)
-        push = bytearray(120)
-        struct.pack_into("<4i", push, 0, w, h, w, h)
+        # NeuralHub's rrio::k_post<24>: PostArgs (0xb8) at the oracle's own field offsets and 12
+        # bindings = the PostArgs pointer slots 0x40..0xa0 (tools/rr/rrref/rrref.cpp:541-544).
+        # The fixture renders at the output size (W = W15, H = H15 -> scale 1) and takes the
+        # HISTORY path (rst = 0), so the mv record, the E0d02 Catmull-Rom table and the 5-tap CR
+        # fetch are all exercised on the lavapipe run: a zero/garbage table would make wcr 0/0
+        # and O7's "finite" check would fail (the sr_post push fix 9eb91dd is the precedent).
+        col = np.linspace(0.1, 1.0, n_pix * 16, dtype=np.float16)  # 16 f16 = 32 B per render pixel
+        open(os.path.join(out_dir, "in_tap.bin"), "wb").write(col.tobytes())
+        open(os.path.join(out_dir, "in_expo.bin"), "wb").write(
+            np.array([1.0, 1.0, 1.0, 0.0], dtype=np.float32).tobytes())
+        open(os.path.join(out_dir, "in_factors.bin"), "wb").write(
+            np.full(n_pix * 4, 41, dtype=np.uint8).tobytes())
+        mv = np.empty(n_pix * 4, dtype=np.float16)                  # (mvx, mvy, mvx, mvy) per pixel
+        mv[0::2] = -0.2861328125
+        mv[1::2] = -0.07501220703125
+        open(os.path.join(out_dir, "in_mv.bin"), "wb").write(mv.tobytes())
+        open(os.path.join(out_dir, "in_mv2.bin"), "wb").write(mv[:n_pix * 2].tobytes())
+        open(os.path.join(out_dir, "in_hist.bin"), "wb").write(
+            np.linspace(0.0, 0.9, n_pix * 4, dtype=np.float16).tobytes())
+        # E0d02: 513 x (wm1, a = w0 + w1, w2, r) at f = k/512; row 0 is (0, 1, 0, 0), the
+        # oracle's own first entry, and wcr stays well away from 0 for every index.
+        f = np.arange(513, dtype=np.float32) / 512.0
+        wm1 = -0.5 * f + f * f - 0.5 * f * f * f
+        w0 = 1.0 - 2.5 * f * f + 1.5 * f * f * f
+        w1 = 0.5 * f + 2.0 * f * f - 1.5 * f * f * f
+        w2 = -0.5 * f * f + 0.5 * f * f * f
+        aa = w0 + w1
+        tab = np.stack([wm1, aa, w2, w1 / aa], 1).astype(np.float32)
+        open(os.path.join(out_dir, "in_crtab.bin"), "wb").write(tab.tobytes())
+        push = bytearray(184)
+        struct.pack_into("<4i", push, 0, w, h, w, h)                # W, H, W15, H15
+        struct.pack_into("<i", push, 16, 0)                         # rst: the history path
+        struct.pack_into("<2f", push, 20, 1.0, 1.0)                 # scaleX, scaleY
+        struct.pack_into("<2f", push, 28, 0.0, 0.0)                 # jitterX, jitterY
+        struct.pack_into("<f", push, 52, 1.126047134399414)         # dec0 (+0x34)
         cfg = {
-            "groups": [(w + 15) // 16, (h + 15) // 16, 1],
+            "groups": [(w + 15) // 16, (((h + 1) // 2) + 15) // 16, 1],
             "push": push.hex(),
             "bindings": [
-                {"binding": 0, "file": "in_feat.bin"},
+                {"binding": 0, "file": "in_tap.bin"},
                 {"binding": 1, "file": "in_expo.bin"},
-                {"binding": 2, "bytes": n_pix * 4, "output": "out_rg", "type": "f16"},
-                {"binding": 3, "bytes": n_pix * 2, "output": "out_b", "type": "f16"},
-                {"binding": 4, "bytes": n_pix * 8, "output": "out_full", "type": "f16"},
-                {"binding": 5, "bytes": ((w + 1) // 2) * ((h + 1) // 2) * 4, "output": "out_packed", "type": "u32"}
+                {"binding": 2, "file": "in_factors.bin"},
+                {"binding": 3, "file": "in_mv.bin"},
+                {"binding": 4, "file": "in_mv2.bin"},
+                {"binding": 5, "file": "in_mv2.bin"},
+                {"binding": 6, "file": "in_hist.bin"},
+                {"binding": 7, "file": "in_crtab.bin"},
+                {"binding": 8, "bytes": n_pix * 8, "output": "out_hist", "type": "f16"},
+                {"binding": 9, "bytes": n_pix * 4, "output": "out_rg", "type": "u32"},
+                {"binding": 10, "bytes": n_pix * 2, "output": "out_b", "type": "f16"},
+                {"binding": 11, "bytes": ((w + 1) // 2) * ((h + 1) // 2) * 4,
+                 "output": "out_packed", "type": "u32"}
             ]
         }
     elif name == "rr_downsample":

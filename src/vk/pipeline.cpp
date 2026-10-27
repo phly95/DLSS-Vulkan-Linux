@@ -355,7 +355,7 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         add_pipe("rr_enc0_feat", 13, 16);
         add_pipe("rr_level", 14, 80);
         add_pipe("rr_post_prep", 4, 40);
-        add_pipe("rr_post", 6, 120);
+        add_pipe("rr_post", 12, 184);
         add_pipe("rr_downsample", 4, 48);
         add_pipe("rr_pooled2", 2, 32);
         add_pipe("rr_avg2x2", 2, 8);
@@ -1220,23 +1220,46 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             dispatch(cmd, "rr_post_prep", {&ue.at("E0bd4"), &ue.at("E0c16"), &ue.at("E0c1e"), &cf2}, push, 40, (W + 15) / 16, (H + 15) / 16, 1);
             inject_after(cmd, "post_prep", 20 + roff);
         }
-        // 6. Post (launch 21 + roff)
+        // 6. Post (launch 21 + roff): NeuralHub's rrio::k_post<24>. The 184-byte push is PostArgs at
+        //    the oracle's own field offsets (tools/rr/rrref/rrref.cpp:533-547), so an oracle
+        //    launch's args hex passes verbatim; the shader reads 0x00..0x1c and 0x34. The bindings
+        //    are the PostArgs pointer slots 0x40..0xa0 in order: taps, exposure, factors, the mv
+        //    record (0x58 = parity-selected E0bf6|E0bf2, both the port's bf6), E0bfa, E0bfe, the
+        //    history READ (0x70 = E0c06|E0c0a = ihist[p^1]), the E0d02 Catmull-Rom table, the
+        //    history WRITE (0x88 = ihist[p]), E0cf6, E0cfa, E0c0e. Grid: the oracle's own
+        //    [(W15+15)/16, ((H15+1)/2+15)/16] pairs of output rows at 16x16.
         {
-            uint8_t push[120] = {0};
-            std::memcpy(push + 0, &W, 4);
-            std::memcpy(push + 4, &H, 4);
-            std::memcpy(push + 8, &W15, 4);
-            std::memcpy(push + 12, &H15, 4);
-            std::memcpy(push + 16, &reset, 4);
-            float sx = float(W) / float(W15);
-            float sy = float(H) / float(H15);
-            std::memcpy(push + 20, &sx, 4);
-            std::memcpy(push + 24, &sy, 4);
-            std::memcpy(push + 28, &jx, 4);
-            std::memcpy(push + 32, &jy, 4);
-            std::memcpy(push + 36, &exposure_val, 4);
+            uint8_t push[184] = {0};
+            std::memcpy(push + 0x00, &W, 4);
+            std::memcpy(push + 0x04, &H, 4);
+            std::memcpy(push + 0x08, &W15, 4);
+            std::memcpy(push + 0x0c, &H15, 4);
+            std::memcpy(push + 0x10, &reset, 4);
+            const float sx = float(W) / float(W15);
+            const float sy = float(H) / float(H15);
+            std::memcpy(push + 0x14, &sx, 4);
+            std::memcpy(push + 0x18, &sy, 4);
+            std::memcpy(push + 0x1c, &jx, 4);
+            std::memcpy(push + 0x20, &jy, 4);
+            const float iW = 1.0f / float(W), iH = 1.0f / float(H);
+            const float i15w = 1.0f / float(W15), i15h = 1.0f / float(H15);
+            std::memcpy(push + 0x24, &iW, 4);            // the shader does not read 0x24..0x33,
+            std::memcpy(push + 0x28, &iH, 4);            // they are filled as the oracle does
+            std::memcpy(push + 0x2c, &i15w, 4);
+            std::memcpy(push + 0x30, &i15h, 4);
+            // PostArgs +0x34: the packer's third dec0 scalar, exp(f16 table 0x1840) of blob15
+            // (tools/rr/rr_pack.py:126-130; units[15].dec0_scalars[2] of params.json =
+            // 1.126047134399414, the value both oracle dumps carry at 0x34). k_post's conf needs
+            // it; rr_tab only carries the first two scalars, so it is stated here.
+            const float dec0_post = 1.126047134399414f;
+            std::memcpy(push + 0x34, &dec0_post, 4);
+            const int pitch = W15;                       // +0x38 = E[0xbf1], the texture pitch
+            std::memcpy(push + 0x38, &pitch, 4);
             trace_label = "launch " + std::to_string(21 + roff) + " k_post";
-            dispatch(cmd, "rr_post", {&cf2, &expo, &cf6, &cfa, &ihist[0], &c0e}, push, 120, (W15 + 15) / 16, (H15 + 15) / 16, 1);
+            dispatch(cmd, "rr_post",
+                     {&cf2, &expo, &ue.at("E0c1a"), &bf6, &bfa, &bfe, &ihist[p ^ 1],
+                      &ue.at("E0d02"), &ihist[p], &cf6, &cfa, &c0e},
+                     push, 184, (W15 + 15) / 16, (((H15 + 1) / 2) + 15) / 16, 1);
             inject_after(cmd, "post", 21 + roff);
         }
         // 7. Downsample (launch 22 + roff)
