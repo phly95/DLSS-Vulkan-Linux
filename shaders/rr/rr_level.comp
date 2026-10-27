@@ -176,10 +176,13 @@ float s1d0() { return f16_dec(tab[uint(unit_in) * TS + 24u] & 0xFFFFu); }       
 float dec0_s0() { return uintBitsToFloat(tab[uint(unit_in) * TS + 25u]); }                // Args +0xe8
 float dec0_f0() { return uintBitsToFloat(tab[uint(unit_in) * TS + 26u]); }                // Args +0xec
 
+// The kernels' border rule (model reflect()): a = |p|, b = 2(n-1) - a, r = min(a, b, n-1), and n-1 when b < 0
+// (beyond a double fold: the far edge).
 int refl(int p, int n) {
-    if (p < 0) p = -p;
-    if (p >= n) p = 2 * (n - 1) - p;
-    return clamp(p, 0, n - 1);
+    int a = abs(p);
+    int b = 2 * (n - 1) - a;
+    int r = min(min(a, b), n - 1);
+    return (b < 0) ? (n - 1) : r;
 }
 
 // NeuralHub's bit-built exp (tools/rr/rr_level_model.py nr_swin_exp).
@@ -347,16 +350,21 @@ void main() {
 
     // ---- 1. entry: the residual stream of the 64 tokens (at their reflected pixels)
     if (mode == 5) {
-        // enc0: h = q8(gelu(m1d8 F + v218)) (64 hidden), X = f16(m1f8 h + v230) (C = 32)
+        // enc0: h = q8(nhgelu(m1d8 F + v218)) (64 hidden), X = q8(clamp(m1f8 h + v230)) (C = 32); both GEMMs are
+        // bias-first K = 32 chains through f16 (the model's chain_mm)
         for (uint i = 0u; i < 16u; ++i) {
             uint p = tid + 256u * i;
             uint t = p >> 6u, j = p & 63u;
             uint px = uint(refl(ox + int(t & 7u), W)), py = uint(refl(oy + int(t >> 3u), H));
             float z = vec16(17, j);
             uint mb = wbase(16);
-            for (uint k = 0u; k < 64u; ++k)
-                z += wfp8(mb + frag_off(j, k, 64u)) * e4m3_dec(uint(in_act[pidx(k, px, py, Wu, Hu)]));
-            s_h[t * 64u + j] = float16_t(q8f(gelu_tanh(z)));
+            for (uint k0 = 0u; k0 < 64u; k0 += 32u) {
+                float d = 0.0;
+                for (uint k = k0; k < k0 + 32u; ++k)
+                    d += wfp8(mb + frag_off(j, k, 64u)) * e4m3_dec(uint(in_act[pidx(k, px, py, Wu, Hu)]));
+                z = rh(z + d);
+            }
+            s_h[t * 64u + j] = float16_t(q8f(nh_gelu(z)));
         }
         barrier();
         for (uint i = 0u; i < npair; ++i) {
@@ -364,40 +372,57 @@ void main() {
             uint t = p / C, c = p % C;
             float z = vec16(19, c);
             uint mb = wbase(18);
-            for (uint j = 0u; j < 64u; ++j) z += wfp8(mb + frag_off(c, j, 64u)) * float(s_h[t * 64u + j]);
-            s_a[t * CM + c] = float16_t(rh(z));
+            for (uint j0 = 0u; j0 < 64u; j0 += 32u) {
+                float d = 0.0;
+                for (uint j = j0; j < j0 + 32u; ++j) d += wfp8(mb + frag_off(c, j, 64u)) * float(s_h[t * 64u + j]);
+                z = rh(z + d);
+            }
+            s_a[t * CM + c] = float16_t(q8f(clamp(z, -448.0, 448.0)));
         }
     } else if (mode == 1) {
-        // level 0 -> level 1: X = f16(mC8 . merge2x2(in) + v188); the concatenation index q * Cin + ci, q = dx + 2 dy
+        // level 0 -> level 1: X = q8(clamp(mC8 . merge2x2(in) + v188)), bias-first K = 32 chains through f16; the
+        // concatenation index q * Cin + ci, q = dx + 2 dy (Cin = 32: each chunk is one tap)
         for (uint i = 0u; i < npair; ++i) {
             uint p = tid + 256u * i;
             uint t = p / C, c = p % C;
             uint px = uint(refl(ox + int(t & 7u), W)), py = uint(refl(oy + int(t >> 3u), H));
             float z = vec16(11, c);
             uint mb = wbase(10);
-            for (uint j = 0u; j < 4u * Cin; ++j) {
-                uint q = j / Cin, ci = j % Cin;
-                uint x0 = 2u * px + (q & 1u), y0 = 2u * py + (q >> 1u);
-                z += wfp8(mb + frag_off(c, j, 4u * Cin)) * e4m3_dec(uint(in_act[pidx(ci, x0, y0, 2u * Wu, 2u * Hu)]));
+            for (uint j0 = 0u; j0 < 4u * Cin; j0 += 32u) {
+                float d = 0.0;
+                for (uint j = j0; j < j0 + 32u; ++j) {
+                    uint q = j / Cin, ci = j % Cin;
+                    uint x0 = 2u * px + (q & 1u), y0 = 2u * py + (q >> 1u);
+                    d += wfp8(mb + frag_off(c, j, 4u * Cin)) * e4m3_dec(uint(in_act[pidx(ci, x0, y0, 2u * Wu, 2u * Hu)]));
+                }
+                z = rh(z + d);
             }
-            s_a[t * CM + c] = float16_t(rh(z));
+            s_a[t * CM + c] = float16_t(q8f(clamp(z, -448.0, 448.0)));
         }
     } else if (mode == 2) {
-        // decoder: x = f16(up + f16(s1d6 * skip)); up = f16(mE8 . low + v1a0), row q * C + c, q = dx + 2 dy
+        // decoder: x = f16(up + f16(s1d6 * skip)), up = q8(clamp(f16(mE8 . low + v1a0))), row q * C + c, q = dx + 2 dy.
+        // Border tokens reflect in low-res space (model upref=low): the up value of the unreflected full-res token
+        // (tx, ty) comes from low-res pixel reflect(t >> 1) with parity t & 1; the skip is read at the reflected token.
         const float s6 = s1d(2);
         for (uint i = 0u; i < npair; ++i) {
             uint p = tid + 256u * i;
             uint t = p / C, c = p % C;
-            uint px = uint(refl(ox + int(t & 7u), W)), py = uint(refl(oy + int(t >> 3u), H));
-            uint q = (px & 1u) + 2u * (py & 1u);
-            uint lx = px >> 1u, ly = py >> 1u;
+            int tx = ox + int(t & 7u), ty = oy + int(t >> 3u);
+            uint lx = uint(refl(tx >> 1, W / 2)), ly = uint(refl(ty >> 1, H / 2));
+            uint q = uint(tx & 1) + 2u * uint(ty & 1);
             uint row = q * C + c;
             float u = vec16(13, row);
             uint mb = wbase(12);
-            for (uint k = 0u; k < Cup; ++k)
-                u += wfp8(mb + frag_off(row, k, Cup)) * e4m3_dec(uint(in_act[pidx(k, lx, ly, Wu / 2u, Hu / 2u)]));
+            for (uint k0 = 0u; k0 < Cup; k0 += 32u) {
+                float d = 0.0;
+                for (uint k = k0; k < k0 + 32u; ++k)
+                    d += wfp8(mb + frag_off(row, k, Cup)) * e4m3_dec(uint(in_act[pidx(k, lx, ly, Wu / 2u, Hu / 2u)]));
+                u = rh(u + d);
+            }
+            float upv = q8f(clamp(rh(u), -448.0, 448.0));
+            uint px = uint(refl(tx, W)), py = uint(refl(ty, H));
             float sk = e4m3_dec(uint(skip_act[pidx(c, px, py, Wu, Hu)]));
-            s_a[t * CM + c] = float16_t(rh(rh(u) + rh(s6 * sk)));
+            s_a[t * CM + c] = float16_t(rh(upv + rh(s6 * sk)));
         }
     } else {
         // 0, 3, 4: the input is the unit's own level
@@ -416,48 +441,61 @@ void main() {
     }
     barrier();
 
-    // ---- 2. attention, one head at a time (Q/V projections, logits, softmax, PV, Wo)
+    // ---- 2. attention, one head at a time (Q/V projections, logits, softmax, PV, Wo). acc starts at f16(v128) and takes
+    // a = f16(a + Wo_h ctx_h) per head (the model's head chain).
+    [[unroll]] for (uint i = 0u; i < 40u; ++i) {
+        if (i < npair) acc[i] = rh(vec16(3, (tid + 256u * i) % C));
+    }
     for (uint h = 0u; h < G; ++h) {
         const uint gb = wbase(0) + h * 64u * C;
         for (uint i = 0u; i < 16u; ++i) {
             uint p = tid + 256u * i;
             uint t = p >> 6u, j = p & 63u;
             float z = 0.0;
-            for (uint k = 0u; k < C; ++k)
-                z += e4m3_dec(uint(s_n[t * CM + k])) * wfp8(gb + frag_off(j, k, C));
+            for (uint k0 = 0u; k0 < C; k0 += 32u) {             // K = 32 chunks, each added through f16
+                float d = 0.0;
+                for (uint k = k0; k < k0 + 32u; ++k) d += e4m3_dec(uint(s_n[t * CM + k])) * wfp8(gb + frag_off(j, k, C));
+                z = rh(z + d);
+            }
             z = clamp(z, -448.0, 448.0);
             if (j < 32u) s_q[t * 32u + j] = float16_t(q8f(z));
-            else s_v[t * 32u + (j - 32u)] = float16_t(q8f(rh(z)));
+            else s_v[t * 32u + (j - 32u)] = float16_t(q8f(z));
         }
         barrier();
         if (tid < 64u) {
             const uint q = tid;
             const uint rb = wbase(1) + h * 8192u;
             float pe[64];
-            float e[64];
             [[unroll]] for (uint k = 0u; k < 64u; ++k) {
                 float d = 0.0;
                 for (uint j = 0u; j < 32u; ++j) d += float(s_q[q * 32u + j]) * float(s_q[k * 32u + j]);
                 pe[k] = nr_exp(d + wf16(rb + 2u * (q * 64u + k)));
-                e[k] = pe[k];
             }
-            // pair_sum16: adjacent pairs, f16 rounding at every level
-            [[unroll]] for (uint s = 0u; s < 32u; ++s) e[s] = rh(e[2u * s] + e[2u * s + 1u]);
-            [[unroll]] for (uint s = 0u; s < 16u; ++s) e[s] = rh(e[2u * s] + e[2u * s + 1u]);
-            [[unroll]] for (uint s = 0u; s < 8u; ++s) e[s] = rh(e[2u * s] + e[2u * s + 1u]);
-            [[unroll]] for (uint s = 0u; s < 4u; ++s) e[s] = rh(e[2u * s] + e[2u * s + 1u]);
-            [[unroll]] for (uint s = 0u; s < 2u; ++s) e[s] = rh(e[2u * s] + e[2u * s + 1u]);
-            e[0] = rh(e[0] + e[1]);
-            const float inv = rh(1.0 / max(e[0], 1e-4));
+            // the 64-key f16 tree (model smax=isa): key(kb, hh, ip, par) = 16 kb + 8 hh + 2 ip + par;
+            // T_hh = f16(f16(k0 + k1) + f16(k2 + k3)), U_ip = f16(T_0 + T_1), V(par) = f16(f16(U0 + U1) + f16(U2 + U3))
+            float vs[2];
+            [[unroll]] for (uint par = 0u; par < 2u; ++par) {
+                float U[4];
+                [[unroll]] for (uint ip = 0u; ip < 4u; ++ip) {
+                    const uint b0 = 2u * ip + par;
+                    float T0 = rh(rh(pe[b0] + pe[16u + b0]) + rh(pe[32u + b0] + pe[48u + b0]));
+                    float T1 = rh(rh(pe[8u + b0] + pe[24u + b0]) + rh(pe[40u + b0] + pe[56u + b0]));
+                    U[ip] = rh(T0 + T1);
+                }
+                vs[par] = rh(rh(U[0] + U[1]) + rh(U[2] + U[3]));
+            }
+            const float inv = rh(1.0 / rh(vs[0] + vs[1]));              // f16 reciprocal of the f16 total
             [[unroll]] for (uint k = 0u; k < 64u; ++k) s_p[q * 64u + k] = float16_t(q8f(rh(pe[k] * inv)));
         }
         barrier();
         for (uint i = 0u; i < 8u; ++i) {
             uint p = tid + 256u * i;
             uint t = p >> 5u, j = p & 31u;
-            float z = 0.0;
-            for (uint k = 0u; k < 64u; ++k) z += float(s_p[t * 64u + k]) * float(s_v[k * 32u + j]);
-            s_q[t * 32u + j] = float16_t(q8f(z));
+            // ctx = q8(f16(f16(P[:, :32] V[:32]) + P[:, 32:] V[32:])): two K = 32 key chains
+            float z1 = 0.0, z2 = 0.0;
+            for (uint k = 0u; k < 32u; ++k) z1 += float(s_p[t * 64u + k]) * float(s_v[k * 32u + j]);
+            for (uint k = 32u; k < 64u; ++k) z2 += float(s_p[t * 64u + k]) * float(s_v[k * 32u + j]);
+            s_q[t * 32u + j] = float16_t(q8f(rh(rh(z1) + z2)));
         }
         barrier();
         const uint wo = wbase(2);
@@ -468,51 +506,55 @@ void main() {
                 float d = 0.0;
                 for (uint j = 0u; j < 32u; ++j)
                     d += float(s_q[t * 32u + j]) * wfp8(wo + frag_off(c, 32u * h + j, 32u * G));
-                acc[i] += d;
+                acc[i] = rh(acc[i] + d);
             }
         }
         barrier();
     }
 
-    // ---- 3. X1 = f16(X + f16(s1d2 * f16(attn + v128)))
+    // ---- 3. X1 = f16(X + f16(s1d2 * a)), a = the head chain; the MLP accumulator starts at f16(b2)
     const float ls1 = s1d(0), ls2 = s1d(1);
     [[unroll]] for (uint i = 0u; i < 40u; ++i) {
         if (i < npair) {
             uint p = tid + 256u * i;
             uint t = p / C, c = p % C;
-            float a = rh(acc[i] + vec16(3, c));
-            float x1 = rh(float(s_a[t * CM + c]) + rh(ls1 * a));
+            float x1 = rh(float(s_a[t * CM + c]) + rh(ls1 * acc[i]));
             s_a[t * CM + c] = float16_t(x1);
             s_n[t * CM + c] = uint8_t(e4m3_enc(x1));
-            acc[i] = 0.0;
+            acc[i] = rh(vec16(7, c));
         }
     }
     barrier();
 
-    // ---- 4. MLP: 4C hidden in chunks of 64; out = clamp(X1 + f16(s1d4 * f16(h W2^T + b2)))
-    for (uint ch = 0u; ch < 4u * C / 64u; ++ch) {
-        for (uint i = 0u; i < 16u; ++i) {
-            uint p = tid + 256u * i;
-            uint t = p >> 6u, jj = p & 63u;
-            uint j = ch * 64u + jj;
-            float z = vec16(5, j);
-            uint mb = wbase(4);
-            for (uint k = 0u; k < C; ++k) z += e4m3_dec(uint(s_n[t * CM + k])) * wfp8(mb + frag_off(j, k, C));
-            s_h[t * 64u + jj] = float16_t(q8f(nh_gelu(z)));
-        }
-        barrier();
-        const uint mb2 = wbase(6);
-        [[unroll]] for (uint i = 0u; i < 40u; ++i) {
-            if (i < npair) {
+    // ---- 4. MLP per 32-hidden block jb: z = f16(b1 + K = 32 chunks of m68 . s_n), h = q8(nhgelu(z)), m = f16(m + h . W2_jb)
+    {
+        const uint mb = wbase(4), mb2 = wbase(6);
+        for (uint jb = 0u; jb < 4u * C / 32u; ++jb) {
+            for (uint i = 0u; i < 8u; ++i) {
                 uint p = tid + 256u * i;
-                uint t = p / C, c = p % C;
-                float d = 0.0;
-                for (uint jj = 0u; jj < 64u; ++jj)
-                    d += float(s_h[t * 64u + jj]) * wfp8(mb2 + frag_off(c, ch * 64u + jj, 4u * C));
-                acc[i] += d;
+                uint t = p >> 5u, jj = p & 31u;
+                uint j = jb * 32u + jj;
+                float z = vec16(5, j);
+                for (uint k0 = 0u; k0 < C; k0 += 32u) {
+                    float d = 0.0;
+                    for (uint k = k0; k < k0 + 32u; ++k) d += e4m3_dec(uint(s_n[t * CM + k])) * wfp8(mb + frag_off(j, k, C));
+                    z = rh(z + d);
+                }
+                s_h[t * 32u + jj] = float16_t(q8f(nh_gelu(z)));
             }
+            barrier();
+            [[unroll]] for (uint i = 0u; i < 40u; ++i) {
+                if (i < npair) {
+                    uint p = tid + 256u * i;
+                    uint t = p / C, c = p % C;
+                    float d = 0.0;
+                    for (uint jj = 0u; jj < 32u; ++jj)
+                        d += float(s_h[t * 32u + jj]) * wfp8(mb2 + frag_off(c, jb * 32u + jj, 4u * C));
+                    acc[i] = rh(acc[i] + d);
+                }
+            }
+            barrier();
         }
-        barrier();
     }
 
     // ---- 5. out. Units 0..14: fp8 store (in-range tokens) and s_a = q8(out), kept for the down projection and the
@@ -522,7 +564,7 @@ void main() {
         if (i < npair) {
             uint p = tid + 256u * i;
             uint t = p / C, c = p % C;
-            float mo = rh(acc[i] + vec16(7, c));
+            float mo = acc[i];                                         // m = f16(b2 + chains), from the MLP loop
             float x1 = float(s_a[t * CM + c]);
             int tx = ox + int(t & 7u), ty = oy + int(t >> 3u);
             bool in_range = tx >= 0 && tx < W && ty >= 0 && ty < H;
@@ -705,10 +747,14 @@ void main() {
                 uint ix = pos & 3u, iy = pos >> 2u;
                 float y = vec16(9, d);
                 uint mb = wbase(8);
-                for (uint j = 0u; j < 4u * C; ++j) {
-                    uint q = j / C, c = j % C;
-                    uint tk = (2u * iy + (q >> 1u)) * 8u + (2u * ix + (q & 1u));
-                    y += float(s_a[tk * CM + c]) * wfp8(mb + frag_off(d, j, 4u * C));
+                for (uint j0 = 0u; j0 < 4u * C; j0 += 32u) {          // bias first, then K = 32 chunks through f16
+                    float dd = 0.0;
+                    for (uint j = j0; j < j0 + 32u; ++j) {
+                        uint q = j / C, c = j % C;
+                        uint tk = (2u * iy + (q >> 1u)) * 8u + (2u * ix + (q & 1u));
+                        dd += float(s_a[tk * CM + c]) * wfp8(mb + frag_off(d, j, 4u * C));
+                    }
+                    y = rh(y + dd);
                 }
                 float dv = clamp(y, -6.28125, 6.28125);
                 int xd = ox / 2 + int(ix), yd = oy / 2 + int(iy);
