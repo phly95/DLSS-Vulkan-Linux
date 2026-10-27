@@ -31,8 +31,9 @@ ESTABLISHED BY THIS INSTRUMENT (self-check, see the report):
   * the 8 B/px extra outputs (O98) are four f16 per pixel, [N][4]; lane 3 is exactly 0 in every one
     the oracle writes in frame 1 (encoders, decoder _1 units, unit 15). The 2 B/px output (OA0) is one
     f16 per pixel (its values are not decoded).
-  * the render-resolution outputs of unit 15 (OC0/OC8/OD0/OD8) are not floats: their f32 views contain
-    values near 1e30 and denormals. Their layout is undecoded and they are scored as u32 words.
+  * the render-resolution outputs of unit 15 (OC0/OC8/OD0/OD8) ARE floats/bytes of the dec0
+    heads: OC0 = i8 x 4 (signed tanh bytes), OC8/OD0 = u8 x 4 (OC8 byte 3 = 0), OD8 = f16 x 4
+    (lane 3 = 0), all at Wr x Hr = Args +0xe0 x +0xe4 (256 x 144); decoded in the UNIT 15 SPEC below.
 
 FIRST HYPOTHESIS (every part switchable with --set; defaults are the best-stated choice, not tuned):
   * RMSNorm (no gain item exists in the RR blob)                          GUESS (norm=rms|sum)
@@ -47,16 +48,137 @@ FIRST HYPOTHESIS (every part switchable with --set; defaults are the best-stated
   * mode 2 (up): mE8 @ low + v1a0 (rows [q][c]), pixel-shuffled (up_pix), + skip before the block
   * mode 3 (dec*_1) and encoder heads: O98 lanes 0..2 = m108[:3] @ fp8(out) + v1b8, lane 3 = 0  GUESS
   * mode 5 (enc0): X = m1f8 @ act(m1d8 @ feat + v218) + v230, act = gelu                  GUESS
-  * mode 4 (dec0_1, last unit): no head weights exist. O98 lanes 0..2 = block output channels 0..2,
-    lane 3 = 0; OC0/OC8/OD0/OD8 (render resolution) are UNMODELLED (zeros).              GUESS
+  * mode 4 (dec0_1, last unit, unit 15): fully decoded, see the UNIT 15 SPEC below;
+    OC0/OC8/OD0/OD8 element types: OC0 = i8 x 4 (signed tanh bytes, scored as i8),
+    OC8/OD0 = u8 x 4 (byte 3 of OC8 is 0), OD8 = f16 x 4
+    (lane 3 is 0), all at render resolution Wr x Hr = Args +0xe0 x +0xe4 (256 x 144).
   * OA0 (2 B/px, one f16) is UNMODELLED (zeros) in every unit.
-  * the extra INPUTS (+0x88, +0x90) are not consumed by the first hypothesis.
+  * the extra INPUTS (+0x88, +0x90) are consumed only by the mode-3 and mode-4 heads.
 
-NOT DECODED (docs/notes/k_rr_level.md; open questions in the report): the block maths, whether the
-RMSNorm scale exists, the gram/Q-K assignment, the head's nonlinearity (the encoder head outputs are
-positive, see self-check/probe output), the meaning of OA0 and of the 8 B/px extras, the role of
-s1d0/s1d2/s1d4/s1d6 (Args +0xa8..+0xb4), the mode-2 head (present in the blob, no output), the
-dec0 scalars (Args +0xe8..+0xf7), and the render-resolution outputs of unit 15.
+NOT DECODED (docs/notes/k_rr_level.md; open questions in the report): the per-unit residuals of
+the shared block maths (the block_v2 decode itself, Review R7b), the meaning of OA0, the role of
+s1d2/s1d4/s1d6 (Args +0xac..+0xb4) beyond the LayerScale/skip uses stated above, the mode-2 head
+(present in the blob, no output).
+
+===============================================================================================
+UNIT 15 SPEC (mode 4, k_level<32,2,4,0,0,4>, blob15 = dec0_1; Review u15, 2026-10-26).
+Every formula, constant, rounding point and buffer encoding, read from the ISA listing
+build/work/review/rr/u15.s (stores 0x6c78 E0bd4, 0x7064 E0c16, 0x7070 E0c1a, 0x775c E0c02,
+0x790c E0c1e; the second pass, token y+4, mirrors them at 0x8078/0x8468/0x8474/0x8b3c/0x8cd4)
+and probe-fitted against the oracle dumps (channels U15_CHANS; see build/agents/rr-u15/).
+
+Block. The shared block_v2 runs on in = E0b80, but the heads read the block output as the f16
+  v_pk_add_f16 result - unit 15 stores no +0x78 buffer, so there is no +-448 clip and no fp8
+  roundtrip on this path (block_v2(..., fp8_out=False)).
+
+Inputs and scalars.
+  x88 = E0ba8 (Args +0x88): unit 0's o98, [H][W][4] f16 at level 0 (lane 3 is 0).
+  x90 = E0bd8 (Args +0x90): unit 13's o98, [H/2][W/2][4] f16 at level 1.
+  s1d0 = Args +0xa8 read as f16 (frame dumps: 2.30859375).
+  dec0_s0 = Args +0xe8 f32 (8.0 = min(exp(f16 table 0x1820), 8), rr_pack.build_w);
+  dec0_f0 = Args +0xec f32 (0.307675 = exp(f16 table 0x1830)); the packer's third dec0 scalar
+  (exp(f16 0x1840) = 1.126047) is not passed in Args and this kernel never reads it.
+  Render grid Wr x Hr = Args +0xe0 x +0xe4 (256 x 144); level-0 grid W x H = 256 x 160.
+  dy-half select: the kernel's vcc = (16 > tid) splits each 8-row window pass into rows
+  {0,1}/{2,3} (pass A) and {4,5}/{6,7} (pass B), i.e. dy0 <=> (y + sy) mod 4 < 2. Every head
+  slot reads the SAME block channel in both halves (verified: refits on each half agree).
+
+Shared non-linearities (rounding points explicit; f16() = RNE to f16, f32 ops as written).
+  sg(h) = f16( v_rcp_f32(1 + v_exp_f32(F32_NEG_L2E * f32(f16(h)))) ) with
+    F32_NEG_L2E = -log2e as f32 (0xbfb8aa3b) and v_exp_f32 = 2**y (correctly rounded via f64
+    in the model), rcp correctly rounded.
+  tanh(x) (x f32, sign preserved by bit merge):
+    |x| <= 0.625 (0x3f200000): mag = fma(y, v, |x|) with y = x*x, v = |x| * P(y),
+      P = ((((c0*y + c1)*y + c2)*y + c3)*y + c4) - five single-rounding fmaak steps,
+      c0..c4 = f32 0xbbbac73d, 0x3ca908c9, 0xbd5c1c4e, 0x3e088382, 0xbeaaaa99 (the tanh/x series);
+    else: a = 2|x|, t = f32(a * F32_LOG2E) (0x3fb8aa3b), k = rint(t),
+      eps = fma(F32_LOG2E, a, -t), tail = fma(a, F32_L2E_GAP, eps) (gap = 0x32a5705f =
+      log2e - f32(log2e)), frac = f32((t - k) + tail), e = ldexp(2**frac, k)
+      (2** underflow -> 0, > f32 max -> +inf, as the cndmask/ldexp chain does),
+      mag = fma(1/(1 + e), -2, 1);  result = signbit(x) * mag.
+  clamp65504(v) (the O98 store guard): NaN/+inf -> 65504 (0x7bff), else min(v, 65504) in f16
+    (-inf passes through, exactly like v_min_num + v_cndmask ordered/gt).
+
+E0bd4 (o98, Args +0x98, [H][W][4] f16, store 0x6c78 / 0x8078).
+  h_c = block output channel U15_CHANS[bd4_c] (channels 0..3), s_c = sg(h_c), s_3 = sg(h_3).
+  up_c = u15_up(x90[c]) - the same 2x bilinear as head_dec (Review R7c, up2_bilinear):
+    base = (p-1)>>1 (clamped; p <= 0 uses base 0 with weight 0), weight of base+1 =
+    0.75 (p even, f16 0x3a00) / 0.25 (p odd, 0x3400), forced 0 at borders where base+1 is
+    out of range; taps in the order (by,bx), (by,nx), (ny,bx), (ny,nx) of x90 at level-1
+    coordinates bx = (x-1)>>1, by = (y-1)>>1 (0 when the coordinate is 0), nx/ny clamped to
+    dim/2-1; f16 order: r = f16(f16((1-b)*f16((1-a)*t1) + (1-b)*f16(a*t2))
+    + f16(b*f16((1-a)*t3)) + f16(b*f16(a*t4))).
+  lanes c = 0..2: t = f16(f16(f16(s1d0 * s_c) * up_c) * s_3);  lane 3: t = 0 (the kernel's
+    literal 0 operand, no x90 read).
+  E0bd4[c] = clamp65504(f16(t + f16(f16(1 - s_3) * x88[c])))   (1 - s_3 in f16).
+  Lane 3 is identically 0 (x88[3] = 0). Encoding: [H*W][4] f16, little-endian, row-major.
+
+E0c16 (oc8, Args +0xc8, [Hr][Wr][4] u8, byte 3 = 0; store 0x7064 / 0x8468).
+  byte i = rndne(255 * f32(sg(block channel 4+i))) for i = 0, 1, 2, byte i = 0 if the f16
+  source is not ordered (never with finite block output); byte 3 = 0 (no store).
+  Encoding: u8 x 4 per pixel, row-major (element type u8).
+
+E0c1a (od0, Args +0xd0, [Hr][Wr][4] u8; store 0x7070 / 0x8474). Four-way softmax over block
+  channels 10..13, entirely in f16:
+    p = block channels, m = pairwise maximum of (p0, p1, p2, p3) with NaN propagation;
+    d_i = f16(p_i - m);  prod_i = f16(F16_LOG2E * d_i) (F16_LOG2E = f16 0x3dc5);
+    e_i = f16(2**f32(prod_i)), with the kernel's fix-up: if prod_i == f16 0x11c5 then e_i =
+      f16 0x3c01 (1.0009765625);
+    tot = f16(f16(e0 + e2) + f16(e1 + e3));  r = f16 reciprocal of tot;
+    byte_i = rndne(255 * f32(f16(e_i * r))), 0 if the f16 ratio is unordered (i = 0..3).
+  The four bytes sum to 253..257 in the oracle dumps. Encoding: u8 x 4, row-major.
+
+E0c02 (oc0, Args +0xc0, [Hr][Wr][4] signed i8; store 0x775c / 0x8b3c).
+  byte_i = rndne(127 * clamp(f32(f16(tanh(block channel 14+i))), -1, 1)) & 0xff (two's
+  complement), 0 if the f16 is unordered. The tanh is the shared one above; its f16 rounding
+  happens BEFORE the +-1 med3 (a no-op for finite tanh). Encoding: i8 x 4, row-major
+  (element type i8; byte-identical to a u8 comparison, decoded signed for PSNR).
+
+E0c1e (od8, Args +0xd8, [Hr][Wr][4] f16, lane 3 = 0; store 0x790c / 0x8cd4).
+  A = f32(dec0_s0) * sg(clamp(block channel 7, -20, 20)),  B = dec0_s0 * sg(clamp(ch 8, +-20))
+    (clamp bounds f16 0x4d00/0xcd00 = +-20; the x dec0_s0 product is plain f32);
+  lane0 = f16(A * A), lane1 = f16(B * B);
+  x = f32(dec0_f0) * f32(block channel 9); t = tanh(x) (f32);
+  bracket: b = bits(t) as u32; lo = f16(A * B * f32(b - 3)), hi = f16(A * B * f32(b + 3))
+    (u32 arithmetic = an +-3 f32-ulp reliability bracket);
+  lane2 = lo if lo == hi else f16(A * B * f32(tanh_f64(x))) - the kernel's f64 helper
+    (two v_cvt_f64_f32 blocks, taken when the bracket straddles an f16 rounding boundary,
+    ~0.1% of pixels; modelled with np.tanh in f64);
+  lane3 = 0. Encoding: [Hr*Wr][4] f16 little-endian, lane order A*A, B*B, A*B*tanh, 0.
+
+Channels (U15_CHANS): the heads read block channels 0..3 (E0bd4 h0..h3), 4..6 (E0c16 bytes
+  0..2), 7/8/9 (E0c1e A/B/p16), 10..13 (E0c1a bytes 0..3), 14..17 (E0c02 bytes 0..3) -
+  fitted channel-exact on frame 1's dy<2 half, reproduced on dy>=2 and on frame 0 (the same
+  channels; the per-pair half swap the cndmask/permlane chain suggests does NOT occur in the
+  oracle data - refits on each half always select the same channel).
+
+Residual (why the buffers stop short of 99%): the only uncertain input of every formula above
+  is the shared block_v2 output img. A patchprobe of the hardware (tools/re/patchprobe.py
+  --net rr, kernel+0x672c, storing the head's four sigma inputs v[28:29] into E0bd4, run
+  build/work/review/patch/runs/u15h) settled it on frame 0, pass A (50% of the pixels):
+    * channel identity: the stored h slots correlate 0.9999 with img channels 0..3 (runner-up
+      0.980..0.986) - the map U15_CHANS is hardware-exact;
+    * block error: probe h - img has mean ~0 (unbiased), median |d| 0.0024..0.0039, p90
+      0.021..0.030, max 0.17..0.26 - i.e. block_v2's output is off by ~1-3 f16 codes;
+    * head formula: recomputing E0bd4 from the PROBED h (+ the exact x88/x90/weights) matches
+      the oracle at 99.76% element-exact (lanes 0..2: 99.66..99.72%, lane 3: 100%), PSNR
+      112..121 dB - the ~0.24% residue is v_exp/v_rcp rounding vs the model's exp2/rcp.
+  Feeding the model's own img instead lands the buffers at 19.7..68.2 dB / 51..75% element-
+  exact: the whole gap is block_v2's output error (the same block that scores 34..45 dB on the
+  other 15 units), not the head formulas. Inverting E0c16's oracle gates to h-buckets gives the
+  same verdict (img inside the oracle bucket on 62..70% of pixels = the observed byte rates).
+    * u15g (kernel+0x672c, pairs v[22:23] for channels 4..7): sigma -> rndne(255*x)
+      reproduces E0c16 bytes 0..2 at 100.0000% and E0c1e's f16(A*A) at 100.0000% on the
+      dy>=2 rows; the slots identify as channels 4,5,6,7 at corr 0.997..0.9997.
+    * u15t (pairs for channels 14..17): the i8 tanh formula gives 100.0000% on E0c02 bytes
+      0..1; u15f (channels 10..13): slots 2,3 = channels 12,13 at corr 0.9945/0.9979.
+  Per-slot channel scans cross-validate on both dy halves and on frame 0 (a wrong channel fits
+  ~0% - e.g. the E0c1a half-swap scores 5.5% vs 73.4% for the fitted tuple - the fitted ones
+  fit 35..73% with consecutive channels 0..17). The render heads read channels through the
+  kernel's cndmask/permlane gathers: the raw WMMA pair registers hold lane-distributed
+  fragments (pre-gather probe reads therefore confirm only some slots), while the fitted net
+  map is what the oracle fits, the cross-half refits and the cross-frame check all validate.
+===============================================================================================
 """
 import argparse
 import json
@@ -178,7 +300,9 @@ def load_launch(frame, launch, dump=DUMP):
     items = list(struct.unpack_from("<20i", a, 0x28))
     blob_size = struct.unpack_from("<i", a, 0xb8)[0]
     scal = list(struct.unpack_from("<4I", a, 0xa8))
-    dec0 = list(struct.unpack_from("<2f", a, 0xe8))
+    # unit 15's render grid and dec0 scalars live at +0xe0 (Wr, Hr) / +0xe8 (s0, f0)
+    Wr, Hr = struct.unpack_from("<2i", a, 0xe0) if len(a) >= 0xe8 else (W, H)
+    dec0 = list(struct.unpack_from("<2f", a, 0xe8)) if len(a) >= 0xf0 else [0.0, 0.0]
     tmpl = parse_symbol(d["kernel"])
     ptr = {}
     for k, v in d["pointers"].items():
@@ -187,7 +311,7 @@ def load_launch(frame, launch, dump=DUMP):
             ptr[ROLE[off]] = v.split("+")[0]
     unit = k_level_launches(rows).index(launch)
     return dict(d=d, W=W, H=H, sx=sx, sy=sy, items=items, blob_size=blob_size, scal=scal, dec0=dec0,
-                tmpl=tmpl, ptr=ptr, unit=unit, frame_dir=Path(dump) / f"frame{frame}")
+                Wr=Wr, Hr=Hr, tmpl=tmpl, ptr=ptr, unit=unit, frame_dir=Path(dump) / f"frame{frame}")
 
 
 # ------------------------------------------------------------------ weights
@@ -366,8 +490,10 @@ def rmsnorm(x, cfg):
     return q8(s) if cfg["snorm8"] else s
 
 
-def block(X, Wt, cfg, H, W, sx, sy, C, g, attn_only=False, postattn=None):
-    """Windowed attention + MLP on the (H, W, C) tensor X. Returns (block output or None, post-attn)."""
+def block(X, Wt, cfg, H, W, sx, sy, C, g, attn_only=False, postattn=None, fp8_out=True):
+    """Windowed attention + MLP on the (H, W, C) tensor X. Returns (block output or None, post-attn).
+    fp8_out=True keeps the historic f32 sum clipped to +-448 (what the fp8 store path sees);
+    fp8_out=False returns the kernel's raw f16-rounded sum (unit 15's heads read it, no fp8 store)."""
     TX, TY = window_tokens(H, W, sx, sy)
     PX, PY = reflect(TX, W), reflect(TY, H)
     s_act = X[PY, PX].astype(np.float32)                          # (N, 16, C) residual tokens
@@ -385,7 +511,7 @@ def block(X, Wt, cfg, H, W, sx, sy, C, g, attn_only=False, postattn=None):
     h1 = np.asarray(s2 @ Wt["W1"].T + Wt["b1"], np.float32)
     h1 = q8(act_fn(h1, cfg["act"]))
     m = h1 @ Wt["W2"].T + Wt["b2"]
-    out = np.clip(X1 + m, -448, 448).astype(np.float32)
+    out = f16a(X1 + m) if not fp8_out else np.clip(X1 + m, -448, 448).astype(np.float32)
     return scatter(out, TX, TY, H, W, C), None
 
 
@@ -411,7 +537,7 @@ def pair_sum16(e):
     return e[..., 0]
 
 
-def block_v2(X, Wt, cfg, H, W, sx, sy, C, g, scal, attn_only=False, postattn=None):
+def block_v2(X, Wt, cfg, H, W, sx, sy, C, g, scal, attn_only=False, postattn=None, fp8_out=True):
     """Second hypothesis (Review R7): SR's decoded block adapted to the RR packer + ISA facts.
     8x8 windows, relpos bias = the packer's symmetrised 64x64 'gram' (x 2*sqrt(2), as SR's v258),
     V = K (f16), no RMSNorm gain (RR packs none), LayerScale: x += s1d2 * f16(attn + v128),
@@ -472,7 +598,10 @@ def block_v2(X, Wt, cfg, H, W, sx, sy, C, g, scal, attn_only=False, postattn=Non
     s2 = norm(X1)
     h1 = q8(act_fn(np.asarray(mm(s2, Wt["W1"]) + Wt["b1"], np.float32), cfg["act"]))
     mo = f16a(mm(h1, Wt["W2"]) + Wt["b2"])
-    out = np.clip(X1 + (f16a(np.float32(ls2) * mo) if cfg["ls"] else mo), -448, 448).astype(np.float32)
+    add = X1 + (f16a(np.float32(ls2) * mo) if cfg["ls"] else mo)
+    # fp8_out=True: the historic clip the fp8 store path sees (identical bytes: to_e4m3 saturates
+    # at 448 anyway). fp8_out=False: the kernel's v_pk_add_f16 result, which unit 15's heads read.
+    out = np.clip(add, -448, 448).astype(np.float32) if fp8_out else f16a(add)
     return scatter(out, TX, TY, H, W, C), None
 
 
@@ -570,6 +699,235 @@ def head_down2(o98):
     return np.minimum(f16a(f16a(a + b) + f16a(c + d)), np.float32(65504.0))
 
 
+# ------------------------------------------------------------------ unit 15 (mode 4) dec0 outputs
+# Read from the k_level<32,2,4,0,0,n> ISA (build/work/review/rr/u15.s): stores 0x6c78 (E0bd4),
+# 0x7064 (E0c16), 0x7070 (E0c1a), 0x775c (E0c02), 0x790c (E0c1e); pass B (token y+4) mirrors
+# 0x8078/0x8468/0x8474/0x8b3c/0x8cd4.  Every formula is spelled out in the module docstring.
+def _f32_of_bits(b):
+    return np.frombuffer(np.uint32([b & 0xFFFFFFFF]).tobytes(), np.float32)[0]
+
+
+def _f16_of_bits(b):
+    return np.frombuffer(np.uint16([b & 0xFFFF]).tobytes(), np.float16)[0]
+
+
+F32_LOG2E = _f32_of_bits(0x3FB8AA3B)        # v_exp scaling constant (f32 truncation of log2e)
+F32_NEG_L2E = _f32_of_bits(0xBFB8AA3B)      # -log2e in f32: sigmoid's exp argument multiplier
+F32_L2E_GAP = _f32_of_bits(0x32A5705F)      # log2e - F32_LOG2E: the tanh exp-branch tail constant
+F16_LOG2E = _f16_of_bits(0x3DC5)            # f16 multiplier of (p - max) in the softmax exp
+F16_CLAMP20 = np.float16(20.0)              # aniso pre-sigmoid clamp (+-0x4d00 / 0xcd00)
+TANH_C = tuple(_f32_of_bits(b) for b in (0xBBBAC73D, 0x3CA908C9, 0xBD5C1C4E, 0x3E088382, 0xBEAAAA99))
+TANH_POLY_MAX = _f32_of_bits(0x3F200000)    # 0.625: |x| <= -> polynomial, else exp branch
+F16_EXP_FIX_IN = 0x11C5                     # f16(log2e * d) == this -> the exp is forced to 0x3c01
+F16_EXP_FIX_OUT = _f16_of_bits(0x3C01)
+
+
+def _fma32(a, b, c):
+    """Single-rounding f32 fma(a*b + c): exact in f64, one rounding to f32 (the kernel's v_fma*)."""
+    return (np.float64(a) * np.float64(b) + np.float64(c)).astype(np.float32)
+
+
+def _exp2_32(y):
+    """v_exp_f32 = 2**y: correctly rounded through an f64 intermediate (negligible residual)."""
+    return np.exp2(np.asarray(y, np.float64)).astype(np.float32)
+
+
+def u15_sigmoid(h):
+    """The kernel's f16 sigmoid of an f32 f16-valued h: f16(v_rcp_f32(1 + 2**(F32_NEG_L2E * h)))."""
+    e = _exp2_32((np.float32(F32_NEG_L2E) * np.asarray(h, np.float32)).astype(np.float32))
+    s = (np.float32(1.0) + e).astype(np.float32)
+    r = (np.float64(1.0) / s.astype(np.float64)).astype(np.float32)      # correctly-rounded rcp
+    return r.astype(np.float16).astype(np.float32)
+
+
+def u15_tanh(x):
+    """NeuralHub's piecewise f32 tanh (sign preserved):
+    |x| <= 0.625: sign(x) * fma(y, fma(y, fma(y, fma(y, fma(c0*y + c1)... + c4))) * |x|, |x|)
+        with y = x*x and every step a single-rounding fma (the v_fmaak chain);
+    else:        sign(x) * fma(rcp, -2, 1) with rcp = 1/(1 + 2**(2|x|*log2e + the
+        (log2e - f32 log2e) tail), both roundings fused as in the ISA."""
+    x = np.asarray(x, np.float32)
+    ax = np.abs(x)
+    y = (ax * ax).astype(np.float32)
+    c0, c1, c2, c3, c4 = TANH_C
+    p = _fma32(c0, y, c1)
+    p = _fma32(y, p, c2)
+    p = _fma32(y, p, c3)
+    p = _fma32(y, p, c4)
+    poly = _fma32(y, (ax * p).astype(np.float32), ax)
+
+    a = (ax + ax).astype(np.float32)
+    t = (np.float32(F32_LOG2E) * a).astype(np.float32)
+    k = np.rint(t)
+    eps = _fma32(np.float32(F32_LOG2E), a, -t)
+    tail = _fma32(a, np.float32(F32_L2E_GAP), eps)
+    frac = ((t - k) + tail).astype(np.float32)
+    with np.errstate(over="ignore"):
+        e2 = np.ldexp(_exp2_32(frac), k.astype(np.int32))
+    s = (np.float32(1.0) + e2).astype(np.float32)
+    rcp = (np.float64(1.0) / s.astype(np.float64)).astype(np.float32)
+    expb = _fma32(rcp, np.float32(-2.0), np.float32(1.0))           # v_fma rcp, -2, 1
+    mag = np.where(ax <= TANH_POLY_MAX, poly, expb)
+    return np.copysign(mag, x).astype(np.float32)
+
+
+def u15_clamp65504(v):
+    """The kernel's store clamp: NaN/overflowing -> 65504, else min(v, 65504) in f16 (values are
+    f16-representable; -inf passes through, +inf/NaN become 65504, exactly as v_cndmask/v_min_num)."""
+    v = np.asarray(v, np.float32)
+    m = np.float32(65504.0)
+    return np.where(np.isnan(v) | ~(m > v), m, np.minimum(v, m)).astype(np.float32)
+
+
+def u15_up(ch, x, y):
+    """The dec0 bilinear 2x read of x90 at level-1 pixel (x, y): identical to up2_bilinear (Review
+    R7c) - base = (p-1)>>1, weight of base+1 = 0.75 (p even) / 0.25 (p odd), 0 at borders with the
+    base clamped (ISA constants 0x3a00 = 0.75, 0x3400 = 0.25); taps (by,bx),(by,nx),(ny,bx),(ny,nx),
+    f16 order r = f16(f16((1-b)*t1 + (1-b)*a*t2) + b*(1-a)*t3 + b*a*t4) as in head_dec."""
+    h2, w2 = ch.shape[:2]
+
+    def axis(p, n2):
+        base = (p - 1) >> 1
+        w = np.where(p % 2 == 0, np.float32(0.75), np.float32(0.25))
+        bad = (base < 0) | (base + 1 >= n2)
+        w = np.where(bad, np.float32(0.0), w)
+        b0 = np.clip(base, 0, n2 - 1)
+        return b0.astype(np.int64), np.clip(b0 + 1, 0, n2 - 1).astype(np.int64), w.astype(np.float32)
+
+    bx, nx, a = axis(x, w2)
+    by, ny, b = axis(y, h2)
+    t1 = ch[by, bx]
+    t2 = ch[by, nx]
+    t3 = ch[ny, bx]
+    t4 = ch[ny, nx]
+    one = np.float32(1.0)
+    r = f16a(f16a((one - b) * f16a((one - a) * t1)) + f16a((one - b) * f16a(a * t2)))
+    r = f16a(r + f16a(b * f16a((one - a) * t3)))
+    return f16a(r + f16a(b * f16a(a * t4)))
+
+
+def _u8byte(v255, valid):
+    """rndne(255 * v) to a byte, 0 where !valid (the kernel's cmp_o guard on the f16 source)."""
+    b = np.rint(np.asarray(v255, np.float64))
+    b = np.where(valid, b, 0.0)
+    return np.clip(b, -128, 255).astype(np.int64) & 0xFF
+
+
+def _softmax4(p):
+    """The E0c1a factors: p (H,W,4) f32 of f16 -> (H,W,4) uint8, all f16 roundings as in the ISA."""
+    m = np.maximum(np.maximum(p[..., 0], p[..., 1]), np.maximum(p[..., 2], p[..., 3]))
+    d = f16a(p - m[..., None])
+    prod = f16a(np.float32(F16_LOG2E) * d)
+    pb = prod.astype(np.float16).view(np.uint16)
+    with np.errstate(over="ignore"):
+        e = _exp2_32(prod).astype(np.float16)
+    e = np.where(pb == F16_EXP_FIX_IN, np.float16(F16_EXP_FIX_OUT), e)
+    ef = e.astype(np.float32)
+    tot = f16a(f16a(ef[..., 0] + ef[..., 2]) + f16a(ef[..., 1] + ef[..., 3]))
+    rcp = (np.float64(1.0) / tot.astype(np.float64)).astype(np.float16).astype(np.float32)
+    ratio = f16a(ef * rcp[..., None])
+    valid = ~np.isnan(ratio.astype(np.float16))
+    return _u8byte(np.float32(255.0) * ratio, valid).astype(np.uint8)
+
+
+# The logical block-output channels (0..31 of img) each head slot reads, as (dy<2, dy>=2) pairs.
+# dy<2 = (y + sy) mod 4 < 2 selects tid < 16's halves; the kernel swaps each pair's halves for the
+# other half-window (v_cndmask vcc = 16 > tid), which the fitted values must (and do) reproduce.
+# Fitted channel-exact against the oracle on frame 1 (dy<2), cross-validated on dy>=2 and on frame 0
+# (see the report); the channel identity is a property of the blob's weights, i.e. frame-invariant.
+U15_CHANS = {
+    # E0bd4 o98 blend gates: sigma(h_0..h_3) of block channels 0..3
+    "bd4_0": (0, 0),
+    "bd4_1": (1, 1),
+    "bd4_2": (2, 2),
+    "bd4_3": (3, 3),
+    # E0c16 gates bytes 0..2: block channels 4, 5, 6 (byte 3 = 0)
+    "g0": (4, 4),
+    "g1": (5, 5),
+    "g2": (6, 6),
+    # E0c1a softmax bytes 0..3: block channels 10..13
+    "f0": (10, 10),
+    "f1": (11, 11),
+    "f2": (12, 12),
+    "f3": (13, 13),
+    # E0c02 i8 tanh bytes 0..3: block channels 14..17
+    "t0": (14, 14),
+    "t1": (15, 15),
+    "t2": (16, 16),
+    "t3": (17, 17),
+    # E0c1e aniso: sigma(clamp(p14)), sigma(clamp(p15)) = ch 7, 8; tanh(f0*p16) = ch 9
+    "aA": (7, 7),
+    "aB": (8, 8),
+    "p16": (9, 9),
+}
+
+
+def unit15_outputs(img, x88, x90, chans, Hr, sy, s1d0, f0, s0):
+    """img (H, W, 32) f16-valued block output; x88 (H, W, 4) f16; x90 (H/2, W/2, 4) f16;
+    chans: slot -> ((ch_dy0, ch_dy1), ...) with the two dy-half channels (ISA pair-swap);
+    Hr: render height (Args +0xe4); returns (o98 f16, oc0 u8, oc8 u8, od0 u8, od8 f16) images."""
+    H, W, C = img.shape
+    dy0 = ((np.arange(H)[:, None] + sy) % 4 < 2)                   # tid < 16 (window row mod 4 < 2)
+
+    def pick(slot):
+        lt, ge = chans[slot][0], chans[slot][1]
+        sel = np.where(dy0, np.int64(lt), np.int64(ge))[..., None]
+        return np.take_along_axis(img, sel, axis=-1)[..., 0]
+
+    # ---- E0bd4: o98, the dec0 decoder head (store 0x6c78 / pass B 0x8078), full level-0 grid
+    h = [pick(f"bd4_{i}") for i in range(4)]
+    sg = [u15_sigmoid(v) for v in h]
+    gate = sg[3]
+    inv = f16a(np.float32(1.0) - gate)
+    yy, xx = np.mgrid[0:H, 0:W]
+    o98 = np.zeros((H, W, 4), np.float32)
+    for c in range(4):
+        kk = f16a(np.float32(s1d0) * sg[c]) if c < 3 else np.float32(0.0)
+        # lane 3's coefficient is the literal 0 (v_mul_f16 0, gate): no x90 read at all
+        prod = np.float32(0.0) if c == 3 else f16a(kk * u15_up(x90[..., c], xx, yy))
+        t = f16a(prod * gate)
+        o98[..., c] = u15_clamp65504(f16a(t + f16a(inv * x88[..., c])))
+
+    # ---- render-resolution outputs (rows 0..Hr-1): guards y < Hr, x < Wr (all model pixels pass)
+    r = slice(0, Hr)
+    oc0 = np.zeros((Hr, W, 4), np.uint8)                            # E0c02: 4 x i8 tanh (store 0x775c)
+    for c in range(4):
+        th = u15_tanh(pick(f"t{c}")[r]).astype(np.float16)
+        v = np.clip(th.astype(np.float32), np.float32(-1.0), np.float32(1.0))
+        oc0[..., c] = _u8byte(np.float32(127.0) * v, ~np.isnan(th)).astype(np.uint8)
+
+    sg16 = [u15_sigmoid(pick(f"g{i}")[r]) for i in range(3)]        # E0c16: gates (store 0x7064)
+    oc8 = np.zeros((Hr, W, 4), np.uint8)
+    for c in range(3):
+        oc8[..., c] = _u8byte(np.float32(255.0) * sg16[c], ~np.isnan(sg16[c].astype(np.float16)))
+    oc8[..., 3] = 0
+
+    od0 = _softmax4(np.stack([pick(f"f{i}")[r] for i in range(4)], -1))   # E0c1a (store 0x7070)
+
+    # ---- E0c1e: aniso (store 0x790c), 4 x f16 with lane 3 = 0
+    pA = np.clip(pick("aA")[r], -20.0, 20.0)
+    pB = np.clip(pick("aB")[r], -20.0, 20.0)
+    pT = pick("p16")[r]
+    A = (np.float32(s0) * u15_sigmoid(pA)).astype(np.float32)
+    B = (np.float32(s0) * u15_sigmoid(pB)).astype(np.float32)
+    l0 = f16a(A * A)
+    l1 = f16a(B * B)
+    x = (np.float32(f0) * pT).astype(np.float32)
+    t = u15_tanh(x)
+    ab = (A * B).astype(np.float32)
+    tb = t.view(np.uint32)
+    vlo = f16a(ab * (tb - np.uint32(3)).view(np.float32))
+    vhi = f16a(ab * (tb + np.uint32(3)).view(np.float32))
+    l2 = np.where(vlo == vhi, vlo,
+                  f16a(ab * np.tanh(x.astype(np.float64)).astype(np.float32))).astype(np.float32)
+    od8 = np.zeros((Hr, W, 4), np.float32)
+    od8[..., 0] = l0
+    od8[..., 1] = l1
+    od8[..., 2] = l2
+    od8[..., 3] = 0.0
+    return o98, oc0, oc8, od0, od8.astype(np.float16).astype(np.float32)
+
+
 def model_unit(L, blobbytes, cfg, inputs, Wt):
     """Returns (outs: role -> (raw bytes, dtype)), (hyp: notes)."""
     tm = L["tmpl"]
@@ -602,9 +960,11 @@ def model_unit(L, blobbytes, cfg, inputs, Wt):
     attn_only = bool(inputs.get("attn_only"))
     if cfg["blk"] == "v2":
         scal = [float(np.array([v & 0xFFFF], np.uint16).view(np.float16)[0]) for v in L["scal"]]
-        img, _ = block_v2(X, Wt, cfg, H, W, sx, sy, C, g, scal, attn_only=attn_only, postattn=postattn)
+        img, _ = block_v2(X, Wt, cfg, H, W, sx, sy, C, g, scal, attn_only=attn_only,
+                          postattn=postattn, fp8_out=(mode != 4))
     else:
-        img, _ = block(X, Wt, cfg, H, W, sx, sy, C, g, attn_only=attn_only, postattn=postattn)
+        img, _ = block(X, Wt, cfg, H, W, sx, sy, C, g, attn_only=attn_only, postattn=postattn,
+                       fp8_out=(mode != 4))
     if mode == 2 and cfg["skip_at"] in ("after", "both"):
         img = np.clip(img + inputs["skip"], -448, 448)
     if attn_only:
@@ -634,12 +994,20 @@ def model_unit(L, blobbytes, cfg, inputs, Wt):
             outs["o98"] = (o98.reshape(-1, 4).astype(np.float16).tobytes(), "f16")
             notes.append(f"head ({nh} rows) -> O98 (GUESS)")
     if mode == 4:
-        o98 = np.zeros((H, W, 4), np.float32)
-        if cfg["mode4_guess"]:
-            o98[..., :3] = img[..., :3]
+        # The dec0 unit's five outputs (Review u15, spec in the module docstring). The block
+        # output is the f16 pk_add result (fp8_out=False above); the heads read it directly.
+        s1d0 = float(np.array([L["scal"][0] & 0xFFFF], np.uint16).view(np.float16)[0])
+        s0, f0 = float(L["dec0"][0]), float(L["dec0"][1])            # Args +0xe8 / +0xec
+        o98, oc0, oc8, od0, od8 = unit15_outputs(img, inputs["x88"], inputs["x90"], U15_CHANS,
+                                                 L["Hr"], L["sy"], s1d0, f0, s0)
         outs["o98"] = (o98.reshape(-1, 4).astype(np.float16).tobytes(), "f16")
-        notes.append("mode 4 (GUESS): O98 lanes 0..2 = block output channels 0..2 (no head weights exist), "
-                     "lane 3 = 0; OC/OD unmodelled")
+        outs["oc0"] = (oc0.tobytes(), "i8")                          # E0c02: 4 x i8 tanh (signed)
+        outs["oc8"] = (oc8.tobytes(), "u8")                          # E0c16: 3 gates + 0
+        outs["od0"] = (od0.tobytes(), "u8")                          # E0c1a: 4-way softmax
+        outs["od8"] = (od8.reshape(-1, 4).astype(np.float16).tobytes(), "f16")   # E0c1e aniso + 0
+        notes.append("mode 4 dec0 heads (Review u15): O98 = s1d0*sg*s3 blend with x88 + x90 bilinear; "
+                     "OC0/OC8/OD0/OD8 = tanh-i8 / gates / softmax / aniso from block channels "
+                     "U15_CHANS")
     if mode == 5:
         notes.append("mode 5 OA0 unmodelled")
     return outs, notes
@@ -776,7 +1144,7 @@ def model_launch(frame, launch, cfg, out_dir=None, attn_only=None, inject=None, 
             outs[role] = (bytes(len(oracle_raw)), dt, "UNMODELLED (zeros)")
         raw, dt = outs[role][0], outs[role][1]
         tag = outs[role][2] if len(outs[role]) > 2 else ""
-        if role in ("oc0", "oc8", "od0", "od8"):
+        if role in ("oc0", "oc8", "od0", "od8") and dt == "u32":
             tag = (tag + " " if tag else "") + "layout undecoded: scored as u32 words"
         if out_dir:
             Path(out_dir).mkdir(parents=True, exist_ok=True)
