@@ -55,7 +55,7 @@ ORACLE = REPO / "build/oracle/oracle-8dbf027a9e-s20261025"
 P = np.array([0, 1, 16, 17, 2, 3, 18, 19, 4, 5, 20, 21, 6, 7, 22, 23,
               8, 9, 24, 25, 10, 11, 26, 27, 12, 13, 28, 29, 14, 15, 30, 31])
 IP = np.argsort(P)
-DEFAULTS = dict(deperm=1, snorm8=1, qk8=1, ctx8=1, prob8=0, v8=0, proj_in="fp8", proj_clamp="6.28125", maxsub=0, ss16=0, rs16=0, acc16=0, relT=0, relrot=0, act="nhgelu",
+DEFAULTS = dict(deperm=1, snorm8=1, qk8=1, ctx8=1, prob8=0, v8=0, proj_in="fp8", proj_clamp="6.28125", maxsub=0, ss16=0, rs16=0, acc16=0, relT=0, relrot=0, qq=0, act="nhgelu",
                 up_order="qc", up_pix="xy", skip_at="before")
 
 
@@ -262,6 +262,8 @@ def run_stage(X, Wt, W, H, sx, sy, tile, cfg, skip=None, low=None, attn_only=Fal
             Q, K = q8(Q), q8(K)
         if cfg["v8"]:
             V = q8(V)
+        if cfg["qq"]:                             # RR's form (k_rr_level Review R7b): logits Q.Q^T
+            K = Q
         logits = np.einsum("nqc,nkc->nqk", Q, K) + rel[None]
         if cfg.get("_stats") is not None:
             cfg["_stats"].append((float(logits.max()), float((logits > 32.4).mean()), float((logits < -32.4).mean())))

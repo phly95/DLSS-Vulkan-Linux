@@ -1354,3 +1354,22 @@ From the all-stage isolate probe (inputs from the probe's own dump), attention a
 (each head alone 27.3-32.6 dB, head 3 worst) and **attention at tube 5 on real inputs**. Neither
 is logit saturation (no |logit| > 32.4 on real inputs; max-subtraction does not help) or an f16
 overflow of the RMSNorm sum (max per-token sum x^2 is 2,644). Not yet explained.
+
+### Review R8 (2026-10-26): SR attention is Q.Q^T as well. The stage family reaches 34-43 dB per launch
+
+The RR decode (docs/notes/k_rr_level.md Review R7b, read off the hardware with patchprobe) showed
+k_level's logits are Q.Q^T + relpos, with rows 32..63 as V. The SR model with the same form
+(`--set qq=1`: logits Q.Q^T, V = rows 32..63 in f16, as before):
+
+| launch (output) | qq=0 f0 | **qq=1 f0** | **qq=1 f1** |
+|---|---:|---:|---:|
+| 3 (t1 / t2) | 35.26 / 32.02 | 37.74 / 34.01 | 41.85 / 36.71 |
+| 4 (t3 / t4) | 30.60 / 23.27 | 41.75 / 31.78 | 41.36 / 32.29 |
+| 5-9 (tubes 0-4) | 25.85-29.77 | 39.80-41.80 | 41.71-42.96 |
+| 10 (tube 5) | 18.66 | 34.41 | 35.11 |
+| 11 / 12 (t7 / t8) | 27.11 / 29.42 | 36.22 / 34.39 | 34.05 / 35.12 |
+
+This closes most of the "stage 1 / tube" residuals (Review R2): the 4-head instantiations were
+the ones Q.K could not fit. fp8 P@V (`v8`, `prob8`) is worse for SR, consistent with its 8 f16
+WMMAs. The default stays `qq=0` until the coopmat rewrite in progress is merged; then the model
+default and both shaders change together (one line each: the logit operand K -> Q).
