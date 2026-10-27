@@ -118,3 +118,50 @@ because the bilinear history/MV path measures best while `k_sr_dec0` is still wr
 extend the invented parts to any other kernel, do not cite them as decoded, and do not present
 the end-to-end number as a parity milestone - it is now, deliberately, lower than it was before
 the network was connected.
+
+## Review R5 (2026-10-26): structure map from the ISA, and a hardware-exact intermediate-value probe
+
+**Instrument: `tools/re/patchprobe.py`.** It overwrites a few instructions of the code object that
+srref runs with "store register vX to an output buffer at a per-thread address; s_endpgm", runs
+srref, and leaves the value in the dump. The texture filtering and every rounding are the hardware's
+own. `tools/re/live.py` checks that a register still holds its value at the patch point.
+Validated: patching the full15 store itself reproduces the oracle's pixel-0 rows at 100%. SSA
+listing (git-ignored): `build/work/review/post/post.ssa` (`tools/re/ssa.py build/k_sr_post.s`).
+
+**Layout.** Each thread handles 2 output pixels in y (rows 2r and 2r+1). Pixel 0's path runs from
+0x5f0 to the stores at 0x25e8/0x25f4; pixel 1's path follows from 0x26ac. The pixel-0 path
+computes the spatial filter for both pixels at once, in the lo/hi halves of packed f16.
+
+1. **Staging (to 0x578).** 192 threads stage a 12 x 16 source tile, clamped to the image, into LDS
+   at 24 bytes per pixel (row stride 0x120):
+   - tm(R), tm(G), tm(B), where `tm(c) = 0.36 * log10(max(1 + 100 * min(c*e, 32752), 1e-4))`,
+     e = `expo` (1 if 0), rounded to f16 (`v_fma_mix*`);
+   - T[factor bytes 0..2] and T[gate bytes 0..2], where T is the code object's embedded u8 -> f16
+     table (`s_getpc + 0x5df4`; the port's `sr_unorm8_table` builds it);
+   - f16(-0.7213 * Axx), f16(-0.7213 * Ayy), f16(-1.4427 * Axy) from `aniso`.
+     The constants are -0.5*log2(e) and -log2(e).
+2. **Spatial filter (0x868-0xf00).** A Gaussian splat over the 3 x 3 source neighbours. Tap
+   weight `exp2(a dx^2 + b dy^2 + c dx dy)` uses the SOURCE pixel's coefficients, with dx, dy the
+   output position minus the source centre, and offsets -1/0/+1 in f16. The quadratic forms and
+   the weighted colour sums are packed f16; the weights are f32 `v_exp_f32`, normalized by their
+   f32 sum. The same pass accumulates three scores, one per motion-vector candidate.
+3. **MV choice (0xef4-0xf68).** The scores rank three candidates: `mv_nondil` sampled through its
+   texture at the pixel (`image_sample_lz`, args +0x60), `prev_mvec1` (+0x48) and `mv_ero`
+   (+0x50). Reprojected position = pixel position + the best MV; on-screen test against W15/H15.
+4. **History (0x1290-0x15d0).** 5-tap Catmull-Rom at the reprojected position (fraction weights
+   with the 1.5 / 2.5 constants, combined into 5 bilinear `image_sample_lz` of `ihist`, args
+   +0x38), normalized by the weight sum. If the position is off-screen, the tonemapped raw `g_col`
+   at the nearest source pixel is used instead.
+5. **Second candidate (0x15d4-~0x1e00).** Confidences `clamp(1.1*s - 0.05, 0, 1)` for the top two
+   scores. If the runner-up's normalized share exceeds 1/255 (`0x3b808081`), the same history fetch
+   runs at the second MV (Catmull-Rom set at 0x19ec) and the two are mixed.
+6. **Blend and outputs (~0x1e00-0x25f4).**
+   - The gate/factor blend uses `dec0_f1` (args +0xa8), then the inverse tonemap: clamp to
+     [1e-4, 3.0], `10^(x/0.36)` via exp2, then `(... - 1) * 0.01`.
+   - NaN guards (`v_cmp_u/o`).
+   - full15 = R11G11B10 (`med3` clamps to 2047 / 1023, `v_cvt_u32`, `v_or3`).
+   - ihist1 = f16 x 4 (`v_perm` pack).
+   - dhist (a 2 x 2 average at half resolution) after pixel 1.
+
+The current shader's invented parts (the bilinear MV warp, the bilinear history, the discard test)
+are therefore all wrong in kind: MV candidate selection, Catmull-Rom history, a two-candidate mix.
