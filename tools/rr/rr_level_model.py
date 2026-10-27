@@ -88,7 +88,7 @@ ROLE = {0x10: "in", 0x18: "skip", 0x20: "blob", 0x78: "out", 0x80: "down", 0x88:
         0x98: "o98", 0xa0: "oa0", 0xc0: "oc0", 0xc8: "oc8", 0xd0: "od0", 0xd8: "od8"}
 OUT_ROLES = ("out", "down", "o98", "oa0", "oc0", "oc8", "od0", "od8")
 DEFAULTS = dict(
-    norm="rms",            # rms: x / sqrt(mean x^2 + 2^-14) (unit gain); sum: SR's x / sqrt(sum x^2 + 2^-14)
+    norm="none",           # rms: x / sqrt(mean x^2 + 2^-14) (unit gain); sum: SR's x / sqrt(sum x^2 + 2^-14)
     snorm8=1,              # RMSNorm output to fp8 (SR default)
     qk="sep",              # sep: logits Q K^T;  gram: logits z^T G z with z = [Q; K] and G = gram[h]
     qk_order="qk",         # qk: rows 0..31 of the group are Q, 32..63 are K;  kq: the other way
@@ -96,7 +96,7 @@ DEFAULTS = dict(
     qk8=1, ctx8=1,         # Q,K (or z) and the attention context to fp8 (SR defaults)
     prob8=0, v8=0,         # probabilities / V to fp8 (SR: off)
     exp="nr",              # nr: SR's ISA-derived exp; exact: np.exp
-    act="gelu",            # gelu (tanh form) | silu | erfgelu | nr    (the MLP activation)
+    act="nhgelu",          # gelu (tanh form) | silu | erfgelu | nr    (the MLP activation)
     v128="after_attn",     # after_attn: v128 added to the post-attention residual; off: not added
     entry_act="none",      # mode 1 entry merge (mC8): none | gelu     GUESS
     enc0_act="gelu",       # mode 5: act between m1d8 and m1f8        GUESS
@@ -106,8 +106,8 @@ DEFAULTS = dict(
     up_pix="xy",           # sub-pixel q -> (dx, dy): xy: q = dx + 2 dy (the merge order); yx: q = dy + 2 dx
     skip_at="before",      # mode 2: skip added before the block (before) | after | both | none
     mode4_guess=1,         # 1: mode 4's O98 lanes 0..2 = block output channels 0..2; 0: zeros   GUESS
-    blk="v1",              # v1: the first hypothesis (4x4 windows, no LayerScale); v2: block_v2 (Review R7)
-    relpos=1, den16=1, ls=1, acc16=0,   # block_v2: relpos bias, f16 softmax den + rcp, LayerScale, f16 K-chunk sums
+    blk="v2",              # v1: the first hypothesis (4x4 windows, no LayerScale); v2: block_v2 (Review R7)
+    relpos=1, den16=1, ls=1, acc16=0, lscale=1.0, qq=1, pv8=1, skip_mix="s6skip",   # block_v2: relpos bias, f16 softmax den + rcp, LayerScale, f16 K-chunk sums
 )
 
 
@@ -444,15 +444,24 @@ def block_v2(X, Wt, cfg, H, W, sx, sy, C, g, scal, attn_only=False, postattn=Non
     for h in range(g):
         Wh = LUT[Wt["groups"][h]]
         Q = q8(np.clip(mm(sn, Wh[:32]), -448, 448)); Kf = f16a(np.clip(mm(sn, Wh[32:]), -448, 448)); K8 = q8(Kf)
+        if cfg["qq"]:
+            # Review R7b (patchprobe on rrref, unit 2): BOTH logit WMMA operands hold rows 0..31's
+            # projection - the logits are Q.Q^T + relpos (symmetric; the packer symmetrises relpos
+            # to match) and rows 32..63 are the VALUE projection.
+            K8 = Q
         rel = np.frombuffer(Wt["gram"][h].tobytes(), np.float16).astype(np.float32).reshape(64, 64)
-        logits = np.einsum("nqc,nkc->nqk", Q, K8) + (rel[None] if cfg["relpos"] else 0.0)
+        logits = np.float32(cfg["lscale"]) * np.einsum("nqc,nkc->nqk", Q, K8) + (rel[None] if cfg["relpos"] else 0.0)
         pe = nr_swin_exp(logits)
         if cfg["den16"]:
             inv = f16a(1.0 / np.maximum(pair_sum16(f16a(pe)), np.float32(1e-4)))
         else:
             inv = np.float32(1.0) / np.maximum(pe.sum(-1), np.float32(1e-4))
         prob = f16a(f16a(pe) * inv[..., None]) if cfg["den16"] else pe * inv[..., None]
-        ctx = q8(np.einsum("nqk,nkc->nqc", prob, Kf))
+        if cfg["pv8"]:                       # RR's P @ V is an fp8 WMMA (the RR kernels have no f16 WMMA)
+            prob, Vv = q8(prob), K8 if not cfg["qq"] else q8(Kf)
+        else:
+            Vv = Kf
+        ctx = q8(np.einsum("nqk,nkc->nqc", prob, Vv))
         attn += mm(ctx, LUT[Wt["m48"][:, 32 * h:32 * h + 32]])
     a = f16a(attn + Wt["v128_f"])
     X1 = f16a(s_act + (f16a(np.float32(ls1) * a) if cfg["ls"] else a))
@@ -514,7 +523,12 @@ def model_unit(L, blobbytes, cfg, inputs, Wt):
         notes.append("mode 1 entry merge (GUESS act): mC8 @ merge2x2(in) + v188")
     elif mode == 2:                                                # decoder: up from the level below, + skip
         X = upsample(inputs["in"], Wt, cfg, H, W, C)
-        if cfg["skip_at"] in ("before", "both"):
+        s6 = float(np.array([L["scal"][3] & 0xFFFF], np.uint16).view(np.float16)[0])
+        if cfg["skip_mix"] == "s6skip":          # x = up + s1d6 * skip
+            X = f16a(X + f16a(np.float32(s6) * inputs["skip"]))
+        elif cfg["skip_mix"] == "s6up":          # x = s1d6 * up + skip
+            X = f16a(f16a(np.float32(s6) * X) + inputs["skip"])
+        elif cfg["skip_at"] in ("before", "both"):
             X = (X + inputs["skip"]).astype(np.float16).astype(np.float32)
     else:                                                          # 0, 3, 4
         X = inputs["in"]

@@ -136,3 +136,45 @@ numerically inert at x0 and x4 alike. The f16 K-chunk accumulation (`acc16`) is 
 encoder residual is uniform over windows and in-window positions, so it is not a border or
 shift effect. Open: the encoders' attention gap (next instrument: patchprobe on rrref to read the
 oracle's logits), the entry modes 1 / 5, mode 2's skip order, and the heads.
+
+### Review R7b (2026-10-26): attention is Q.Q^T, the skip is scaled by s1d6. All 16 block outputs reach 34-45 dB per launch
+
+Instrument: `tools/re/patchprobe.py --net rr` (rrref, rr.co) on `k_level<96,4,0,128,0,1>` (unit 2) at
+0x10bc. It stores the logit WMMA output (v86..v100, packed f16) and then both WMMA operands
+(A = v134..v149, B = v150..v153).
+
+- **Both logit operands hold the same projection**: rows 0..31 of the head's group. Matched as row
+  sets, 24 of 32 rows are exact, in the model's token order, with reflected border tokens
+  reproduced. So **logits = Q.Q^T + relpos**, symmetric, which is why the packer symmetrises
+  the relpos table. Rows 32..63 are the **value** projection.
+- The oracle's logits: rms 4.2, max 36. They correlate 0.87 with relpos alone; the old Q.K
+  hypothesis gave rms 7..10 and r 0.46.
+- P @ V is an fp8 WMMA (the RR kernels have no f16 WMMA): `prob`, V to fp8 (`pv8=1`).
+- Mode 2 (decoder entry): **x = up + s1d6 * skip**, with s1d6 = Args +0xb4 as f16 (-1.04..+0.45;
+  negative for some units, hence the earlier anti-correlation). Up-projection rows are stored
+  (q, c), pixel shuffle q = dx + 2 dy.
+
+Attention only (MLP zeroed, rrref probe): the change correlates 0.9975-0.9994 with the oracle's on
+every unit tested (encoders were 0.69-0.94).
+
+**Per launch, whole unit, real oracle inputs (`rr_level_model.py --all`, defaults = this decode),
+PSNR dB / r:**
+
+| unit (mode) | frame 1 out | frame 0 out | down |
+|---|---|---|---|
+| 0 (5, entry) | 36.75 / 0.9954 | 34.65 / 0.9954 | - |
+| 1 (1, merge) | 39.65 / 0.9979 | 39.12 / 0.9976 | 39.95 / 38.52 |
+| 2 (0) | **44.36** / 0.9990 | **44.73** / 0.9990 | 43.03 / 43.94 |
+| 3 (0) | **41.18** / 0.9991 | **43.51** / 0.9991 | 39.37 / 38.99 |
+| 4 (0) | 39.89 / 0.9989 | **40.11** / 0.9988 | 37.00 / 37.53 |
+| 5 (0, bottom) | 25.65 / 0.9757 | 34.44 / 0.9971 | - |
+| 6 / 8 / 10 / 12 / 14 (2) | 35.95 / 37.66 / 37.49 / 39.52 / 39.64 | 35.65 / 38.51 / 37.67 / 38.41 / 40.09 | - |
+| 7 / 9 / 11 / 13 (3) | 36.76 / 38.45 / 39.71 / **43.30** | 36.89 / **40.47** / **40.18** / **42.88** | - |
+
+The 2026-11-02 milestone (>= 40 dB per launch on `k_rr_level`) is met on several launches.
+**Not decoded:**
+- the per-level head outputs (`o98`, 8 B/px, and `oa0`), all <= 23 dB;
+- unit 15 (mode 4) and its render-resolution outputs E0c02 / E0c16 / E0c1a / E0c1e, which feed
+  `k_post_prep` / `k_post`;
+- the +0x88 / +0x90 extra inputs, which are used only in that head path;
+- unit 5's frame-1 gap.
