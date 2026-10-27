@@ -55,7 +55,7 @@ ORACLE = REPO / "build/oracle/oracle-8dbf027a9e-s20261025"
 P = np.array([0, 1, 16, 17, 2, 3, 18, 19, 4, 5, 20, 21, 6, 7, 22, 23,
               8, 9, 24, 25, 10, 11, 26, 27, 12, 13, 28, 29, 14, 15, 30, 31])
 IP = np.argsort(P)
-DEFAULTS = dict(deperm=1, snorm8=1, qk8=1, ctx8=1, prob8=0, v8=0, proj_in="fp8", proj_clamp="6.28125", maxsub=0, ss16=0, rs16=0, acc16=0, relT=0, relrot=0, qq=1, act="nhgelu",
+DEFAULTS = dict(deperm=1, snorm8=1, qk8=1, ctx8=1, prob8=0, v8=0, proj_in="fp8", proj_clamp="6.28125", maxsub=0, ss16=0, rs16=0, acc16=0, relT=0, relrot=0, qq=1, norm="isa", qkv="chain", fc1="chain", smax="isa", resid="isa", mlpacc="isa", upacc="isa", act="nhgelu",
                 up_order="qc", up_pix="xy", skip_at="before")
 
 
@@ -120,6 +120,42 @@ def act_fn(z, kind):
         t = np.clip(z, -4.0, 4.0)
         return z * (t * (np.float32(-0.055908203125) * np.abs(t) + np.float32(0.447265625)) + np.float32(0.89453125))
     raise SystemExit(f"unknown act {kind}")
+
+
+def ss_isa(xs):
+    """The kernel's f16 sum of squares (Review R9, read off k_sr_stage<64|96|128> and k_sr_tube_split):
+    xs (..., C) in STORED channel order (group*32 + byte). Lane half h holds bytes [8h, 8h+8) and
+    [16+8h, 16+8h+8) of every 32-channel group; per 4-byte dword the packed f16 pair (b0^2 + b2^2,
+    b1^2 + b3^2); the groups are reduced as a balanced tree ((g0+g1)+(g2+g3), ((g0+g1)+g2)), then
+    low load + high load, then dword 0 + dword 1, then the partner lane (h ^ 1), then lo + hi."""
+    f32 = np.float32
+    sq = f16(xs * xs).astype(f32)
+    G = xs.shape[-1] // 32
+
+    def pairs(gi, off):
+        b = sq[..., gi * 32 + off: gi * 32 + off + 4]
+        return f16(np.stack([b[..., 0] + b[..., 2], b[..., 1] + b[..., 3]], -1)).astype(f32)
+
+    def tree(t):
+        while len(t) > 1:
+            t = [f16(t[i] + t[i + 1]).astype(f32) for i in range(0, len(t) - 1, 2)] + ([t[-1]] if len(t) % 2 else [])
+        return t[0]
+
+    def lane(h):
+        dw = []
+        for k in (0, 4):
+            lo = tree([pairs(gi, 8 * h + k) for gi in range(G)])
+            hi = tree([pairs(gi, 16 + 8 * h + k) for gi in range(G)])
+            dw.append(f16(lo + hi).astype(f32))
+        return f16(dw[0] + dw[1]).astype(f32)
+
+    t = f16(lane(0) + lane(1)).astype(f32)
+    return f16(t[..., 0] + t[..., 1]).astype(f32)[..., None]
+
+
+def rsqrt_lut(v):
+    """g_sr_lut's first half (srref.cpp): f16(f32(1 / sqrt(f64(h)))) of the f16 value h."""
+    return f16((1.0 / np.sqrt(np.asarray(v, np.float64))).astype(np.float32)).astype(np.float32)
 
 
 def f16_pair_sum(e):
@@ -224,6 +260,14 @@ def run_stage(X, Wt, W, H, sx, sy, tile, cfg, skip=None, low=None, attn_only=Fal
     PX, PY = reflect(TX, W), reflect(TY, H)
     s_act = f16(X[PY, PX])                                      # (N, 16, C)
 
+    def mmc(a, Wm):
+        """Review R9: the kernel's K=32 WMMA chains, acc = f16(group 0) then acc = f16(acc + group k)
+        with each group's f32 partial sum fed unrounded (v_fma_mixlo_f16)."""
+        acc = f16(a[..., :32] @ Wm[:, :32].T).astype(np.float32)
+        for k0 in range(32, a.shape[-1], 32):
+            acc = f16(acc + a[..., k0:k0 + 32] @ Wm[:, k0:k0 + 32].T).astype(np.float32)
+        return acc
+
     def mm(a, Wm):
         """a @ Wm.T; acc16: K=32 chunks in f32, each rounded to f16, the chunks added in f16."""
         if not cfg["acc16"] or a.shape[-1] <= 32:
@@ -234,8 +278,15 @@ def run_stage(X, Wt, W, H, sx, sy, tile, cfg, skip=None, low=None, attn_only=Fal
             acc = part if acc is None else f16(acc.astype(np.float32) + part.astype(np.float32))
         return acc.astype(np.float32)
 
+    logical = (np.arange(C) // 32) * 32 + P[np.arange(C) % 32]
+
     def rmsnorm(x, gain):
         xf = x.astype(np.float32)
+        if cfg["norm"] == "isa":                  # Review R9: the kernel's tree, LUT rsqrt, f16(x * f16(rs * g))
+            ss = ss_isa(xf[..., logical])
+            rs = rsqrt_lut(f16(ss + np.float32(2.0 ** -13)).astype(np.float32))
+            s = f16(xf * f16(rs * gain).astype(np.float32))
+            return f16(q8(s.astype(np.float32))) if cfg["snorm8"] else s
         if cfg["ss16"]:
             ss = f16_pair_sum(f16(xf * xf)).astype(np.float32)[..., None]
         else:
@@ -254,9 +305,11 @@ def run_stage(X, Wt, W, H, sx, sy, tile, cfg, skip=None, low=None, attn_only=Fal
     if cfg.get("relrot"):                    # pair head h's QK/Wo with head (h+k)'s relpos table
         k = int(cfg["relrot"]); rels = [h[2] for h in heads]
         heads = [(a, b, rels[(i + k) % len(rels)], o) for i, (a, b, r, o) in enumerate(heads)]
+    attn_acc = None
     for (Wq, Wk, rel, Wo) in heads:
-        Q = mm(s_norm, Wq)
-        K = f16(mm(s_norm, Wk)).astype(np.float32)
+        mq = mmc if cfg["qkv"] == "chain" else mm
+        Q = mq(s_norm, Wq)
+        K = f16(mq(s_norm, Wk)).astype(np.float32)
         V = K                                     # V = K (Review R1.4), taken before the fp8 step
         if cfg["qk8"]:
             Q, K = q8(Q), q8(K)
@@ -270,27 +323,63 @@ def run_stage(X, Wt, W, H, sx, sy, tile, cfg, skip=None, low=None, attn_only=Fal
         if cfg["maxsub"]:
             logits = logits - logits.max(-1, keepdims=True)
         pe = nr_swin_exp(logits)
-        tot = f16_pair_sum(f16(pe)).astype(np.float32)
-        prob = pe * (np.float32(1.0) / np.maximum(tot, np.float32(1e-4)))[..., None]
+        if cfg["smax"] == "isa":                  # Review R9: the kernel's key order and the 1/h table
+            e = f16(pe).astype(np.float32)
+            a = lambda i, j: f16(e[..., i] + e[..., j]).astype(np.float32)
+            b = lambda u, v: f16(u + v).astype(np.float32)
+            ev = b(b(a(0, 8), a(2, 10)), b(a(4, 12), a(6, 14)))
+            od = b(b(a(1, 9), a(3, 11)), b(a(5, 13), a(7, 15)))
+            tot = b(ev, od)
+            inv = f16(np.float32(1.0) / tot).astype(np.float32)
+            prob = f16(e * inv[..., None]).astype(np.float32)
+        else:
+            tot = f16_pair_sum(f16(pe)).astype(np.float32)
+            prob = pe * (np.float32(1.0) / np.maximum(tot, np.float32(1e-4)))[..., None]
         if cfg["prob8"]:
             prob = q8(prob)
         ctx = np.einsum("nqk,nkc->nqc", prob, V)
+        if cfg["resid"] == "isa":                 # Review R9: ctx -> f16 -> fp8; heads chained through f16
+            ctx = q8(f16(ctx).astype(np.float32))
+            if attn_acc is None:
+                v270 = np.zeros(C, np.float32) if attn_only else f16(Wt.v270).astype(np.float32)
+                attn_acc = f16(s_act.astype(np.float32) + v270).astype(np.float32)
+            attn_acc = f16(attn_acc + ctx @ Wo.T).astype(np.float32)
+            continue
         if cfg["ctx8"]:
             ctx = q8(ctx)
         attn += ctx @ Wo.T
-    s_act = f16(s_act.astype(np.float32) + attn)
+    if attn_acc is not None:
+        s_act = f16(attn_acc)
+    else:
+        s_act = f16(s_act.astype(np.float32) + attn)
     if postattn is not None:                                   # MLP sub-block check
         s_act = f16(postattn[PY, PX])
     if attn_only:
         out = s_act.astype(np.float32)
     else:
-        s_act = f16(s_act.astype(np.float32) + f16(Wt.v270).astype(np.float32))
+        if cfg["resid"] != "isa":                 # isa: v270 was added before the heads
+            s_act = f16(s_act.astype(np.float32) + f16(Wt.v270).astype(np.float32))
         s_n2 = rmsnorm(s_act, Wt.gain2).astype(np.float32)
         s_mlp = np.zeros(s_act.shape, np.float16)
+        mlp_acc = f16(s_act.astype(np.float32) + f16(Wt.fc2_bias).astype(np.float32)).astype(np.float32)
         for (W1, b1, W2) in Wt.mlp:
-            h1 = q8(act_fn((mm(s_n2, W1) + b1).astype(np.float32), cfg["act"]))
-            s_mlp = f16(s_mlp.astype(np.float32) + f16(h1 @ W2.T).astype(np.float32))
-        out = np.clip(s_act.astype(np.float32) + s_mlp.astype(np.float32) + Wt.fc2_bias, -448, 448)
+            if cfg["fc1"] == "chain":             # Review R9: bias first, then the K=32 chains through f16
+                acc = np.broadcast_to(f16(b1).astype(np.float32), s_n2.shape[:-1] + (W1.shape[0],))
+                for k0 in range(0, s_n2.shape[-1], 32):
+                    acc = f16(acc + s_n2[..., k0:k0 + 32] @ W1[:, k0:k0 + 32].T).astype(np.float32)
+                h1 = q8(act_fn(acc, cfg["act"]))
+            elif cfg["fc1"] == "chain_nb":
+                h1 = q8(act_fn(f16(mmc(s_n2, W1) + b1).astype(np.float32), cfg["act"]))
+            else:
+                h1 = q8(act_fn((mm(s_n2, W1) + b1).astype(np.float32), cfg["act"]))
+            if cfg["mlpacc"] == "isa":            # Review R9: acc = f16(acc + block's f32 fc2 partial)
+                mlp_acc = f16(mlp_acc + h1 @ W2.T).astype(np.float32)
+            else:
+                s_mlp = f16(s_mlp.astype(np.float32) + f16(h1 @ W2.T).astype(np.float32))
+        if cfg["mlpacc"] == "isa":
+            out = np.clip(mlp_acc, -448, 448)
+        else:
+            out = np.clip(s_act.astype(np.float32) + s_mlp.astype(np.float32) + Wt.fc2_bias, -448, 448)
     # scatter in-bounds tokens back to the image (each pixel belongs to exactly one window)
     img = np.zeros((H, W, C), np.float32)
     ok = (TX >= 0) & (TX < W) & (TY >= 0) & (TY < H)
@@ -314,7 +403,12 @@ def project(img, Wt, cfg):
 def upsample(low, Wt, cfg, H, W):
     """Mode-2 hypothesis: up = up_W (4C x Cn) @ low + up_b, pixel-shuffled to (H, W, C)."""
     C = Wt.C
-    u = low @ Wt.up_W.T + Wt.up_b                                   # (H/2, W/2, 4C)
+    if cfg["upacc"] == "isa":                 # Review R9: bias first, then the K=32 chains through f16
+        u = np.broadcast_to(f16(Wt.up_b).astype(np.float32), low.shape[:-1] + (4 * C,))
+        for k0 in range(0, low.shape[-1], 32):
+            u = f16(u + low[..., k0:k0 + 32] @ Wt.up_W[:, k0:k0 + 32].T).astype(np.float32)
+    else:
+        u = low @ Wt.up_W.T + Wt.up_b                               # (H/2, W/2, 4C)
     u = u.reshape(u.shape[0], u.shape[1], 4, C) if cfg["up_order"] == "qc" else \
         u.reshape(u.shape[0], u.shape[1], C, 4).transpose(0, 1, 3, 2)
     out = np.zeros((H, W, C), np.float32)
@@ -431,22 +525,28 @@ def self_check():
                               weights=str(REPO / "build/re/packed/M"), attn_only=None,
                               inject_postattn=None, proj_from_oracle=False, out=None)
     ra = str(REPO / "build/work/probe/real_attn_dump/frame0/003.t1.bin")
+    # The rounding closure of Review R9 is pinned off for every historical case.
+    PRE9 = dict(norm="old", qkv="f32", fc1="f32", smax="old", resid="old", mlpacc="old", upacc="f32")
     cases = [
         # Review R1's numbers (tanh GELU; its replica rounded V exactly when it rounded K: v8 = qk8).
         # qq=0 is pinned here: these document Review R1, which predates the Q.Q^T finding (R8).
-        ("R1 decoded, no rounding switches", dict(snorm8=0, qk8=0, ctx8=0, prob8=1, v8=0, act="gelu", qq=0), {}, "t1", 34.0704),
-        ("R1 decoded, best switches", dict(v8=1, act="gelu", qq=0), {}, "t1", 34.6343),
-        ("R1 attention only vs --isolate", dict(snorm8=0, qk8=0, ctx8=0, prob8=1, v8=0, qq=0), dict(attn_only=ra), "t1", 36.6338),
-        ("R1 attention only, probs unquantized", dict(snorm8=0, qk8=0, ctx8=0, v8=0, qq=0), dict(attn_only=ra), "t1", 36.8595),
-        ("R1 MLP given oracle post-attention", dict(snorm8=0, qk8=0, ctx8=0, prob8=1, v8=0, act="gelu", qq=0), dict(inject_postattn=ra), "t1", 34.4195),
+        ("R1 decoded, no rounding switches", dict(**PRE9, snorm8=0, qk8=0, ctx8=0, prob8=1, v8=0, act="gelu", qq=0), {}, "t1", 34.0704),
+        ("R1 decoded, best switches", dict(**PRE9, v8=1, act="gelu", qq=0), {}, "t1", 34.6343),
+        ("R1 attention only vs --isolate", dict(**PRE9, snorm8=0, qk8=0, ctx8=0, prob8=1, v8=0, qq=0), dict(attn_only=ra), "t1", 36.6338),
+        ("R1 attention only, probs unquantized", dict(**PRE9, snorm8=0, qk8=0, ctx8=0, v8=0, qq=0), dict(attn_only=ra), "t1", 36.8595),
+        ("R1 MLP given oracle post-attention", dict(**PRE9, snorm8=0, qk8=0, ctx8=0, prob8=1, v8=0, act="gelu", qq=0), dict(inject_postattn=ra), "t1", 34.4195),
         # Review R2 / R4 as they stood with Q.K^T; kept at qq=0 for the record.
-        ("R2 defaults (tanh GELU), t1", dict(act="gelu", qq=0), {}, "t1", 35.0790),
-        ("R2 defaults (tanh GELU), t2", dict(act="gelu", qq=0), {}, "t2", 31.9087),
-        ("R4 defaults (NeuralHub f16 GELU), t1", dict(qq=0), {}, "t1", 35.2614),
+        ("R2 defaults (tanh GELU), t1", dict(**PRE9, act="gelu", qq=0), {}, "t1", 35.0790),
+        ("R2 defaults (tanh GELU), t2", dict(**PRE9, act="gelu", qq=0), {}, "t2", 31.9087),
+        ("R4 defaults (NeuralHub f16 GELU), t1", dict(**PRE9, qq=0), {}, "t1", 35.2614),
         # The current default: logits Q.Q^T (Review R8).  Expected values re-derived from the
         # oracle with --set qq=1 and cross-checked against R8's own table (37.74 / 34.01 dB).
-        ("R8 default (Q.Q^T), t1", {}, {}, "t1", 37.7384),
-        ("R8 default (Q.Q^T), t2", {}, {}, "t2", 34.0088),
+        ("R8 default (Q.Q^T), t1", dict(**PRE9), {}, "t1", 37.7384),
+        ("R8 default (Q.Q^T), t2", dict(**PRE9), {}, "t2", 34.0088),
+        # Review R9: the kernel's rounding closure (ISA norm tree + LUTs, K=32 chains, softmax order,
+        # residual and MLP chains). Re-derived from the oracle with the current defaults.
+        ("R9 default (rounding closure), t1", {}, {}, "t1", 68.8920),
+        ("R9 default (rounding closure), t2", {}, {}, "t2", 54.5715),
     ]
     ok = True
     for label, sw, extra, key, want in cases:

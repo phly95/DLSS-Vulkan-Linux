@@ -1373,3 +1373,52 @@ This closes most of the "stage 1 / tube" residuals (Review R2): the 4-head insta
 the ones Q.K could not fit. fp8 P@V (`v8`, `prob8`) is worse for SR, consistent with its 8 f16
 WMMAs. The default stays `qq=0` until the coopmat rewrite in progress is merged; then the model
 default and both shaders change together (one line each: the logit operand K -> Q).
+
+### Review R9 (2026-10-27): the rounding closure, read off the ISA and pinned with hardware probes - 99.3-99.9% bit-exact
+
+Instruments (git-ignored): `build/work/review/st0/` holds the listings of `k_sr_stage<64,2,0,96>`,
+`<96,4,0,128>`, `<64,2,2,96>` and `k_sr_tube_split<128,4>`, plus `sstree.py` (prints the
+sum-of-squares tree compactly) and `sn.py`. `sn.py` reads a patchprobe of the QKV GEMM's fp8 B
+operands at `k_sr_stage<64,2,0,96>`+0xf18, run `st0_snorm`. Its token map: wave w of workgroup
+(wx, wy) covers the window at (8wx - sx, 8wy - sy + 4w), lane l = token l%16, K-half l/16. The
+attention isolation probe for stage 0 is `build/work/review/probes/iso_s0_f2`.
+
+Each item below was read in the ISA and confirmed on hardware:
+1. **RMSNorm** (the RMSNorm-1 output vs the probe: 99.65% -> **99.998%**).
+   - ss = the kernel's f16 tree (`ss_isa` in the model). Lane half h holds bytes [8h, 8h+8) and
+     [16+8h, 16+8h+8) of each 32-channel group, as packed pairs (b0^2 + b2^2, b1^2 + b3^2) per dword.
+   - The groups are reduced as a balanced tree, ((g0+g1)+(g2+g3)) and ((g0+g1)+g2); C = 64 / 96 /
+     128 kernels all read. Then come low load + high load, dword 0 + dword 1, the lane^16 partner,
+     and lo + hi.
+   - rs = g_sr_lut[f16(ss + 2^-13)] = f16(f32(1/sqrt)) (srref fills this table); s = f16(x * f16(rs * gain)).
+2. **QKV projection**: f16(f16(group 0's f32 partial) + group 1's f32 partial) (`v_fma_mixlo_f16`); no bias.
+3. **Softmax**:
+   - the kernel normalizes each column of the 16 x 16 logit tile;
+   - sum = [((e0+e8)+(e2+e10)) + ((e4+e12)+(e6+e14))] + [the odd keys likewise], in f16;
+   - prob = f16(e * g_sr_lut[0x10000 + bits(sum)]), the f16 1/h table, not an f32 divide.
+4. **ctx** = fp8(f16(P @ V)).
+5. **Residual**: X1 = f16(f16(f16(x + v270) + Wo_0 . ctx_0) + Wo_1 . ctx_1). v270 is added FIRST, and
+   each head's f32 Wo partial is added through f16 (the model added the summed heads, then v270).
+   Attention alone vs the isolation probe: 92.95% -> **99.97% (76.2 dB)**.
+6. **fc1** = f16(f16(b1 + chain 0) + chain 1).
+7. **MLP output**: acc = f16(X1 + fc2_bias), then acc = f16(acc + block_b's f32 fc2 partial) for
+   each block (a loop-carried f16 accumulator), clamped to +-448, then fp8.
+8. **Mode-2 upsample**: f16(f16(f16(up_b + c0) + c1) + c2), the same bias-first chain.
+
+Model vs oracle, frame 1 (`--all`; before -> after R9):
+
+| launch | before | **after** |
+|---|---:|---:|
+| 3 t1 / t2 | 52.8% 41.85 / 46.6% 36.71 dB | **99.90% 69.70 / 98.67% 55.21 dB** |
+| 4 t3 / t4 | 52.1% 41.36 / 49.5% 32.29 | **99.72% 63.98 / 97.92% 48.99** |
+| 5 (tube 0) | 62.6% 41.71 | **99.88% 67.53** |
+| 10 (tube 5) | 31.4% 35.11 | **99.33% 57.88** |
+| 11 / 12 (mode 2) | 28.6% 34.05 / 21.6% 35.12 | unchanged (open, below) |
+
+Open:
+- **Mode 2**: stage 9's attention alone vs its isolation probe is only 54-58% (39.6-41.1 dB),
+  so the decoder's block input (up + skip) differs structurally, not by rounding. Its norm reads
+  one operand from global memory and one from LDS (`ds_load_2addr_b64` at 0x998).
+- The mode-0 projection t2/t4 (98%) has not had the chain treatment yet.
+- **The shaders still implement the pre-R9 model**: sr_stage.comp and sr_tube_split.comp need the
+  same changes.
