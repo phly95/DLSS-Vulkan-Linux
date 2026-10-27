@@ -982,6 +982,32 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             std::memcpy(push + 88, &W15, 4); std::memcpy(push + 92, &H15, 4);
             std::memcpy(push + 96, &dec0_s0, 4);
             std::memcpy(push + 100, &dec0_f0, 4);
+            // Dec0Args +0x68..+0x9f: the hidden-state warp's frame geometry.  Until 2026-10-26 this
+            // block was left zero, so the shader warped with r15w = r15h = 0 (px = mv alone, hence
+            // "valid" only where mv was 0) and with 1/W, 1/W15, F28* all zero - the resample read the
+            // wrong tap everywhere.  Every field below is reproduced exactly by the oracle's own args
+            // on both dumped frames (tools/sr/sr_dec0_model.py's parse_args reads them):
+            //   F20x/F20y = this frame's jitter, F28x/F28y = the previous frame's (params_<N>.json
+            //   "jitter" / "jitter_prev"); r15 = W15/W, H15/H maps render pixels to the level-15
+            //   grid the motion vectors are expressed in; the rest are the reciprocal pairs and the
+            //   previous jitter scaled back to render units.  +0x88 (warp enable: 0 = warp) and
+            //   +0x9c stay 0, as the oracle's do.
+            const float r15w = (float)W15 / (float)W, r15h = (float)H15 / (float)H;
+            const float iW = 1.0f / (float)W, iH = 1.0f / (float)H;
+            const float i15w = 1.0f / (float)W15, i15h = 1.0f / (float)H15;
+            std::memcpy(push + 104, &jx, 4);                 // +0x68 F20x
+            std::memcpy(push + 108, &jy, 4);                 // +0x6c F20y
+            std::memcpy(push + 112, &jpx, 4);                // +0x70 F28x
+            std::memcpy(push + 116, &jpy, 4);                // +0x74 F28y
+            std::memcpy(push + 120, &r15w, 4);               // +0x78 r15w
+            std::memcpy(push + 124, &r15h, 4);               // +0x7c r15h
+            std::memcpy(push + 128, &iW, 4);                 // +0x80 1/W
+            std::memcpy(push + 132, &iH, 4);                 // +0x84 1/H
+            std::memcpy(push + 140, &i15w, 4);               // +0x8c 1/W15
+            std::memcpy(push + 144, &i15h, 4);               // +0x90 1/H15
+            const float F28xW = jpx * iW, F28yH = jpy * iH;  // +0x94, +0x98 (frame 1 has F28y/H != 0)
+            std::memcpy(push + 148, &F28xW, 4);
+            std::memcpy(push + 152, &F28yH, 4);
             dispatch(cmd, "sr_dec0", {&t_act[8], &prev_mvec[p ^ 1], &hidden[p], &gates, &factors, &aniso, &hidden[p ^ 1], &w_dec0}, push, 160, W0 / 8, H0 / 8, 1);
             inject_after(cmd, "dec0", sr_l[12]);
         }
