@@ -233,6 +233,23 @@ everything else identical). Logs: `build/agents/orch/prof_sr_{1,head}.log`.
   against a HEAD control of 1822.050 ms same session (+0.46%); budget 1789.676 x 1.2 = 2147.611 -
   PASS (A6 of the rr-r9b brief). Logs: `build/agents/orch/prof_rr_{new,head}.log`.
 
+## Resolution and further re-measurements (2026-10-27 afternoon)
+
+- **The sr_stage budget miss above is FIXED by `5177b5e` (register chains).** Orchestrator P4
+  re-run, same method, 2 back-to-back runs: new **92.700 ms**/frame median vs same-session
+  R9-landed control **238.110** (which reproduces the 234.187 recorded above), ratio **0.389**,
+  budget 162.014 - PASS. The port's sr_stage is now 1.46x FASTER than pre-R9 HEAD (135.012) while
+  carrying every R9 rounding point. Structure: lane-local register chains through rh() per K=32
+  group, vectorized 1-wide C-loops, owner-lane in-place combine, sF 3072->1024 floats
+  (LDS 38912->30720 B). sr_tube_split unchanged (byte-identical to HEAD, ~133-136 ms - its
+  attempted optimization regressed and was reverted). Logs:
+  `build/agents/orch/prof_p4_{new,ctl}.log` (deleted raw outputs, numbers in the commit).
+- **`rr_post` after the `5710959` rewrite** (P4, 2 alternating pairs vs a HEAD-built control,
+  `build/prof1080/rr`): least-contended min 5.9014 vs 5.3586 ms = **ratio 1.101** (bar 1.20);
+  the control min reproduces this file's 5.3925. Medians on both sides are contention-inflated
+  (12.07 / 10.00) - the min estimator is the valid one here, as the rr-post agent argued with
+  5 pairs (1.014-1.114).
+
 ## Reproduce
 
 ```bash
