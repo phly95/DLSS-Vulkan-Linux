@@ -8,12 +8,23 @@ oracle launch 14) - the spec that sr_post.comp is rewritten against.
 Inputs are the oracle's own bytes as they stood before launch 14 (newest earlier NNN.<buffer>.bin, else
 start.<buffer>.bin). Outputs: full15 (u32, 768x432), ihist1 (f16 x4, 768x432), dhist (u32, 384x216).
 
-STATUS (2026-10-27, post-model-3; numbers from --self-check, launch 14 of sr_M, oracle dump).
-  Frame 0 (reset, no history):  full15 99.9934% bit-exact (decoded PSNR 101.6 dB), ihist1 99.9895%,
+STATUS (2026-10-27, post-residual; numbers from --self-check, launch 14 of sr_M, oracle dump, and the
+9-frame multidump build/work/multidump/sr_M/dump with build/agents/post-residual/frames_0_8.py).
+  Frame 0 (reset, no history):  full15 99.9934% bit-exact (decoded PSNR 112.2 dB), ihist1 99.9895%,
                                  dhist 99.9976%.
-  Frame 1 (history):            full15 99.8481%, ihist1 99.8152%, dhist 99.7999% (decoded PSNR 66.4 dB).
+  Frame 1 (history):            full15 99.9855%, ihist1 99.9382%, dhist 99.9904% (decoded PSNR 108.1 dB).
+  Frames 2-8 (multidump):       full15 99.9256-99.9693%, ihist1 99.7260-99.8540%, dhist 99.9662-99.9807%
+                                 (decoded PSNR 100.5-103.9 dB).
   Acceptance: A1 (frame 0 >= 99% for full15, ihist1, dhist) PASSES. A2 (frame 1 >= 97%) PASSES.
-              A4 (--self-check, < 30 s) passes (about 2 s).
+              A4 (--self-check, < 60 s) passes (about 2 s).
+
+  2026-10-27 post-residual: the f1-8 history residual (before: frame 1 decoded 66.4 dB, frames 2-8
+  66.8-77.0 dB - exactly the SR M `hist,dec0` chain cap) was ONE spec error, fixed here: the CR
+  bilinear's edge addressing (SPEC 6). Before the fix, frame 1 was full15 99.8481% / ihist1 99.8152% /
+  dhist 99.7999% and the left/top 2-pixel border carried linear errors up to 0.05 (f1) / 0.25 (f3).
+  Evidence: build/agents/post-residual/{decomp1,worst1,col0rows,edgescan}.py - the blend law (t, A, x)
+  reproduces the oracle to p50 3e-5/4e-6 everywhere EXCEPT the border, where the oracle's f16 tm equals
+  the per-texel-clamp law to ~1e-4 on every row and the old double-clip law misses by up to 0.034.
 
   VERIFIED against hardware probes (scripts in build/agents/post-model/, post-model-2/, post-model-3/;
   the per-stage table: build/agents/post-model-3/a3_table.py, reproducible from the saved probe dumps):
@@ -123,6 +134,12 @@ Inputs per launch: W,H = 256,144 (render size), W15,H15 = 768,432, F20 = (F20x, 
              W5 = a_x*a_y     at (main_x, main_y)       (the main bilinear at I + 0.5 + rq)
              W4 = a_x*w_y(2)  at (main_x, I_y + 2)      (pure texel y)
              W2 = w_x(2)*a_y  at (I_x + 2, main_y)      (pure texel x)
+        BILINEAR ADDRESSING (post-residual 2026-10-27, THE f1-8 fix): each bilinear tap blends
+             texels clamp(I) and clamp(I+1) per axis, BOTH indices clamped to [0, W15-1] / [0, H15-1]
+             from the UNCLIPPED integer position I - the sampler clamps its normalized coordinate,
+             i.e. the clamp is PER-TEXEL. A tap whose lower texel is -1 (left/top border) blends
+             texel 0 with texel 0 = pure texel 0; it is NOT a blend of texels 0 and 1 with the full
+             sub-texel fraction (which the previous law did, costing the whole f1-8 history residual).
         h = fma-chain(W1*t1, W3*t3, W5*t5, W4*t4, W2*t2) / (W1+W3+W5+W4+W2)   (f32; the -1 and +2 taps
              are pure texel fetches at the texel CENTRES, not half-texel blends - measured, this review)
       A = e0 * decode(h) with decode(h) = 0.01*(exp2(clamp(h, 1e-4, 3)*(1/0.36)*log2(10)) - 1)
@@ -383,14 +400,22 @@ def _cr_axis(f):
 
 def _bilinear(hist, xi, yi, rx, ry):
     """A bilinear sample of hist (H15,W15,C f16) at the texel (xi, yi) (lower-left, int arrays) with f32
-    sub-texel weights rx, ry (arrays, broadcast over the channel axis); clamp-to-edge addressing."""
-    xi = np.clip(xi, 0, W15 - 1); yi = np.clip(yi, 0, H15 - 1)
+    sub-texel weights rx, ry (arrays, broadcast over the channel axis).
+
+    ADDRESSING (measured, post-residual 2026-10-27; the hardware sampler clamps the normalized
+    coordinate, which is per-tap PER-TEXEL clamping): the two texel indices of each axis are
+    clamped to [0, W15-1] / [0, H15-1] INDEPENDENTLY, both derived from the UNCLIPPED integer
+    position - a tap whose lower texel is -1 blends texel 0 with texel 0 (pure texel 0), NOT
+    texel 0 with texel 1. The previous law clipped xi in place and then took xi+1, which at the
+    left/top edges blended the wrong pair with the full sub-texel fraction (the whole f1+ history
+    residual: 66-77 dB vs the oracle on the left/top 2-pixel border)."""
+    x0 = np.clip(xi, 0, W15 - 1); y0 = np.clip(yi, 0, H15 - 1)
     x1 = np.clip(xi + 1, 0, W15 - 1); y1 = np.clip(yi + 1, 0, H15 - 1)
     one = F32(1.0)
     if np.ndim(rx): rx = rx[..., None]
     if np.ndim(ry): ry = ry[..., None]
-    h00 = hist[yi, xi].astype(F32); h01 = hist[yi, x1].astype(F32)
-    h10 = hist[y1, xi].astype(F32); h11 = hist[y1, x1].astype(F32)
+    h00 = hist[y0, x0].astype(F32); h01 = hist[y0, x1].astype(F32)
+    h10 = hist[y1, x0].astype(F32); h11 = hist[y1, x1].astype(F32)
     top = (h00 * (one - rx) + h01 * rx).astype(F32)
     bot = (h10 * (one - rx) + h11 * rx).astype(F32)
     return (top * (one - ry) + bot * ry).astype(F32)
