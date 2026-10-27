@@ -55,7 +55,7 @@ ORACLE = REPO / "build/oracle/oracle-8dbf027a9e-s20261025"
 P = np.array([0, 1, 16, 17, 2, 3, 18, 19, 4, 5, 20, 21, 6, 7, 22, 23,
               8, 9, 24, 25, 10, 11, 26, 27, 12, 13, 28, 29, 14, 15, 30, 31])
 IP = np.argsort(P)
-DEFAULTS = dict(deperm=1, snorm8=1, qk8=1, ctx8=1, prob8=0, v8=0, proj_in="fp8", proj_clamp="6.28125", maxsub=0, ss16=0, rs16=0, acc16=0, relT=0, relrot=0, qq=0, act="nhgelu",
+DEFAULTS = dict(deperm=1, snorm8=1, qk8=1, ctx8=1, prob8=0, v8=0, proj_in="fp8", proj_clamp="6.28125", maxsub=0, ss16=0, rs16=0, acc16=0, relT=0, relrot=0, qq=1, act="nhgelu",
                 up_order="qc", up_pix="xy", skip_at="before")
 
 
@@ -432,16 +432,21 @@ def self_check():
                               inject_postattn=None, proj_from_oracle=False, out=None)
     ra = str(REPO / "build/work/probe/real_attn_dump/frame0/003.t1.bin")
     cases = [
-        # Review R1's numbers (tanh GELU; its replica rounded V exactly when it rounded K: v8 = qk8)
-        ("R1 decoded, no rounding switches", dict(snorm8=0, qk8=0, ctx8=0, prob8=1, v8=0, act="gelu"), {}, "t1", 34.0704),
-        ("R1 decoded, best switches", dict(v8=1, act="gelu"), {}, "t1", 34.6343),
-        ("R1 attention only vs --isolate", dict(snorm8=0, qk8=0, ctx8=0, prob8=1, v8=0), dict(attn_only=ra), "t1", 36.6338),
-        ("R1 attention only, probs unquantized", dict(snorm8=0, qk8=0, ctx8=0, v8=0), dict(attn_only=ra), "t1", 36.8595),
-        ("R1 MLP given oracle post-attention", dict(snorm8=0, qk8=0, ctx8=0, prob8=1, v8=0, act="gelu"), dict(inject_postattn=ra), "t1", 34.4195),
-        # the current defaults (Review R2)
-        ("R2 defaults (tanh GELU), t1", dict(act="gelu"), {}, "t1", 35.0790),
-        ("R2 defaults (tanh GELU), t2", dict(act="gelu"), {}, "t2", 31.9087),
-        ("R4 defaults (NeuralHub f16 GELU), t1", {}, {}, "t1", 35.2614),
+        # Review R1's numbers (tanh GELU; its replica rounded V exactly when it rounded K: v8 = qk8).
+        # qq=0 is pinned here: these document Review R1, which predates the Q.Q^T finding (R8).
+        ("R1 decoded, no rounding switches", dict(snorm8=0, qk8=0, ctx8=0, prob8=1, v8=0, act="gelu", qq=0), {}, "t1", 34.0704),
+        ("R1 decoded, best switches", dict(v8=1, act="gelu", qq=0), {}, "t1", 34.6343),
+        ("R1 attention only vs --isolate", dict(snorm8=0, qk8=0, ctx8=0, prob8=1, v8=0, qq=0), dict(attn_only=ra), "t1", 36.6338),
+        ("R1 attention only, probs unquantized", dict(snorm8=0, qk8=0, ctx8=0, v8=0, qq=0), dict(attn_only=ra), "t1", 36.8595),
+        ("R1 MLP given oracle post-attention", dict(snorm8=0, qk8=0, ctx8=0, prob8=1, v8=0, act="gelu", qq=0), dict(inject_postattn=ra), "t1", 34.4195),
+        # Review R2 / R4 as they stood with Q.K^T; kept at qq=0 for the record.
+        ("R2 defaults (tanh GELU), t1", dict(act="gelu", qq=0), {}, "t1", 35.0790),
+        ("R2 defaults (tanh GELU), t2", dict(act="gelu", qq=0), {}, "t2", 31.9087),
+        ("R4 defaults (NeuralHub f16 GELU), t1", dict(qq=0), {}, "t1", 35.2614),
+        # The current default: logits Q.Q^T (Review R8).  Expected values re-derived from the
+        # oracle with --set qq=1 and cross-checked against R8's own table (37.74 / 34.01 dB).
+        ("R8 default (Q.Q^T), t1", {}, {}, "t1", 37.7384),
+        ("R8 default (Q.Q^T), t2", {}, {}, "t2", 34.0088),
     ]
     ok = True
     for label, sw, extra, key, want in cases:

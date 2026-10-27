@@ -51,7 +51,7 @@ shared NR_OPERAND   sN8[16 * 384];
 shared float     sF[32 * 96];      // f32 GEMM results: Q|K, logits, ctx, attention sum, fc1, fc2 sums, upsample (halves)
 shared float16_t sMlp[32 * 96];    // MLP sum (f16 values)
 shared NR_OPERAND   sQ8[32 * 32];     // q8(Q) per token; q8(ctx) after the logits
-shared NR_OPERAND   sK8[32 * 32];     // q8(K) per token; q8(GELU hidden) in the MLP
+shared NR_OPERAND   sK8[32 * 32];     // q8(GELU hidden) in the MLP (the logits no longer use K)
 shared float16_t sV[32 * 32];      // V = f16(K) per token
 shared float16_t sP[2 * 16 * 16];  // f16 softmax probabilities, one 16x16 block per window
 shared float16_t sPl[2 * 16 * 16]; // the rounding error of sP (prob = sP + sPl, f16 WMMA twice)
@@ -409,7 +409,7 @@ void main() {
             NR_STORE_ACC(k11, sF, 1552u, 32u);
         }
         sync_lds();
-        // Q8 = q8(Q); K is f16-rounded, V = K (f16), K8 = q8(K)
+        // Q8 = q8(Q); K is f16-rounded, V = K (f16).  K8 is not formed: the logits are Q.Q^T.
         for (uint r = 0u; r < 32u; r += 4u) {
             float qv0 = sF[tid * 32u + r];
             float qv1 = sF[tid * 32u + r + 1u];
@@ -431,10 +431,8 @@ void main() {
             sV[tid * 32u + r + 1u] = float16_t(kf1);
             sV[tid * 32u + r + 2u] = float16_t(kf2);
             sV[tid * 32u + r + 3u] = float16_t(kf3);
-            sK8[tid * 32u + r] = NR_OPERAND(q8(kf0));
-            sK8[tid * 32u + r + 1u] = NR_OPERAND(q8(kf1));
-            sK8[tid * 32u + r + 2u] = NR_OPERAND(q8(kf2));
-            sK8[tid * 32u + r + 3u] = NR_OPERAND(q8(kf3));
+            // K8 is not stored: the logits are Q.Q^T (Review R8), so their B operand is sQ8.  K
+            // still exists as sV - V = f16(K), taken before the fp8 step.
         }
         sync_lds();
 #if SR_DBG == 2
@@ -442,18 +440,20 @@ void main() {
         return;
 #endif
 
-        // 2b. logits = Q8 K8^T per window (16x16, K = 32), stored to sF[256 w + 16 q + k]
+        // 2b. logits = Q8 Q8^T per window (16x16, K = 32), stored to sF[256 w + 16 q + k]
+        // (Review R8: the B operand is Q, not K - read off the hardware in k_level's decode and
+        // the form that fits SR's 4-head instantiations; V is unchanged, f16(K) in sV.)
         for (uint w = 0u; w < 2u; ++w) {
             NR_FRAG_ACC lg = NR_ACC_ZERO;
             NR_FRAG_A la0;
             NR_LOAD_A(la0, sQ8, 512u * w + 0u, 32u);
             NR_FRAG_B lb0;
-            NR_LOAD_B(lb0, sK8, 512u * w + 0u, 32u);
+            NR_LOAD_B(lb0, sQ8, 512u * w + 0u, 32u);
             NR_MMA(lg, la0, lb0);
             NR_FRAG_A la1;
             NR_LOAD_A(la1, sQ8, 512u * w + 16u, 32u);
             NR_FRAG_B lb1;
-            NR_LOAD_B(lb1, sK8, 512u * w + 16u, 32u);
+            NR_LOAD_B(lb1, sQ8, 512u * w + 16u, 32u);
             NR_MMA(lg, la1, lb1);
             NR_STORE_ACC(lg, sF, 256u * w, 16u);
         }
@@ -627,7 +627,7 @@ void main() {
             NR_STORE_ACC(z11, sF, 528u, 32u);
         }
         sync_lds();
-        // hidden H1 = q8(nhgelu(z + b1)) into sK8 (its last reader, the logits, is long past)
+        // hidden H1 = q8(nhgelu(z + b1)) into sK8 (its first use; it held nothing the logits read)
         // 8 independent nhgelu/q8 chains per step: each is ~40 dependent VALU ops, and a single wave only
         // overlaps them when several elements are issued together.
         for (uint m = 0u; m < 32u; m += 8u) {

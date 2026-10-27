@@ -26,7 +26,7 @@ layout(push_constant) uniform StageArgs {
 
 shared float16_t s_act[16][128];    // residual stream
 shared float16_t s_norm[16][128];   // RMSNorm output (q8)
-shared float16_t s_K8[4][16][32];   // q8(K) per head, key-token
+shared float16_t s_K8[4][16][32];   // q8(Q) per head, key-token (the logits are Q.Q^T, Review R8)
 shared float16_t s_V[4][16][32];    // V = f16(K) per head, key-token
 shared float16_t s_ctx[4][16][32];  // q8(attention context) per head
 shared float16_t s_mlp[16][128];    // MLP sum (f16 values)
@@ -226,7 +226,9 @@ void main() {
         Q[r] = q8(sq);
         float kf = rh(sk);
         s_V[head][tok][r] = float16_t(kf);
-        s_K8[head][tok][r] = float16_t(q8(kf));
+        // The logits are Q.Q^T (Review R8), so the shared B operand is q8(Q), not q8(K).  K still
+        // exists as s_V - V = f16(K), taken before the fp8 step, exactly as the model does.
+        s_K8[head][tok][r] = float16_t(Q[r]);
     }
     barrier();
 
