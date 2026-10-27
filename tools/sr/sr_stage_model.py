@@ -55,7 +55,7 @@ ORACLE = REPO / "build/oracle/oracle-8dbf027a9e-s20261025"
 P = np.array([0, 1, 16, 17, 2, 3, 18, 19, 4, 5, 20, 21, 6, 7, 22, 23,
               8, 9, 24, 25, 10, 11, 26, 27, 12, 13, 28, 29, 14, 15, 30, 31])
 IP = np.argsort(P)
-DEFAULTS = dict(deperm=1, snorm8=1, qk8=1, ctx8=1, prob8=0, v8=0, proj_in="fp8", proj_clamp="6.28125", maxsub=0, ss16=0, rs16=0, acc16=0, relT=0, relrot=0, qq=1, norm="isa", qkv="chain", fc1="chain", smax="isa", resid="isa", mlpacc="isa", upacc="isa", up8=1, upref="low", act="nhgelu",
+DEFAULTS = dict(deperm=1, snorm8=1, qk8=1, ctx8=1, prob8=0, v8=0, proj_in="fp8", proj_clamp="6.28125", maxsub=0, ss16=0, rs16=0, acc16=0, relT=0, relrot=0, qq=1, norm="isa", qkv="chain", fc1="chain", smax="isa", resid="isa", mlpacc="isa", upacc="isa", up8=1, upref="low", projacc="isa", projq="0123", act="nhgelu",
                 up_order="qc", up_pix="xy", skip_at="before")
 
 
@@ -405,7 +405,16 @@ def project(img, Wt, cfg):
     `v_pk_min/max_num_f16` just before the store, k_sr_stage ISA line ~3245) before fp8."""
     src = q8(img) if cfg["proj_in"] == "fp8" else img
     cat = np.concatenate([src[dy::2, dx::2, :] for (dx, dy) in ((0, 0), (1, 0), (0, 1), (1, 1))], -1)
-    y = f16(cat @ Wt.dn_W.T + Wt.dn_b).astype(np.float32)
+    if cfg["projacc"] == "isa":               # bias first, then the K=32 chains through f16
+        y = np.broadcast_to(f16(Wt.dn_b).astype(np.float32), cat.shape[:-1] + (Wt.dn_W.shape[0],))
+        C = Wt.C
+        qorder = [int(c) for c in str(cfg["projq"])]
+        for q in qorder:
+            for g0 in range(0, C, 32):
+                k0 = q * C + g0
+                y = f16(y + cat[..., k0:k0 + 32] @ Wt.dn_W[:, k0:k0 + 32].T).astype(np.float32)
+    else:
+        y = f16(cat @ Wt.dn_W.T + Wt.dn_b).astype(np.float32)
     lim = float(cfg["proj_clamp"])
     return np.clip(y, -lim, lim) if lim > 0 else np.clip(y, -448, 448)
 
@@ -538,7 +547,8 @@ def self_check():
                               inject_postattn=None, proj_from_oracle=False, out=None)
     ra = str(REPO / "build/work/probe/real_attn_dump/frame0/003.t1.bin")
     # The rounding closure of Review R9 is pinned off for every historical case.
-    PRE9 = dict(norm="old", qkv="f32", fc1="f32", smax="old", resid="old", mlpacc="old", upacc="f32")
+    PRE9 = dict(norm="old", qkv="f32", fc1="f32", smax="old", resid="old", mlpacc="old", upacc="f32",
+                up8=0, upref="full", projacc="f32")
     cases = [
         # Review R1's numbers (tanh GELU; its replica rounded V exactly when it rounded K: v8 = qk8).
         # qq=0 is pinned here: these document Review R1, which predates the Q.Q^T finding (R8).
@@ -558,7 +568,9 @@ def self_check():
         # Review R9: the kernel's rounding closure (ISA norm tree + LUTs, K=32 chains, softmax order,
         # residual and MLP chains). Re-derived from the oracle with the current defaults.
         ("R9 default (rounding closure), t1", {}, {}, "t1", 68.8920),
-        ("R9 default (rounding closure), t2", {}, {}, "t2", 54.5715),
+        ("R9 default (rounding closure), t2", dict(projacc="f32"), {}, "t2", 54.5715),
+        # R9 addendum: the mode-0 projection as bias-first K=32 chains (q-major, as the LDS chunks).
+        ("R9 projection chain, t2", {}, {}, "t2", 61.9141),
     ]
     ok = True
     for label, sw, extra, key, want in cases:

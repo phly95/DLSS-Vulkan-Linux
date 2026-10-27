@@ -1435,3 +1435,9 @@ Open:
 Model vs oracle, every SR stage launch on both frames (`--all`), outputs t1/t3/t5-t8: **99.33-99.99%
 bit-exact, 57.9-104.3 dB** (launch 11 t7 frame 1: 28.6% -> 99.62%; launch 12 t8: 21.6% -> 99.88%).
 The mode-0 projections t2/t4 are 97.9-98.7% (48.99-55.21 dB); their chain is still to read.
+
+R9 addendum 2: the mode-0 projection (t2/t4) is a bias-first K=32 chain in the LDS chunk order,
+which equals the model's concatenation order q-major (q0 g0, q0 g1, q1 g0, ...); ISA 0x5dd0..0x6170.
+From the ORACLE's t1 it reproduces t2/t4 at **99.994-99.999%** on both frames (f32 sum: 98.6-99.0%).
+From the model's own t1, launch 3 t2 is 98.67 -> 99.65% and launch 4 t4 97.92 -> 99.08%; the rest is
+t1's 0.1% propagated through the 256-input dot product.
