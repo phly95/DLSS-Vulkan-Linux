@@ -908,6 +908,54 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
         std::memset(ihist[1].mapped, 0, ihist[1].size);
     }
 
+    // "hist" pseudo-point (DLSS5_AMD_INJECT_MASK=hist[,points...]): before this frame's first
+    // dispatch, copy the ORACLE's temporal state - the dump's start.<name>.bin, the buffer as it
+    // stood before launch 0 - over the chain's. After-point injection cannot supply oracle history
+    // to a segment that writes that history itself (post writes ihist/dhist/full15), which is why
+    // the frames 4-8 single-point rows were non-monotone (docs/notes/chain-leverage.md,
+    // "frames 4-8 made measurable"). SR name list; RR needs its own set when its table is attacked.
+    if (!inj_dir.empty() && mode == "sr" &&
+        std::find(inj_mask.begin(), inj_mask.end(), std::string("hist")) != inj_mask.end()) {
+        static const char* kHist[] = {"ihist0", "ihist1", "dhist", "full15",
+                                     "hidden0", "hidden1", "prev_mvec0", "prev_mvec1",
+                                     "mv_ero", "mv_nondil"};
+        std::string hbase = inj_dir + "/frame" + std::to_string(inj_frame) + "/start.";
+        bool hany = false;
+        std::string hnames;
+        for (const char* nm : kHist) {
+            auto it = inj_targets.find(nm);
+            if (it == inj_targets.end() || !it->second->mapped) continue;
+            auto bytes = slurp(hbase + nm + ".bin");
+            if (bytes.empty()) continue;
+            Buffer* target = it->second;
+            std::string key = std::to_string(inj_frame) + "/hist/" + nm;
+            auto shi = inj_shadow.find(key);
+            if (shi == inj_shadow.end()) {
+                Buffer sh = create_buffer(dev, phys, std::min(bytes.size(), target->size),
+                                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+                inj_shadow[key] = sh;
+                shi = inj_shadow.find(key);
+            }
+            std::memcpy(shi->second.mapped, bytes.data(),
+                        std::min(bytes.size(), shi->second.size));
+            VkBufferCopy region{};
+            region.size = std::min({bytes.size(), shi->second.size, target->size}) & ~size_t(3);
+            if (region.size == 0) continue;
+            vkCmdCopyBuffer(cmd, shi->second.buffer, target->buffer, 1, &region);
+            hany = true;
+            hnames += nm;
+            hnames += " ";
+        }
+        if (hany) {
+            VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+            mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0, nullptr, 0, nullptr);
+            std::fprintf(stderr, "INJECTSTART frame%d hist <- %s\n", inj_frame, hnames.c_str());
+        }
+    }
+
     if (mode == "rr") {
         float exp_data[4] = { exposure_val, pre_val, 1.0f / std::max(exposure_val, 1e-4f), 0.0f };
         std::memcpy(expo.mapped, exp_data, 16);

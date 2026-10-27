@@ -256,3 +256,37 @@ Readings:
 4. What this implies for the work order: **post's own frame fidelity + the history loop IS the
    f4-8 problem** (mode-2 closure and enc0 already landed or in flight lift f0-3, which the
    table shows are nearly fine: 53-55).
+
+### 2026-10-27 17:30: the `hist` pseudo-point - frames 4-8 decomposed
+
+New mask token **`hist`** (host, orchestrator): before a frame's first dispatch it copies the
+ORACLE temporal state (the dump's `start.<name>.bin`, the buffer as it stood before launch 0)
+over the chain's - the only way after-point injection can supply oracle history to a segment
+that writes that history itself. SR list: ihist0/1, dhist, full15, hidden0/1, prev_mvec0/1,
+mv_ero, mv_nondil. Sanity: no-mask SR M unchanged 33.76/45.77, zero INJECTSTART lines.
+
+SR M, all 9 frames (multidump dir, `pipeline_report` vs sr_M_ref):
+
+| mask | f0 | f1 | f2 | f3 | f4 | f5 | f6 | f7 | f8 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| baseline (all port) | 53.82 | 54.48 | 54.61 | 55.09 | 33.76 | 36.44 | 39.84 | 41.19 | 42.66 |
+| `hist` (oracle history only) | 53.82 | 57.79 | 59.34 | 63.01 | **62.83** | 64.25 | 65.84 | 64.57 | 64.87 |
+| `hist,dec0` (+ oracle gates/factors/aniso) | 108.48 | 77.96 | 77.24 | 68.02 | 70.72 | 70.13 | 70.10 | 70.09 | 68.60 |
+| `hist,dec0,stage9` | (identical to hist,dec0 - stage9 adds nothing beyond dec0) |
+| post outputs oracle (lev7 `up_post`) | 118.83 | 119.31 | 117.61 | 117.39 | 119.64 | 119.18 | 118.93 | 119.71 | 118.58 |
+
+**Readings - the f4-8 gap, ranked:**
+1. **Oracle history alone is worth ~+29 dB on f4-8** (33-42 -> 62.8-64.9; f0 unchanged - it has
+   no history yet, a built-in sanity). The port-written history (dhist/ihist/full15/hidden) is
+   the dominant f4-8 error carrier - and it is WRITTEN by post+dec0, so their per-frame errors
+   compound into it.
+2. Oracle dec0 gates add ~+7-8 more (68-71); stage9 beyond dec0 adds nothing (matches the f0/f1
+   table).
+3. **The remaining ~48 dB cap is sr_post's own history-path fidelity**: with oracle history AND
+   oracle gates every frame, the port's post only reaches 68-71 dB at f2+ (f0's reset path is
+   108). This matches sr_post_model's own decoded PSNRs (f1 66.4 dB) - i.e. even the SPEC of the
+   history blend path sits there, attributed in k_sr_post.md to hardware v_div/v_exp/v_log being
+   1 ULP from numpy. Next investigation: why does GPU post on ~oracle inputs score only 68-77
+   (some input still differs? the +0xe0/+0xf0 push fields l-rewire found in M's args too? the
+   model's transcendental emulation), judged on the FULL 9-frame table per the
+   compensating-errors rule.
