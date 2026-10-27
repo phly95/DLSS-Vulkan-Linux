@@ -1,265 +1,371 @@
 #version 460
+#extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
-#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
 #extension GL_EXT_shader_16bit_storage : enable
 #extension GL_EXT_shader_8bit_storage : enable
+#extension GL_EXT_control_flow_attributes : enable
 
-layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+// sr_post.comp: NeuralHub's k_sr_post<false,12,16,false,false> (SR preset M, oracle launch 14).
+// The spec is tools/sr/sr_post_model.py (SPEC sections 1-7); every step below is written in the
+// model's order, with rh() at each f16 rounding point and fma() where the spec says fma.
+//
+// Thread layout: 16x16 threads per group. Thread (tx, ty) of group (gx, gy) owns output column
+// x15 = 16*gx + tx and the PAIR r = 16*gy + ty, i.e. output rows 2r and 2r+1. Both rows take their
+// source rows from ONE base row Yb (the even row's Y0), so the nine source records are shared.
+// The 2x2 dhist block of columns 2c, 2c+1 lives in lanes tx, tx+1 of the same group: shared memory.
+//
+// PostArgs: the push block is NeuralHub's 256-byte PostArgs at its own offsets, so an oracle
+// launch's args hex can be passed verbatim. Read here: 0x10 (parity), 0x88..0xa4 (W, H, W15, H15,
+// hW15, hH15), 0xa8 (dec0_f1), 0xac/0xb0 (scale), 0xb4/0xb8 (F20 jitter), 0xcc (log2 10).
+// Not read: the pointers (0x00..0x87), ldr (0xd4) and mvhi (0xd8): this kernel instance is
+// k_sr_post<false,..,ldr=false,mvhi=false>, and the model applies no mvoff (0xf8 is 0 in the oracle).
+//
+// Bindings (kept from the stand-in): 0 g_col, 1 expo, 2 gates, 4 aniso, 5 ihist (history, read),
+// 8 mv_nondil, 9 ihist out, 10 full15, 11 dhist. Bindings 3 (factors), 6 (prev_mvec) and 7 (mv_ero)
+// are bound by the host but not read: the model records the factors and never consumes them, and the
+// MV candidates are not decoded (see the MV note below).
 
-layout(set = 0, binding = 0) readonly buffer InCol        { f16vec4 g_col[]; };
-layout(set = 0, binding = 1) readonly buffer InExpo       { f16vec2 expo; };
-// gates/factors are dec0's u8vec4 output (lanes 0..2 used, lane 3 written 0 by
-// sr_dec0.comp), and the oracle's bytes agree: lane 3 is 0 for all 36864 pixels and
-// reading them as f16 makes 52.8% of gates non-finite.  Declaring them f16vec2, as this
-// shader did before, read the wrong bytes even if it had read them at all.
-layout(set = 0, binding = 2) readonly buffer InGates      { u8vec4 gates[]; };
-layout(set = 0, binding = 3) readonly buffer InFactors    { u8vec4 factors[]; };
-layout(set = 0, binding = 4) readonly buffer InAniso      { f16vec4 aniso[]; };
-layout(set = 0, binding = 5) readonly buffer InIhist      { f16vec4 in_ihist[]; };
-layout(set = 0, binding = 6) readonly buffer InPrevMv     { f16vec2 in_prev_mv[]; };
-layout(set = 0, binding = 7) readonly buffer InMvEro      { f16vec2 in_mv_ero[]; };
-layout(set = 0, binding = 8) readonly buffer InMvNondil   { f16vec2 in_mv_nondil[]; };
+#include "rh.glsl"
 
-layout(set = 0, binding = 9) writeonly buffer OutIhist    { f16vec4 out_ihist[]; };
-layout(set = 0, binding = 10) writeonly buffer OutFull15  { uint full15[]; };
-layout(set = 0, binding = 11) writeonly buffer OutDhist   { uint out_dhist[]; };
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer InCol      { f16vec4 g_col[]; };
+layout(set = 0, binding = 1) readonly buffer InExpo     { float16_t expo[]; };
+layout(set = 0, binding = 2) readonly buffer InGates    { u8vec4 gates[]; };
+layout(set = 0, binding = 4) readonly buffer InAniso    { f16vec4 aniso[]; };
+layout(set = 0, binding = 5) readonly buffer InIhist    { f16vec4 in_ihist[]; };
+layout(set = 0, binding = 8) readonly buffer InMvNondil { f16vec2 in_mv_nondil[]; };
+
+layout(set = 0, binding = 9) writeonly buffer OutIhist   { f16vec4 out_ihist[]; };
+layout(set = 0, binding = 10) writeonly buffer OutFull15 { uint full15[]; };
+layout(set = 0, binding = 11) writeonly buffer OutDhist  { uint out_dhist[]; };
 
 layout(push_constant) uniform PostArgs {
-    layout(offset = 16) uint parity;
-    layout(offset = 136) int W;
+    layout(offset = 0x10) uint parity;     // PostArgs +0x10: p (u64; the low dword is read)
+    layout(offset = 0x88) int W;           // render size 256 x 144
     int H;
-    layout(offset = 152) int W15;
+    layout(offset = 0x98) int W15;         // level-15 (output) size 768 x 432
     int H15;
-    layout(offset = 160) int hW15;
+    layout(offset = 0xa0) int hW15;        // dhist size 384 x 216
     int hH15;
-    layout(offset = 168) float dec0_f1;
-    float scaleX;
+    layout(offset = 0xa8) float dec0_f1;   // gate0 confidence scale (2.7530112)
+    layout(offset = 0xac) float scaleX;    // W/W15, H/H15 as f32
     float scaleY;
-    float jitterX;
+    layout(offset = 0xb4) float jitterX;   // F20: this frame's jitter
     float jitterY;
-    float invW;
-    float invH;
-    float invW15;
-    float invH15;
-    float log2_10;
-    layout(offset = 208) uint reset_flag;
-    uint ldr;
-    uint mvhi;
-    layout(offset = 248) float mvoffx;
-    float mvoffy;
+    layout(offset = 0xcc) float log2_10;   // f32 bits 0x40549a78
 };
 
-uint pack_r11g11b10(vec3 c, float e) {
-    if (ldr != 0u) {
-        uint ur = uint(clamp(round(c.r * 2047.0), 0.0, 2047.0));
-        uint ug = uint(clamp(round(c.g * 2047.0), 0.0, 2047.0));
-        uint ub = uint(clamp(round(c.b * 1023.0), 0.0, 1023.0));
-        return ur | (ug << 11u) | (ub << 22u);
-    } else {
-        vec3 p = log2(max(1.0 + 100.0 * c * e, vec3(0.0001))) * 0.3010299956639812;
-        vec3 t = p * 0.36;
-        vec3 v = t * (1.0 / 2.45);
-        uint ur = uint(clamp(floor(v.r * 2047.0 + 0.5), 0.0, 2047.0));
-        uint ug = uint(clamp(floor(v.g * 2047.0 + 0.5), 0.0, 2047.0));
-        uint ub = uint(clamp(floor(v.b * 1023.0 + 0.5), 0.0, 1023.0));
-        return ur | (ug << 11u) | (ub << 22u);
-    }
+// f32 constants of the spec, as their bit patterns (macros: glslang rejects uintBitsToFloat in a global const)
+#define C_TM_LOG10_2 uintBitsToFloat(0x3E9A209Bu)   // log10(2)
+#define C_TM_SCALE   uintBitsToFloat(0x3EB851ECu)   // 0.36
+#define C_ANISO1     uintBitsToFloat(0xBF38A8C1u)   // -0.5 * log2(e)
+#define C_ANISO2     uintBitsToFloat(0xBFB8A8C1u)   // -log2(e)
+#define K_ENC        uintBitsToFloat(0x3ED0FAC6u)   // 1 / 2.45
+#define C_I036       uintBitsToFloat(0x4031C71Cu)   // 1 / 0.36
+#define C_PT01       uintBitsToFloat(0x3C23D70Au)   // 0.01
+#define C_FLOOR      uintBitsToFloat(0x38D1B717u)   // 1e-4
+
+shared vec3 s_pair[16][16];
+
+// IEEE-style f32 division a / b, as the hardware's v_div_scale / v_rcp / v_fma / v_div_fmas / v_div_fixup
+// sequence computes it for normal operands: a v_rcp_f32 seed and two fma correction steps. A plain
+// `a / b` compiles to v_rcp_f32 and a multiply (RADV, measured in the ISA dump), one ULP short of the
+// model's correctly rounded 1/Wsum on a few per cent of the pixels.
+float fdiv_ieee(float a, float b) {
+    precise float r = 1.0 / b;
+    precise float e0 = fma(-b, r, 1.0);
+    precise float r1 = fma(r, e0, r);
+    precise float q0 = a * r1;
+    precise float e1 = fma(-b, q0, a);
+    precise float q1 = fma(e1, r1, q0);
+    precise float e2 = fma(-b, q1, a);
+    return fma(e2, r1, q1);
 }
 
-vec3 get_tonemapped(vec3 c, float e) {
-    vec3 p = log2(max(1.0 + 100.0 * c * e, vec3(0.0001))) * 0.3010299956639812;
-    return p * 0.36;
+// exposure of a parity slot: expo[q], or 1.0 when that slot is 0 (SPEC 1)
+float expo_at(uint q) {
+    float v = float(expo[q]);
+    return (v != 0.0) ? v : 1.0;
 }
 
-uint pack_dhist(vec3 c, float e) {
-    vec3 t = get_tonemapped(c, e);
-    vec3 v = t * (1.0 / 2.45);
-    uint ur = uint(clamp(floor(v.r * 1023.0 + 0.5), 0.0, 1023.0));
-    uint ug = uint(clamp(floor(v.g * 1023.0 + 0.5), 0.0, 1023.0));
-    uint ub = uint(clamp(floor(v.b * 1023.0 + 0.5), 0.0, 1023.0));
-    return ur | (ug << 10u) | (ub << 20u);
+// SPEC 1: f16(0.36 * log10(1 + 100 * min(c * e, 32752))) for one channel
+float tm_rec(float c, float e) {
+    precise float x = min(c * e, 32752.0);
+    precise float y = max(1.0 + 100.0 * x, 1e-4);
+    precise float lg = log2(y) * C_TM_LOG10_2;
+    return rh(lg * C_TM_SCALE);
 }
 
-vec3 sample_history(float px, float py) {
-    int x0 = clamp(int(floor(px)), 0, W15 - 1);
-    int x1 = clamp(x0 + 1, 0, W15 - 1);
-    int y0 = clamp(int(floor(py)), 0, H15 - 1);
-    int y1 = clamp(y0 + 1, 0, H15 - 1);
-
-    float fx = clamp(px - float(x0), 0.0, 1.0);
-    float fy = clamp(py - float(y0), 0.0, 1.0);
-
-    vec3 h00 = vec3(in_ihist[y0 * W15 + x0].rgb);
-    vec3 h10 = vec3(in_ihist[y0 * W15 + x1].rgb);
-    vec3 h01 = vec3(in_ihist[y1 * W15 + x0].rgb);
-    vec3 h11 = vec3(in_ihist[y1 * W15 + x1].rgb);
-
-    return mix(mix(h00, h10, fx), mix(h01, h11, fx), fy);
+// SPEC 3: q = f16(f16(f16(f16(dx*dx)*a) + f16(f16(dy*dy)*b)) + f16(f16(dx*dy)*c)) with (a,b,c) = (A',B',C')
+float quad_q(float dx, float dy, vec3 abc) {
+    float t1 = rh(rh(dx * dx) * abc.x);
+    float t2 = rh(rh(dy * dy) * abc.y);
+    float t3 = rh(rh(dx * dy) * abc.z);
+    return rh(rh(t1 + t2) + t3);
 }
 
-uint pack_from_tonemapped(vec3 t) {
-    if (ldr != 0u) {
-        vec3 c = max(pow(vec3(10.0), t / 0.36) - 1.0, vec3(0.0)) / 100.0;
-        uint ur = uint(clamp(round(c.r * 2047.0), 0.0, 2047.0));
-        uint ug = uint(clamp(round(c.g * 2047.0), 0.0, 2047.0));
-        uint ub = uint(clamp(round(c.b * 1023.0), 0.0, 1023.0));
-        return ur | (ug << 11u) | (ub << 22u);
-    } else {
-        vec3 v = t * (1.0 / 2.45);
-        uint ur = uint(clamp(floor(v.r * 2047.0 + 0.5), 0.0, 2047.0));
-        uint ug = uint(clamp(floor(v.g * 2047.0 + 0.5), 0.0, 2047.0));
-        uint ub = uint(clamp(floor(v.b * 1023.0 + 0.5), 0.0, 1023.0));
-        return ur | (ug << 11u) | (ub << 22u);
-    }
+// SPEC 6: the tonemap of the linear value, tm = (log2(y) * log10(2)) * 0.36 with y = max(fma(100,x,1), 1e-4)
+vec3 tm_lin(vec3 x) {
+    precise vec3 y = max(fma(vec3(100.0), x, vec3(1.0)), vec3(C_FLOOR));
+    precise vec3 lg = log2(y) * C_TM_LOG10_2;
+    return lg * C_TM_SCALE;
 }
 
-vec3 process_pixel(int x, int y, float e) {
-    float sx = (scaleX != 0.0) ? scaleX : (float(W) / float(W15));
-    float sy = (scaleY != 0.0) ? scaleY : (float(H) / float(H15));
-    float rx_f = (float(x) + 0.5) * sx + jitterX - 0.5;
-    float ry_f = (float(y) + 0.5) * sy + jitterY - 0.5;
+// SPEC 6: decode(h) = 0.01 * (exp2(clamp(h, 1e-4, 3) * (1/0.36) * log2(10)) - 1)
+vec3 decode_lin(vec3 h, float l210) {
+    precise vec3 hc = clamp(h, vec3(C_FLOOR), vec3(3.0));
+    precise vec3 arg = (hc * C_I036) * l210;
+    precise vec3 d = exp2(arg) - 1.0;
+    return C_PT01 * d;
+}
 
-    int x0 = clamp(int(floor(rx_f)), 0, W - 1);
-    int x1 = clamp(x0 + 1, 0, W - 1);
-    int y0 = clamp(int(floor(ry_f)), 0, H - 1);
-    int y1 = clamp(y0 + 1, 0, H - 1);
+// SPEC 6, the 1D Catmull-Rom weights of the sub-texel fraction f (clamped to [0,1]):
+// returns w(-1), w(2), a = w0 + w1 and the 8-bit round-to-nearest quantised fraction r = w1 / a.
+void cr_axis(float f0, out float wm1, out float w2, out float a, out float rq) {
+    precise float f = clamp(f0, 0.0, 1.0);
+    precise float f2 = f * f;
+    precise float f3 = f2 * f;
+    precise float wm1_ = fma(-0.5, f3 + f, f2);
+    precise float w0 = 1.0 + fma(1.5, f3, -2.5 * f2);
+    precise float w2_ = 0.5 * fma(f, f2, -f2);
+    precise float w1 = fma(-0.5, f3 - f2, (1.0 - wm1_) - w0);
+    precise float a_ = w0 + w1;
+    precise float r = fdiv_ieee(w1, a_);
+    wm1 = wm1_;
+    w2 = w2_;
+    a = a_;
+    rq = roundEven(r * 256.0) / 256.0;
+}
 
-    float fx = clamp(rx_f - float(x0), 0.0, 1.0);
-    float fy = clamp(ry_f - float(y0), 0.0, 1.0);
+// SPEC 6: one bilinear fetch of the history at texel (xi0, yi0) with sub-texel weights rx, ry;
+// clamp-to-edge addressing; texel centres.
+vec3 bil(int xi0, int yi0, float rx, float ry) {
+    int xi = clamp(xi0, 0, W15 - 1);
+    int yi = clamp(yi0, 0, H15 - 1);
+    int x1 = clamp(xi + 1, 0, W15 - 1);
+    int y1 = clamp(yi + 1, 0, H15 - 1);
+    vec3 h00 = vec3(in_ihist[yi * W15 + xi].xyz);
+    vec3 h01 = vec3(in_ihist[yi * W15 + x1].xyz);
+    vec3 h10 = vec3(in_ihist[y1 * W15 + xi].xyz);
+    vec3 h11 = vec3(in_ihist[y1 * W15 + x1].xyz);
+    precise vec3 top = h00 * (1.0 - rx) + h01 * rx;
+    precise vec3 bot = h10 * (1.0 - rx) + h11 * rx;
+    return top * (1.0 - ry) + bot * ry;
+}
 
-    // 1. Anisotropic spatial reconstruction: 9 taps weighted by the local colour
-    //    covariance dec0 wrote into `aniso` (Axx, Ayy, Axy).  `aniso` has exactly one
-    //    decoded meaning and this is it; s3x/s4y are rx_f/ry_f without the -0.5, so the
-    //    tap grid is centred the way the reference's is.  The diagonal is floored at 3.0
-    //    and the cross term is capped at 0.95*sqrt(Axx*Ayy) to keep the kernel positive.
-    //    This replaces the 2x2 bilinear box that was here before, which was invented.
-    float s3x = rx_f + 0.5;
-    float s4y = ry_f + 0.5;
-    int aniso_x = clamp(int(floor(s3x)), 0, W - 1);
-    int aniso_y = clamp(int(floor(s4y)), 0, H - 1);
-    uint aniso_idx = uint(aniso_y * W + aniso_x);
+// SPEC 6: the 5-tap bilinear Catmull-Rom history sample at the reprojected position (posx, posy),
+// in output texels; returns h, the tm-domain history.
+vec3 cr_sample(float posx, float posy) {
+    int Ix = int(floor(posx - 0.5));
+    int Iy = int(floor(posy - 0.5));
+    precise float fx = posx - (float(Ix) + 0.5);
+    precise float fy = posy - (float(Iy) + 0.5);
+    float wmx, w2x, ax, rxq;
+    float wmy, w2y, ay, ryq;
+    cr_axis(fx, wmx, w2x, ax, rxq);
+    cr_axis(fy, wmy, w2y, ay, ryq);
+    precise float W1 = wmx * ay;
+    precise float W2 = w2x * ay;
+    precise float W3 = ax * wmy;
+    precise float W4 = ax * w2y;
+    precise float W5 = ax * ay;
+    vec3 t1 = bil(Ix - 1, Iy, 0.0, ryq);      // pure texel x, blended y
+    vec3 t3 = bil(Ix, Iy - 1, rxq, 0.0);      // blended x, pure texel y
+    vec3 t5 = bil(Ix, Iy, rxq, ryq);          // the main bilinear
+    vec3 t4 = bil(Ix, Iy + 2, rxq, 0.0);
+    vec3 t2 = bil(Ix + 2, Iy, 0.0, ryq);
+    precise vec3 num = t1 * W1;
+    num = fma(t3, vec3(W3), num);
+    num = fma(t5, vec3(W5), num);
+    num = fma(t4, vec3(W4), num);
+    num = fma(t2, vec3(W2), num);
+    precise float wcr = (((W3 + W1) + W5) + W4) + W2;
+    return vec3(fdiv_ieee(num.x, wcr), fdiv_ieee(num.y, wcr), fdiv_ieee(num.z, wcr));
+}
 
-    f16vec4 A = aniso[aniso_idx];
-    float Axx = max(float(A.x), 3.0);
-    float Ayy = max(float(A.y), 3.0);
-    float max_cross = sqrt(Axx * Ayy) * 0.95;
-    float Axy = clamp(float(A.z), -max_cross, max_cross);
+// SPEC 7: R11 | G11 << 11 | B10 << 22 of the t2-blend tm
+uint enc_full15(vec3 tm) {
+    precise vec3 t = K_ENC * tm;
+    uint qr = uint(clamp(trunc(fma(2047.0, t.r, 0.5)), 0.0, 2047.0));
+    uint qg = uint(clamp(trunc(fma(2047.0, t.g, 0.5)), 0.0, 2047.0));
+    uint qb = uint(clamp(trunc(fma(1023.0, t.b, 0.5)), 0.0, 1023.0));
+    return qr | (qg << 11) | (qb << 22);
+}
 
-    int kx = int(floor(s3x - 0.5));
-    int ky = int(floor(s4y - 0.5));
-
-    vec3 num = vec3(0.0);
-    float den = 0.0;
-    vec3 cmin = vec3(1e9);
-    vec3 cmax = vec3(-1e9);
-    for (int dy = 0; dy < 3; ++dy) {
-        int in_y = clamp(ky + dy, 0, H - 1);
-        float ddy = (float(ky + dy) + 0.5) - s4y;
-        for (int dx = 0; dx < 3; ++dx) {
-            int in_x = clamp(kx + dx, 0, W - 1);
-            float ddx = (float(kx + dx) + 0.5) - s3x;
-
-            float dist = -(Axx * (ddx * ddx) + 2.0 * Axy * ddx * ddy + Ayy * (ddy * ddy));
-            float w = exp(dist);
-
-            vec3 c = clamp(vec3(g_col[in_y * W + in_x].rgb), vec3(0.0), vec3(32752.0));
-            num += w * c;
-            den += w;
-
-            vec3 tc = get_tonemapped(c, e);
-            cmin = min(cmin, tc);
-            cmax = max(cmax, tc);
-        }
-    }
-    vec3 t_spatial = get_tonemapped(num / max(den, 1e-6), e);
-
-    // Color gamut box expanded by 10%, from the same 9 taps
-    cmin = max(1.1 * cmin - vec3(0.05), vec3(0.0));
-    cmax = 1.1 * cmax + vec3(0.05);
-
-    // Bilinear motion vector interpolation across continuous coordinate
-    vec2 mv00 = vec2(in_mv_nondil[y0 * W + x0]);
-    vec2 mv10 = vec2(in_mv_nondil[y0 * W + x1]);
-    vec2 mv01 = vec2(in_mv_nondil[y1 * W + x0]);
-    vec2 mv11 = vec2(in_mv_nondil[y1 * W + x1]);
-    vec2 mv = mix(mix(mv00, mv10, fx), mix(mv01, mv11, fx), fy);
-
-    // Reprojected pixel coordinate in history buffer (including subpixel jitter delta)
-    float px = float(x) + mv.x + mvoffx;
-    float py = float(y) + mv.y + mvoffy;
-
-    if (reset_flag == 0u && px >= 0.0 && px <= float(W15 - 1) && py >= 0.0 && py <= float(H15 - 1)) {
-        vec3 t_hist = sample_history(px, py);
-        if (dot(t_hist, t_hist) > 1e-6) {
-            vec3 t_hist_clamped = clamp(t_hist, cmin, cmax);
-
-            // 2 & 3. dec0's temporal gate and 3-way factor blend.  `gates` is the
-            // per-channel confidence in 0..255 and `factors` the three blend weights,
-            // each also 0..255 and read as lane0..lane2 (lane3 is written 0 by dec0).
-            // The candidate mixes spatial, raw history and box-clamped history, and the
-            // gate decides how far to move off the spatial-only result.  This replaces
-            // the hand-tuned `0.90 - max_diff*2.0` weight that was here before, which
-            // was invented; `gates`/`factors`/`aniso` now all have consumers.
-            u8vec4 u_gate = gates[aniso_idx];
-            u8vec4 u_fact = factors[aniso_idx];
-            vec3 g = vec3(float(u_gate.x), float(u_gate.y), float(u_gate.z)) * (1.0 / 255.0);
-            float f0 = float(u_fact.x) * (1.0 / 255.0);
-            float f1 = float(u_fact.y) * (1.0 / 255.0);
-            float f2 = float(u_fact.z) * (1.0 / 255.0);
-
-            vec3 t_cand = f0 * t_spatial + f1 * t_hist + f2 * t_hist_clamped;
-            return mix(t_spatial, t_cand, g);
-        }
-    }
-
-    return t_spatial;
+// SPEC 7: R10 | G10 << 10 | B10 << 20 of rndne(1023 * clamp(k * tm, 0, 1))
+uint enc_dhist(vec3 tm) {
+    precise vec3 t = clamp(K_ENC * tm, vec3(0.0), vec3(1.0));
+    precise vec3 q = roundEven(1023.0 * t);
+    return uint(q.r) | (uint(q.g) << 10) | (uint(q.b) << 20);
 }
 
 void main() {
-    int gx = int(gl_WorkGroupID.x) * 16;
-    int gy = int(gl_WorkGroupID.y) * 32;
+    const int tx = int(gl_LocalInvocationID.x);
+    const int ty = int(gl_LocalInvocationID.y);
+    const int x15 = int(gl_WorkGroupID.x) * 16 + tx;
+    const int r = int(gl_WorkGroupID.y) * 16 + ty;
+    const bool valid = (x15 < W15) && (r < hH15);
+    const int ye = 2 * r;            // even output row
+    const int yo = ye + 1;           // odd output row
 
-    uint tid = gl_LocalInvocationIndex;
-    int lx = int(tid & 15u);
-    int ly = int(tid >> 4u) * 2;
+    const float e = expo_at(parity);          // SPEC 1, and e0 of SPEC 6
+    const float e_prev = expo_at(parity ^ 1u);
 
-    float e = max(float(expo[parity]), 0.0001);
+    // ---- SPEC 2: output geometry. px is shared by both rows; py is per row.
+    precise float px = fma(float(x15) + 0.5, scaleX, jitterX);
+    precise float pye = fma(float(ye) + 0.5, scaleY, jitterY);
+    precise float pyo = fma(float(yo) + 0.5, scaleY, jitterY);
+    const int X0 = int(floor(px - 0.5));
+    const int Y0e = int(floor(pye - 0.5));
+    const int Y0o = int(floor(pyo - 0.5));
+    const int Yb = Y0e;                                   // the pair's base row
+    precise float dx0 = rh((float(X0) + 0.5) - px);
+    precise float dy0e = rh((float(Y0e) + 0.5) - pye);
+    precise float dy0o = rh((float(Y0o) + 0.5) - pyo);
+    const float dybE = dy0e;                              // Y0e == Yb, shift 0
+    const float dybO = rh(dy0o - float(Y0o - Yb));        // the odd row's shift onto Yb
 
-    int x = gx + lx;
-    int y0 = gy + ly;
-    int y1 = y0 + 1;
+    // ---- SPEC 3 and 4: nine taps, kx-major. Records (tm RGB, gates, A'B'C') once per source pixel.
+    vec3 rtm[9];
+    vec3 rgt[9];
+    vec3 rabc[9];
+    float wE[9];
+    float wO[9];
+    [[unroll]] for (int k = 0; k < 9; ++k) {
+        const int kx = k / 3 - 1;
+        const int ky = k - (k / 3) * 3 - 1;
+        const int sxi = clamp(X0 + kx, 0, W - 1);
+        const int syi = clamp(Yb + ky, 0, H - 1);
+        const uint si = uint(syi * W + sxi);
 
-    vec3 t0 = vec3(0.0);
-    vec3 t1 = vec3(0.0);
+        const f16vec4 cg = g_col[si];
+        rtm[k] = vec3(tm_rec(float(cg.x), e), tm_rec(float(cg.y), e), tm_rec(float(cg.z), e));
 
-    // Pixel 0 (x, y0)
-    if (x < W15 && y0 < H15) {
-        t0 = process_pixel(x, y0, e);
-        uint idx0 = uint(y0 * W15 + x);
-        full15[idx0] = pack_from_tonemapped(t0);
-        out_ihist[idx0] = f16vec4(f16vec3(t0), float16_t(0.0));
+        const u8vec4 gg = gates[si];
+        rgt[k] = vec3(rh(fdiv_ieee(float(gg.x), 255.0)), rh(fdiv_ieee(float(gg.y), 255.0)), rh(fdiv_ieee(float(gg.z), 255.0)));
+
+        const f16vec4 an = aniso[si];
+        rabc[k] = vec3(rh(C_ANISO1 * float(an.x)), rh(C_ANISO1 * float(an.y)), rh(C_ANISO2 * float(an.z)));
+
+        const float dx = rh(dx0 + float(kx));
+        const float dyE = rh(dybE + float(ky));
+        const float dyO = rh(dybO + float(ky));
+        wE[k] = exp2(quad_q(dx, dyE, rabc[k]));
+        wO[k] = exp2(quad_q(dx, dyO, rabc[k]));
     }
 
-    // Pixel 1 (x, y1)
-    if (x < W15 && y1 < H15) {
-        t1 = process_pixel(x, y1, e);
-        uint idx1 = uint(y1 * W15 + x);
-        full15[idx1] = pack_from_tonemapped(t1);
-        out_ihist[idx1] = f16vec4(f16vec3(t1), float16_t(0.0));
+    // Wsum (f32, kx-major) and the IEEE reciprocal (SPEC 3, 4)
+    precise float wsumE = 0.0;
+    precise float wsumO = 0.0;
+    [[unroll]] for (int k = 0; k < 9; ++k) {
+        wsumE = wsumE + wE[k];
+        wsumO = wsumO + wO[k];
+    }
+    precise float invE = fdiv_ieee(1.0, wsumE);
+    precise float invO = fdiv_ieee(1.0, wsumO);
+
+    // SPEC 4: the f16 numerator chains, n = f16(n + f16(w) * v), one rounding per tap
+    vec3 nE = vec3(0.0), nO = vec3(0.0);     // colour (fields 0..2)
+    vec3 gE = vec3(0.0), gO = vec3(0.0);     // gates (fields 6..8)
+    [[unroll]] for (int k = 0; k < 9; ++k) {
+        const float weE = rh(wE[k]);
+        const float weO = rh(wO[k]);
+        nE = rh3(nE + weE * rtm[k]);
+        nO = rh3(nO + weO * rtm[k]);
+        gE = rh3(gE + weE * rgt[k]);
+        gO = rh3(gO + weO * rgt[k]);
     }
 
-    // Downsampled history 384x216 (half of 768x432)
-    if ((lx & 1) == 0 && (x < W15) && (y0 < H15)) {
-        int x_d = x >> 1;
-        int y_d = y0 >> 1;
-        if (x_d < hW15 && y_d < hH15) {
-            vec3 t_avg = 0.5 * (t0 + t1);
-            vec3 vd = t_avg * (1.0 / 2.45);
-            uint ur = uint(clamp(floor(vd.r * 1023.0 + 0.5), 0.0, 1023.0));
-            uint ug = uint(clamp(floor(vd.g * 1023.0 + 0.5), 0.0, 1023.0));
-            uint ub = uint(clamp(floor(vd.b * 1023.0 + 0.5), 0.0, 1023.0));
-            out_dhist[y_d * hW15 + x_d] = ur | (ug << 10u) | (ub << 20u);
-        }
+    // SPEC 4: the spatial colour average S = n * inv, then B = decode(S)
+    precise vec3 SE = nE * invE;
+    precise vec3 SO = nO * invO;
+    precise vec3 BE = decode_lin(SE, log2_10);
+    precise vec3 BO = decode_lin(SO, log2_10);
+
+    // SPEC 5: the two gate blend weights, t1 (gate1, ihist1/dhist) and t2 (gate2, full15)
+    precise float v16E = invE * rh(gE.x);
+    precise float v16O = invO * rh(gO.x);
+    precise float v12E = clamp((dec0_f1 * wsumE) * v16E, 0.0, 1.0);
+    precise float v12O = clamp((dec0_f1 * wsumO) * v16O, 0.0, 1.0);
+    precise float Wa1E = rh(gE.y);
+    precise float Wa1O = rh(gO.y);
+    precise float Wa2E = rh(gE.z);
+    precise float Wa2O = rh(gO.z);
+    precise float t1E = fma(v12E, fma(-invE, Wa1E, 1.0), invE * Wa1E);
+    precise float t1O = fma(v12O, fma(-invO, Wa1O, 1.0), invO * Wa1O);
+    precise float t2E = fma(v12E, fma(-invE, Wa2E, 1.0), invE * Wa2E);
+    precise float t2O = fma(v12O, fma(-invO, Wa2O, 1.0), invO * Wa2O);
+
+    // SPEC 6: the history. The MV is read per output pixel from mv_nondil at the render pixel that
+    // contains the output pixel's source position (clamped).
+    // NOT DECODED (Review post-3): NeuralHub's per-pixel MV candidate selection (mv_nondil, prev_mvec1,
+    // mv_ero) is not decoded. All three candidate buffers are identical and constant in the oracle's
+    // frames 0/1, so reading mv_nondil here matches the model on those frames; it is not a selection rule.
+    const int mxE = clamp(int(floor(px)), 0, W - 1);
+    const int myE = clamp(int(floor(pye)), 0, H - 1);
+    const int myO = clamp(int(floor(pyo)), 0, H - 1);
+    const vec2 mvE = vec2(in_mv_nondil[uint(myE * W + mxE)]);
+    const vec2 mvO = vec2(in_mv_nondil[uint(myO * W + mxE)]);
+    precise float posxE = (float(x15) + 0.5) + mvE.x;
+    precise float posyE = (float(ye) + 0.5) + mvE.y;
+    precise float posxO = (float(x15) + 0.5) + mvO.x;
+    precise float posyO = (float(yo) + 0.5) + mvO.y;
+
+    // Off-screen (never fires on the oracle frames; the model has no off-screen path): the tonemap of
+    // e_prev * g_col at the clamped nearest source pixel (SPEC 6, decoded sentence, not verified).
+    vec3 hE, hO;
+    if (posxE >= 0.0 && posxE <= float(W15) && posyE >= 0.0 && posyE <= float(H15)) {
+        hE = cr_sample(posxE, posyE);
+    } else {
+        int sx = clamp(int(floor(posxE * scaleX)), 0, W - 1);
+        int sy = clamp(int(floor(posyE * scaleY)), 0, H - 1);
+        f16vec4 cg = g_col[uint(sy * W + sx)];
+        hE = vec3(tm_rec(float(cg.x), e_prev), tm_rec(float(cg.y), e_prev), tm_rec(float(cg.z), e_prev));
+    }
+    if (posxO >= 0.0 && posxO <= float(W15) && posyO >= 0.0 && posyO <= float(H15)) {
+        hO = cr_sample(posxO, posyO);
+    } else {
+        int sx = clamp(int(floor(posxO * scaleX)), 0, W - 1);
+        int sy = clamp(int(floor(posyO * scaleY)), 0, H - 1);
+        f16vec4 cg = g_col[uint(sy * W + sx)];
+        hO = vec3(tm_rec(float(cg.x), e_prev), tm_rec(float(cg.y), e_prev), tm_rec(float(cg.z), e_prev));
+    }
+
+    // SPEC 6: A = e0 * decode(h); x = fma(t, B - A, A) for the t1 blend (ihist1, dhist) and the t2 blend (full15).
+    // On frame 0 the history is zero (the host clears it on reset), so h = 0 and A = e * decode(0);
+    // the model writes A = decode(0) there, which is the same whenever e = 1 (the oracle's exposure).
+    precise vec3 AE = e * decode_lin(hE, log2_10);
+    precise vec3 AO = e * decode_lin(hO, log2_10);
+    precise vec3 diffE = BE - AE;
+    precise vec3 diffO = BO - AO;
+    precise vec3 x1E = fma(vec3(t1E), diffE, AE);
+    precise vec3 x1O = fma(vec3(t1O), diffO, AO);
+    precise vec3 x2E = fma(vec3(t2E), diffE, AE);
+    precise vec3 x2O = fma(vec3(t2O), diffO, AO);
+
+    // SPEC 7: ihist1 = f16(tm of the t1 blend) (the store rounds to f16); full15 from the t2 blend
+    vec3 tm1E = tm_lin(x1E);
+    vec3 tm1O = tm_lin(x1O);
+    vec3 tm2E = tm_lin(x2E);
+    vec3 tm2O = tm_lin(x2O);
+    if (valid) {
+        const int iE = ye * W15 + x15;
+        const int iO = yo * W15 + x15;
+        out_ihist[iE] = f16vec4(f16vec3(tm1E), float16_t(0.0));
+        out_ihist[iO] = f16vec4(f16vec3(tm1O), float16_t(0.0));
+        full15[iE] = enc_full15(tm2E);
+        full15[iO] = enc_full15(tm2O);
+    }
+
+    // SPEC 7: dhist = the t1-blend x of the 2x2 block in the LINEAR domain: the row pair is summed
+    // first, then the column pair (the model's order), then tonemap_lin and encode.
+    s_pair[ty][tx] = x1E + x1O;
+    memoryBarrierShared();
+    barrier();
+    if (valid && (tx & 1) == 0) {
+        precise vec3 xm = (s_pair[ty][tx] + s_pair[ty][tx + 1]) * 0.25;
+        out_dhist[r * hW15 + (x15 >> 1)] = enc_dhist(tm_lin(xm));
     }
 }

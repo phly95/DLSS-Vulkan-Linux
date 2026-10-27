@@ -188,3 +188,22 @@ Open, in order of size:
    in frame 0.
 3. The MV choice, Catmull-Rom history and second candidate (Review R5, steps 3-5).
 4. `dhist`.
+
+## 2026-10-27: sr_post.comp rewritten against tools/sr/sr_post_model.py (supersedes the "hybrid" stand-in above)
+
+The shader now implements the spec, SPEC sections 1-7. The host's `// 6. Post` block fills PostArgs
+at the oracle's own offsets; every offset the shader reads is byte-equal to the oracle's launch-14
+args on frames 0 and 1.
+- kernel_run vs the model: full15 / ihist1 / dhist 99.9967 / 99.9938 / 99.9988% (frame 0) and
+  99.9979 / 99.9929 / 99.9988% (frame 1).
+- vs the oracle: 99.996 / 99.994 / 99.999% (frame 0) and 99.85 / 99.82 / 99.80% (frame 1).
+- RADV lowers `1.0/x` to rcp+mul, so the IEEE divide is a Newton-corrected helper (`fdiv_ieee`).
+- With every point upstream of post injected from the oracle, SR M frames 0/1 go from 39.63 / 36.42
+  (stand-in) to **108.48 / 77.96 dB**: the post kernel is no longer the chain's limit.
+- End to end it is a faithful consumer of the still-wrong upstream, as pre-committed:
+  - SR M 32.13/33.61 -> 32.15/33.28. Injecting only dec0 already gives 108.48 / 77.96, so the loss is
+    dec0's input (t8 from the stage shaders, pre-R9).
+  - SR L 23.78/25.84 -> 22.70/28.31. L's `k_sr_post<true,...>` is not covered by the M model:
+    model vs L oracle is 48.96 / 63.73 dB decoded, so the isL arithmetic is open.
+- Still undecoded: the per-pixel MV candidate selection (the oracle frames' MVs are constant; the
+  shader reads mv_nondil) and the off-screen fallback (never exercised).

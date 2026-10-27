@@ -1042,26 +1042,40 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             inject_after(cmd, "dec0", sr_l[12]);
         }
 
-        // 6. Post
+        // 6. Post: NeuralHub's k_sr_post<false,12,16,false,false> (SR M, oracle launch 14). The 256-byte push
+        //    is PostArgs at the oracle's own offsets (tools/sr/srref/srref.cpp, "post (FUN_180117ee0)"), so an
+        //    oracle args hex passes verbatim. The shader reads 0x10, 0x88..0xa4, 0xa8, 0xac, 0xb0, 0xb4, 0xb8
+        //    and 0xcc; every other int/float offset is filled as the oracle does where the host has the value.
+        //    The pointers (0x00..0x87) stay zero: the shader does not read them. 0xd0 (depth_inverted) and 0xf0
+        //    (mv_scale) are not in FrameParams and stay zero; the shader does not read them either. 0xf8 is the
+        //    oracle's mv_offset_kernel value, 0 on both dumped frames (srref: "0 for unjittered MVs"). The
+        //    previous build's stand-in offsets (136..252) are gone. DLSS5_AMD_POST_PUSH_DUMP=<file> appends each
+        //    frame's push (256 bytes) to <file>, for the byte-for-byte comparison with the oracle's args.
         {
             uint8_t push[256] = {0};
-            std::memcpy(push + 16, &p, 4);
-            std::memcpy(push + 136, &W, 4); std::memcpy(push + 140, &H, 4);
-            std::memcpy(push + 152, &W15, 4); std::memcpy(push + 156, &H15, 4);
-            std::memcpy(push + 160, &hW15, 4); std::memcpy(push + 164, &hH15, 4);
-            std::memcpy(push + 168, &dec0_f1, 4);
-            float sx15 = float(W) / float(W15);
-            float sy15 = float(H) / float(H15);
-            std::memcpy(push + 172, &sx15, 4);
-            std::memcpy(push + 176, &sy15, 4);
-            std::memcpy(push + 180, &jx, 4);
-            std::memcpy(push + 184, &jy, 4);
-            std::memcpy(push + 208, &reset, 4);
-            std::memcpy(push + 212, &ldr, 4); std::memcpy(push + 216, &mvhi, 4);
-            float mvoffx = (jpx - jx) * (float(W15) / float(W));
-            float mvoffy = (jpy - jy) * (float(H15) / float(H));
-            std::memcpy(push + 248, &mvoffx, 4);
-            std::memcpy(push + 252, &mvoffy, 4);
+            const uint64_t p64 = uint64_t(p);
+            std::memcpy(push + 0x10, &p64, 8);
+            std::memcpy(push + 0x88, &W, 4); std::memcpy(push + 0x8c, &H, 4);
+            std::memcpy(push + 0x90, &W, 4); std::memcpy(push + 0x94, &H, 4);
+            std::memcpy(push + 0x98, &W15, 4); std::memcpy(push + 0x9c, &H15, 4);
+            std::memcpy(push + 0xa0, &hW15, 4); std::memcpy(push + 0xa4, &hH15, 4);
+            std::memcpy(push + 0xa8, &dec0_f1, 4);
+            const float fW = float(W), fH = float(H), f15w = float(W15), f15h = float(H15);
+            const float sx = fW / f15w, sy = fH / f15h;
+            std::memcpy(push + 0xac, &sx, 4); std::memcpy(push + 0xb0, &sy, 4);
+            std::memcpy(push + 0xb4, &jx, 4); std::memcpy(push + 0xb8, &jy, 4);
+            const float iW = 1.0f / fW, iH = 1.0f / fH, i15w = 1.0f / f15w, i15h = 1.0f / f15h;
+            std::memcpy(push + 0xbc, &iW, 4); std::memcpy(push + 0xc0, &iH, 4);
+            std::memcpy(push + 0xc4, &i15w, 4); std::memcpy(push + 0xc8, &i15h, 4);
+            const uint32_t log2_10 = 0x40549a78u;
+            std::memcpy(push + 0xcc, &log2_10, 4);
+            std::memcpy(push + 0xd4, &ldr, 4);
+            const uint64_t mvhi64 = uint64_t(mvhi);
+            std::memcpy(push + 0xd8, &mvhi64, 8);
+            std::memcpy(push + 0xe8, &oW, 4); std::memcpy(push + 0xec, &oH, 4);
+            if (const char* dump = std::getenv("DLSS5_AMD_POST_PUSH_DUMP")) {   // A3 check: append each frame's push
+                if (FILE* f = std::fopen(dump, "ab")) { std::fwrite(push, 1, 256, f); std::fclose(f); }
+            }
             dispatch(cmd, "sr_post", {&g_col, &expo, &gates, &factors, &aniso, &ihist[p], &prev_mvec[p ^ 1], &mv_ero, &mv_nondil,
                                  &ihist[p ^ 1], &full15, &dhist}, push, 256, (W15 + 15) / 16, (hH15 + 15) / 16, 1);
             inject_after(cmd, "post", sr_l[13]);
