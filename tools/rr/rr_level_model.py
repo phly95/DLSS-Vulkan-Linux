@@ -106,6 +106,8 @@ DEFAULTS = dict(
     up_pix="xy",           # sub-pixel q -> (dx, dy): xy: q = dx + 2 dy (the merge order); yx: q = dy + 2 dx
     skip_at="before",      # mode 2: skip added before the block (before) | after | both | none
     mode4_guess=1,         # 1: mode 4's O98 lanes 0..2 = block output channels 0..2; 0: zeros   GUESS
+    blk="v1",              # v1: the first hypothesis (4x4 windows, no LayerScale); v2: block_v2 (Review R7)
+    relpos=1, den16=1, ls=1, acc16=0,   # block_v2: relpos bias, f16 softmax den + rcp, LayerScale, f16 K-chunk sums
 )
 
 
@@ -275,6 +277,12 @@ def act_fn(z, kind):
     if kind == "nr":                                      # BORROWED: SR's MpCubicSilu (refuted for SR)
         t = np.clip(z, -4.0, 4.0)
         return z * (t * (np.float32(-0.055908203125) * np.abs(t) + np.float32(0.447265625)) + np.float32(0.89453125))
+    if kind == "nhgelu":                                  # NeuralHub's f16 GELU spline (SR Review R4)
+        zh = z.astype(np.float16)
+        t = np.clip(zh, np.float16(-2.0), np.float16(2.0))
+        u = (np.abs(t) * np.float16(-0.0810546875)).astype(np.float16) + np.float16(0.412109375)
+        gt = ((t * u).astype(np.float16) + np.float16(0.5)).astype(np.float16)
+        return (zh * gt).astype(np.float16).astype(np.float32)
     if kind == "none":
         return z
     raise SystemExit(f"unknown act {kind}")
@@ -381,6 +389,84 @@ def block(X, Wt, cfg, H, W, sx, sy, C, g, attn_only=False, postattn=None):
     return scatter(out, TX, TY, H, W, C), None
 
 
+def window8_tokens(H, W, sx, sy):
+    """k_level's partition: one 8 x 8 window of 64 tokens per workgroup (grid (W+sx+7)/8), token
+    = dy*8 + dx. The 64 x 64 relpos table per head ("gram") matches 64-token windows."""
+    gx, gy = (W + sx + 7) // 8, (H + sy + 7) // 8
+    ox, oy = np.arange(gx) * 8 - sx, np.arange(gy) * 8 - sy
+    tx = ox[None, :, None, None] + np.arange(8)[None, None, None, :]
+    ty = oy[:, None, None, None] + np.arange(8)[None, None, :, None]
+    TX = np.broadcast_to(tx, (len(oy), len(ox), 8, 8)).reshape(-1, 64)
+    TY = np.broadcast_to(ty, (len(oy), len(ox), 8, 8)).reshape(-1, 64)
+    return TX, TY
+
+
+def f16a(x):
+    return np.asarray(x, np.float32).astype(np.float16).astype(np.float32)
+
+
+def pair_sum16(e):
+    while e.shape[-1] > 1:
+        e = f16a(e[..., 0::2] + e[..., 1::2])
+    return e[..., 0]
+
+
+def block_v2(X, Wt, cfg, H, W, sx, sy, C, g, scal, attn_only=False, postattn=None):
+    """Second hypothesis (Review R7): SR's decoded block adapted to the RR packer + ISA facts.
+    8x8 windows, relpos bias = the packer's symmetrised 64x64 'gram' (x 2*sqrt(2), as SR's v258),
+    V = K (f16), no RMSNorm gain (RR packs none), LayerScale: x += s1d2 * f16(attn + v128),
+    x += s1d4 * f16(mlp + v158) (Args +0xac / +0xb0, read as f16 bits; ISA v_pk_mul_f16 %44.1/.2),
+    MLP activation = NeuralHub's f16 GELU spline (same 0xad30/0x3698 constants in the RR ISA)."""
+    TX, TY = window8_tokens(H, W, sx, sy)
+    PX, PY = reflect(TX, W), reflect(TY, H)
+    s_act = f16a(X[PY, PX])
+    def norm(x):
+        xf = x.astype(np.float32); ss = (xf * xf).sum(-1, keepdims=True)
+        if cfg["norm"] == "none":
+            y = f16a(xf)
+        else:
+            d = ss / xf.shape[-1] if cfg["norm"] == "rms" else ss
+            y = f16a(xf / np.sqrt(d + np.float32(2.0 ** -14)))
+        return q8(y) if cfg["snorm8"] else y
+    ls1, ls2 = scal[1], scal[2]
+    def mm(a, Wm):
+        """a @ Wm.T; acc16: K=32 chunks (2 fp8 WMMAs) in f32, each chunk added through f16
+        (v_fma_mix*_f16 chains, RR ISA unit 1 at 0x10b0 / 0x11f8)."""
+        if not cfg["acc16"]:
+            return a @ Wm.T
+        acc = None
+        for k0 in range(0, a.shape[-1], 32):
+            part = a[..., k0:k0 + 32] @ Wm[:, k0:k0 + 32].T
+            acc = f16a(part) if acc is None else f16a(acc + part)
+        return acc
+    sn = norm(s_act)
+    attn = np.zeros(s_act.shape, np.float32)
+    for h in range(g):
+        Wh = LUT[Wt["groups"][h]]
+        Q = q8(np.clip(mm(sn, Wh[:32]), -448, 448)); Kf = f16a(np.clip(mm(sn, Wh[32:]), -448, 448)); K8 = q8(Kf)
+        rel = np.frombuffer(Wt["gram"][h].tobytes(), np.float16).astype(np.float32).reshape(64, 64)
+        logits = np.einsum("nqc,nkc->nqk", Q, K8) + (rel[None] if cfg["relpos"] else 0.0)
+        pe = nr_swin_exp(logits)
+        if cfg["den16"]:
+            inv = f16a(1.0 / np.maximum(pair_sum16(f16a(pe)), np.float32(1e-4)))
+        else:
+            inv = np.float32(1.0) / np.maximum(pe.sum(-1), np.float32(1e-4))
+        prob = f16a(f16a(pe) * inv[..., None]) if cfg["den16"] else pe * inv[..., None]
+        ctx = q8(np.einsum("nqk,nkc->nqc", prob, Kf))
+        attn += mm(ctx, LUT[Wt["m48"][:, 32 * h:32 * h + 32]])
+    a = f16a(attn + Wt["v128_f"])
+    X1 = f16a(s_act + (f16a(np.float32(ls1) * a) if cfg["ls"] else a))
+    if postattn is not None:
+        X1 = f16a(postattn[PY, PX])
+    if attn_only:
+        return scatter(X1, TX, TY, H, W, C), None
+    s2 = norm(X1)
+    h1 = q8(act_fn(np.asarray(mm(s2, Wt["W1"]) + Wt["b1"], np.float32), cfg["act"]))
+    mo = f16a(mm(h1, Wt["W2"]) + Wt["b2"])
+    out = np.clip(X1 + (f16a(np.float32(ls2) * mo) if cfg["ls"] else mo), -448, 448).astype(np.float32)
+    return scatter(out, TX, TY, H, W, C), None
+
+
 def scatter(out, TX, TY, H, W, C):
     img = np.zeros((H, W, C), np.float32)
     ok = (TX >= 0) & (TX < W) & (TY >= 0) & (TY < H)
@@ -434,7 +520,11 @@ def model_unit(L, blobbytes, cfg, inputs, Wt):
         X = inputs["in"]
     postattn = inputs.get("postattn")
     attn_only = bool(inputs.get("attn_only"))
-    img, _ = block(X, Wt, cfg, H, W, sx, sy, C, g, attn_only=attn_only, postattn=postattn)
+    if cfg["blk"] == "v2":
+        scal = [float(np.array([v & 0xFFFF], np.uint16).view(np.float16)[0]) for v in L["scal"]]
+        img, _ = block_v2(X, Wt, cfg, H, W, sx, sy, C, g, scal, attn_only=attn_only, postattn=postattn)
+    else:
+        img, _ = block(X, Wt, cfg, H, W, sx, sy, C, g, attn_only=attn_only, postattn=postattn)
     if mode == 2 and cfg["skip_at"] in ("after", "both"):
         img = np.clip(img + inputs["skip"], -448, 448)
     if attn_only:

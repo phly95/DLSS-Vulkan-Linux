@@ -91,3 +91,48 @@ the rewrite moved individual values a lot without changing how many words matche
   the RX 9070 XT (port dump of frame 0 launch 4 vs the restored oracle) is required before either
   number is cited as the kernel's current state. Until then the row stays APPROX and both numbers
   stand as two dated measurements of two shader versions, not as a contradiction.
+
+## Review R7 (2026-10-26): the k_level block, second hypothesis (`tools/rr/rr_level_model.py --set blk=v2`)
+
+Read from the RR packer (`rr_pack.build_w`, docs/rr/LEVEL-LAYOUT.md) and the ISA of
+`k_level<64,2,1,96,0,1>` (`tools/re/ssa.py`; listing `build/work/review/rr/u1.ssa`). This is
+SR's block with these RR differences:
+
+- **Windows are 8 x 8 (64 tokens)**, one per workgroup (grid (W+sx+7)/8). The packer's "gram"
+  (g x 64 x 64, symmetrised and multiplied by 2*sqrt(2), the same factor SR applies to its 16 x 16
+  v258) is the **relative-position bias** for those windows: it is translation-invariant with a
+  constant diagonal. The logit is `v_fma_mix(relpos, 1.0, Q.K)` (a K = 32 fp8 WMMA pair).
+- **No RMSNorm**: the RR packer packs no gains, the kernel has no rsqrt, and Q/K are
+  `fp8(clamp(f16-chunked(W @ x), +-448))` of the stored input itself. `norm=none` beats both norm
+  forms on every unit.
+- **LayerScale** from Args +0xac / +0xb0 (f16 bits; `s1d2` / `s1d4`, about +-0.02..0.04):
+  `x += s1d2 * f16(Wo ctx + v128)` and `x += s1d4 * f16(fc2 h + v158)` (ISA: `v_pk_mul_f16 s29 /
+  s30, ...`). Without it every unit is at -24..-31 dB.
+- Softmax entirely in f16: the same exp (constants 0x2466 / 0x3873 / 0x3b6b / 0x3d80, mantissa
+  shift), an f16 sum (packed adds + `v_permlanex16`), `v_rcp_f16`, `prob = f16(pe * inv)`.
+- The MLP activation is NeuralHub's f16 GELU spline (0xad30 / 0x3698, SR Review R4). V = K (f16).
+  Q is rows 0..31 of the group and K rows 32..63 (swapping them drops r to about 0).
+- Args +0xa8 (`s1d0`, about 2) and the +0x88 input are used only at the end, in the head /
+  extra-output path (with x0.25 = 2 x 2 averages), not in the block.
+
+Measured, frame 1, mode-0 units, whole block vs oracle (PSNR / r):
+
+| launch | v1 | v2 (`norm=none act=nhgelu`) |
+|---|---|---|
+| 7 (unit 2, C96 g4) | -24.19 / -0.055 | 17.01 / 0.787 |
+| 8 (unit 3, C128 g4) | -25.46 / -0.041 | 14.19 / 0.796 |
+| 9 (unit 4, C160 g8) | -31.00 / -0.049 | 19.08 / 0.887 |
+| 10 (unit 5, C160 g8) | -28.88 / 0.154 | 13.30 / 0.685 |
+
+Attention isolated with an rrref probe (MLP items 4..7 zeroed in all 16 blobs;
+`build/work/rrref` built from tools/rr/rrref/rrref.cpp, which reproduces all 63 frame-0 oracle
+dumps byte-identically). Correlation of the attention delta (output - input), frame 0:
+- decoder second blocks (units 9 / 11 / 13): 0.979 / 0.991 / 0.990, best scale about 0.97;
+- encoders (units 2 / 3 / 4 / 5): 0.688 / 0.768 / 0.823 / 0.944;
+- unit 7 (decoder): 0.896.
+
+The QK logits are large (rms 27..294, max up to 1062), so the exp saturates and the relpos bias is
+numerically inert at x0 and x4 alike. The f16 K-chunk accumulation (`acc16`) is also inert. The
+encoder residual is uniform over windows and in-window positions, so it is not a border or
+shift effect. Open: the encoders' attention gap (next instrument: patchprobe on rrref to read the
+oracle's logits), the entry modes 1 / 5, mode 2's skip order, and the heads.
