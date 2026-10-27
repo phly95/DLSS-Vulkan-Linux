@@ -131,8 +131,15 @@ def make_test(name, out_dir):
             ]
         }
     elif name == "sr_enc0":
+        # k_sr_enc0 (preset M): grid W0/8 x H0/8, 32 threads. The push is the 256 bytes of
+        # Enc0Args this device can push (maxPushConstantsSize = 256) at the oracle's own
+        # offsets; binding 11 is expo (+0x80). W15/H15/hW15/hH15 follow the host's formulas
+        # (oW = 2*W), so W15/W = 3.0 like the oracle and the dhist grid is
+        # (W15+1)/2 x (H15+1)/2.
         w0 = ((w + 7) // 8) * 8
         h0 = ((h + 7) // 8) * 8
+        w15, h15 = 3 * w, 3 * h
+        hw15, hh15 = (w15 + 1) // 2, (h15 + 1) // 2
         b_col = np.linspace(0.1, 1.0, n_pix * 4, dtype=np.float16).tobytes()
         b_dep = np.linspace(0.1, 100.0, n_pix, dtype=np.float32).tobytes()
         b_mv = np.linspace(0.01, 0.5, n_pix * 2, dtype=np.float16).tobytes()
@@ -140,12 +147,36 @@ def make_test(name, out_dir):
         open(os.path.join(out_dir, "g_dep.bin"), "wb").write(b_dep)
         open(os.path.join(out_dir, "g_mv.bin"), "wb").write(b_mv)
         open(os.path.join(out_dir, "prev_mv.bin"), "wb").write(b_mv)
-        open(os.path.join(out_dir, "dhist.bin"), "wb").write(np.zeros(n_pix, dtype=np.uint32).tobytes())
+        open(os.path.join(out_dir, "dhist.bin"), "wb").write(
+            np.zeros(hw15 * hh15, dtype=np.uint32).tobytes())
         open(os.path.join(out_dir, "hidden.bin"), "wb").write(b_mv)
-        open(os.path.join(out_dir, "wbuf.bin"), "wb").write(np.zeros(4096, dtype=np.uint8).tobytes())
-        push = bytearray(148)
-        struct.pack_into("<8i", push, 88, w, h, w0, h0, w, h, w, h)
-        struct.pack_into("<i2f", push, 136, 0, 0.0, 0.0)
+        open(os.path.join(out_dir, "expo.bin"), "wb").write(
+            np.array([1.0, 1.0], dtype=np.float16).tobytes())
+        # The enc0 weight blob (12416 B, the size of packed enc0.bin): the dither table
+        # (2048 u16) at 0, 8192 weight bytes at the frag positions (every byte is a finite
+        # e4m3 code; signs alternate so the 32-term sums land around +-6.28 and t0 stays
+        # non-constant - O7 rejects a constant output, and an all-zero blob would make every
+        # t0 byte 0), 64 f16 biases at +12288.
+        idx = np.arange(2048, dtype=np.uint64)
+        dither = ((idx * 2654435761 + 1013904223) & 0xFFFF).astype(np.uint16)
+        ii = np.arange(8192, dtype=np.uint64)
+        mix = ((ii * 2246822519 + 3266489917) >> 16).astype(np.uint64)
+        wts = np.where((ii & 1) == 0, 0x30 + (mix & 0x1F),
+                       0xB0 + (mix & 0x1F)).astype(np.uint8)
+        bias = np.linspace(-1.0, 1.0, 64, dtype=np.float16).tobytes()
+        blob = dither.tobytes() + wts.tobytes() + bias
+        assert len(blob) == 12416
+        open(os.path.join(out_dir, "wbuf.bin"), "wb").write(blob)
+        push = bytearray(256)
+        struct.pack_into("<4i", push, 88, w, h, w, h)          # W, H, +0x60 render size again
+        struct.pack_into("<4i", push, 104, w0, h0, w15, h15)   # W0, H0, W15, H15
+        struct.pack_into("<2i", push, 120, hw15, hh15)         # hW15, hH15
+        struct.pack_into("<i2f", push, 136, 0, 0.0, 0.0)       # parity, F20x, F20y
+        struct.pack_into("<2f", push, 148, 0.0, 0.0)           # F28x, F28y
+        struct.pack_into("<2f", push, 188, 0.0, 0.0)           # mvoffx, mvoffy
+        struct.pack_into("<2I", push, 216, 0, 0)               # reset, fc
+        struct.pack_into("<2I", push, 224, 0, (w + 63) & ~63)  # depinv, mvpitch
+        struct.pack_into("<I", push, 252, 0)                   # ldr
         cfg = {
             "groups": [w0 // 8, h0 // 8, 1],
             "push": push.hex(),
@@ -160,7 +191,8 @@ def make_test(name, out_dir):
                 {"binding": 7, "bytes": n_pix * 4, "output": "mv_ero", "type": "f16"},
                 {"binding": 8, "bytes": n_pix * 4, "output": "mv_nondil", "type": "f16"},
                 {"binding": 9, "bytes": (w0 // 2) * (h0 // 2) * 64, "output": "t0", "type": "u8"},
-                {"binding": 10, "file": "wbuf.bin"}
+                {"binding": 10, "file": "wbuf.bin"},
+                {"binding": 11, "file": "expo.bin", "bytes": 4, "type": "f16"}
             ]
         }
     elif name == "sr_dec0":

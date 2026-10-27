@@ -332,7 +332,7 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         add_pipe("sr_ae_luma", 2, 48);
         add_pipe("sr_ae_reduce", 2, 32);
         add_pipe("sr_ae_copy", 2, 24);
-        add_pipe("sr_enc0", 11, 240);
+        add_pipe("sr_enc0", 12, 256);
         add_pipe("sr_stage", 6, 56);
         add_pipe("sr_tube_split", 3, 56);
         add_pipe("sr_dec0", 8, 160);
@@ -936,25 +936,42 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             dispatch(cmd, "sr_exposure", {&expo, &expo}, push, 32, 1, 1, 1);
         }
 
-        // 3. Enc0
+        // 3. Enc0 (oracle launch 2, k_sr_enc0): Enc0Args at the oracle's own offsets
+        //    (tools/sr/srref/srref.cpp `enc0 (FUN_180116e70, preset M)`), 256 bytes of the
+        //    280-byte struct: maxPushConstantsSize is 256 on this device, so +0x100 (mvhi) and
+        //    beyond cannot be pushed. The shader reads +0x58..+0xfc only; mvhi selects the g_mv
+        //    vs g_mvhi buffer at bind time instead. Binding 11 is expo (+0x80), which the
+        //    shader reads as enc0[parity] (1.0 when the word is 0).
         {
-            uint8_t push[240] = {0};
+            uint8_t push[256] = {0};
             std::memcpy(push + 88, &W, 4); std::memcpy(push + 92, &H, 4);
+            std::memcpy(push + 96, &W, 4); std::memcpy(push + 100, &H, 4);   // +0x60 render size again
             std::memcpy(push + 104, &W0, 4); std::memcpy(push + 108, &H0, 4);
             std::memcpy(push + 112, &W15, 4); std::memcpy(push + 116, &H15, 4);
             std::memcpy(push + 120, &hW15, 4); std::memcpy(push + 124, &hH15, 4);
             std::memcpy(push + 136, &p, 4);
-            std::memcpy(push + 140, &jx, 4);
-            std::memcpy(push + 144, &jy, 4);
+            std::memcpy(push + 140, &jx, 4);                                 // +0x8c F20x (this frame's jitter)
+            std::memcpy(push + 144, &jy, 4);                                 // +0x90 F20y
+            std::memcpy(push + 148, &jpx, 4);                                // +0x94 F28x (the previous frame's)
+            std::memcpy(push + 152, &jpy, 4);                                // +0x98 F28y
+            // +0xbc mvoff: srref's mv_offset_kernel is 0 for unjittered MVs (as on both
+            // dumped frames); the push is zero-filled, stated here for the args-parity reader.
+            const float mvoff0 = 0.0f;
+            std::memcpy(push + 188, &mvoff0, 4); std::memcpy(push + 192, &mvoff0, 4);
             std::memcpy(push + 216, &reset, 4);
             std::memcpy(push + 220, &fc, 4);
+            // +0xe0 depinv has no FrameParams source (the sr_post +0xd0 precedent) and stays 0,
+            // the oracle's value on both dumped frames; the shader reads neither it nor
+            // +0xe4 mvpitch / +0xfc ldr - they are filled for Enc0Args parity.
+            std::memcpy(push + 228, &mvpitch, 4);
+            std::memcpy(push + 252, &ldr, 4);
             if (preset == "L") {
                 dispatch(cmd, "sr_enc0L_in", {&g_col, &g_dep, mvhi ? &g_mvhi : &g_mv, &prev_mvec[p], &dhist, &hidden[p],
                                      &prev_mvec[p ^ 1], &mv_ero, &mv_nondil, &t_act[0], &w_enc0}, push, 240, (W * H + 63) / 64, 1, 1);
                 dispatch(cmd, "sr_l0", {&wbuf, &t_act[0], &t_act[1]}, nullptr, 0, 32, 1, 1);
             } else {
                 dispatch(cmd, "sr_enc0", {&g_col, &g_dep, mvhi ? &g_mvhi : &g_mv, &prev_mvec[p], &dhist, &hidden[p],
-                                     &prev_mvec[p ^ 1], &mv_ero, &mv_nondil, &t_act[0], &w_enc0}, push, 240, W0 / 8, H0 / 8, 1);
+                                     &prev_mvec[p ^ 1], &mv_ero, &mv_nondil, &t_act[0], &w_enc0, &expo}, push, 256, W0 / 8, H0 / 8, 1);
             }
             inject_after(cmd, "enc0", sr_l[1]);
         }
