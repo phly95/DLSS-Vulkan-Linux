@@ -373,8 +373,15 @@ def make_test(name, out_dir):
             ]
         }
     elif name == "sr_enc0L_in":
+        # k_sr_enc0L_in (preset L, oracle launch 2): one thread per PADDED pixel, grid
+        # ((W0+8)*(H0+8)+63)/64 x 1, block 64; 12 bindings (0..5 inputs, 6..8 the MV outputs,
+        # 9 l0_in, 10 the enc0L blob (only its dither table is read here), 11 expo).  The push
+        # is 240 B at the oracle's own Enc0Args offsets incl. the preset-L constants the shader
+        # reads: +0xd0 SC, +0xe8 k = 2774.359619140625/H (tools/sr/sr_enc0L_model.py).
         w0 = ((w + 7) // 8) * 8
         h0 = ((h + 7) // 8) * 8
+        w15, h15 = 3 * w, 3 * h
+        hw15, hh15 = (w15 + 1) // 2, (h15 + 1) // 2
         b_col = np.linspace(0.1, 1.0, n_pix * 4, dtype=np.float16).tobytes()
         b_dep = np.linspace(0.1, 100.0, n_pix, dtype=np.float32).tobytes()
         b_mv = np.linspace(0.01, 0.5, n_pix * 2, dtype=np.float16).tobytes()
@@ -382,15 +389,28 @@ def make_test(name, out_dir):
         open(os.path.join(out_dir, "g_dep.bin"), "wb").write(b_dep)
         open(os.path.join(out_dir, "g_mv.bin"), "wb").write(b_mv)
         open(os.path.join(out_dir, "prev_mv.bin"), "wb").write(b_mv)
-        open(os.path.join(out_dir, "dhist.bin"), "wb").write(np.zeros(n_pix, dtype=np.uint32).tobytes())
+        open(os.path.join(out_dir, "dhist.bin"), "wb").write(
+            np.linspace(0, 1023, hw15 * hh15, dtype=np.uint32).astype(np.uint32).tobytes())
         open(os.path.join(out_dir, "hidden.bin"), "wb").write(b_mv)
-        open(os.path.join(out_dir, "wbuf.bin"), "wb").write(np.zeros(4096, dtype=np.uint8).tobytes())
-        push = bytearray(148)
-        struct.pack_into("<8i", push, 88, w, h, w0, h0, w, h, w, h)
-        struct.pack_into("<i2f", push, 136, 0, 0.0, 0.0)
+        open(os.path.join(out_dir, "expo.bin"), "wb").write(
+            np.array([1.0, 1.0], dtype=np.float16).tobytes())
+        # the enc0L blob's dither table (2048 u16, nonzero so the dither path runs)
+        idx = np.arange(2048, dtype=np.uint64)
+        dither = ((idx * 2654435761 + 1013904223) & 0xFFFF).astype(np.uint16)
+        open(os.path.join(out_dir, "wbuf.bin"), "wb").write(dither.tobytes())
+        push = bytearray(240)
+        struct.pack_into("<4i", push, 88, w, h, w, h)          # W, H
+        struct.pack_into("<4i", push, 104, w0, h0, w15, h15)   # W0, H0, W15, H15
+        struct.pack_into("<2i", push, 120, hw15, hh15)         # hW15, hH15
+        struct.pack_into("<i2f", push, 136, 0, 0.25, -0.25)    # parity, F20x, F20y
+        struct.pack_into("<2f", push, 148, 0.0, 0.125)         # F28x, F28y
+        struct.pack_into("<2f", push, 188, 0.0, 0.0)           # mvoffx, mvoffy
+        struct.pack_into("<f", push, 208, 0.08225896209478378)  # +0xd0 SC (preset L)
+        struct.pack_into("<2I", push, 216, 1, 0)               # reset, fc
+        struct.pack_into("<f", push, 232, 2774.359619140625 / h)  # +0xe8 k (preset L)
         total_l0 = (w0 + 8) * (h0 + 8) * 32
         cfg = {
-            "groups": [(w * h + 63) // 64, 1, 1],
+            "groups": [((w0 + 8) * (h0 + 8) + 63) // 64, 1, 1],
             "push": push.hex(),
             "bindings": [
                 {"binding": 0, "file": "g_col.bin"},
@@ -402,8 +422,9 @@ def make_test(name, out_dir):
                 {"binding": 6, "bytes": n_pix * 4, "output": "prev_mv_out", "type": "f16"},
                 {"binding": 7, "bytes": n_pix * 4, "output": "mv_ero", "type": "f16"},
                 {"binding": 8, "bytes": n_pix * 4, "output": "mv_nondil", "type": "f16"},
-                {"binding": 9, "bytes": total_l0, "output": "out_act", "type": "u8"},
-                {"binding": 10, "file": "wbuf.bin"}
+                {"binding": 9, "bytes": total_l0, "output": "l0_in", "type": "u8"},
+                {"binding": 10, "file": "wbuf.bin"},
+                {"binding": 11, "file": "expo.bin", "bytes": 4, "type": "f16"}
             ]
         }
     elif name == "sr_l0":

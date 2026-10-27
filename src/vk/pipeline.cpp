@@ -340,7 +340,9 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         add_pipe("sr_downsample", 4, 88);
         add_pipe("sr_unorm8_table", 1, 0);
         if (preset == "L") {
-            add_pipe("sr_enc0L_in", 11, 148);
+            // sr_enc0L_in: 12 bindings (11 = expo, as sr_enc0), push 240 B (the shader reads the
+            // Enc0Args words up to +0xe8).
+            add_pipe("sr_enc0L_in", 12, 240);
             // k_sr_l0: 7 bindings (see sr_l0.comp), push = L0Args' own offsets 0x48..0x67 plus
             // the port's mode word at 0x68 (0 = k_sr_l0<0,2>, 1 = k_sr_l0<2,2> - the template
             // parameter has no slot in the oracle's 104-byte args).
@@ -1052,12 +1054,22 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             std::memcpy(push + 252, &ldr, 4);
             if (preset == "L") {
                 // Oracle launch 2 (k_sr_enc0L_in): the port's binding 9 carries the l0_in pointer
-                // (the 280-byte Enc0Args cannot push +0x118), so l0_in lands in its own buffer now
+                // (the 288-byte Enc0Args cannot push +0x118), so l0_in lands in its own buffer now
                 // - t_act[0] is t0, which k_sr_l0<0,2> rewrites from l0_in and stage0 reads.
                 // The oracle reads hidden0 (ptr 0x28) on both frames (the dump's own name), not
-                // the M ping-pong slot.
+                // the M ping-pong slot.  Binding 11 = expo (+0x80), read as enc0[parity].
+                // The shader computes the motion-energy feature from the preset-L args words the
+                // oracle itself passed: +0xd0 SC and +0xe8 k = 2774.359619140625/H (the same
+                // literals srref.cpp's `enc0` block pushes on preset L - args parity, the model
+                // reads them from the dump: tools/sr/sr_enc0L_model.py load()/parse_args).
+                const float enc0L_sc = 0.08225896209478378f;
+                const float enc0L_k = 2774.359619140625f / (float)H;
+                std::memcpy(push + 208, &enc0L_sc, 4);
+                std::memcpy(push + 232, &enc0L_k, 4);
+                // One thread per PADDED pixel: (W0+8)*(H0+8) = 264*168 on the oracle frames.
                 dispatch(cmd, "sr_enc0L_in", {&g_col, &g_dep, mvhi ? &g_mvhi : &g_mv, &prev_mvec[p], &dhist, &hidden[0],
-                                     &prev_mvec[p ^ 1], &mv_ero, &mv_nondil, &ue["l0_in"], &w_enc0}, push, 240, (W * H + 63) / 64, 1, 1);
+                                     &prev_mvec[p ^ 1], &mv_ero, &mv_nondil, &ue["l0_in"], &w_enc0, &expo},
+                         push, 240, ((W0 + 8) * (H0 + 8) + 63) / 64, 1, 1);
                 // Oracle launch 3 (k_sr_l0<0,2>): l0_in -> embedding (ReLU clamp [0,448]) -> the
                 // C=32 block over the padded (+2) border -> mode-0 down projection -> t0
                 // (t_act[0]); l0_skip = the fp8 block output.  L0Args 0x48.. : (W0,H0) level-0
