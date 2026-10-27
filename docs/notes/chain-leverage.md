@@ -304,3 +304,35 @@ the history-path blend arithmetic itself, where sr_post_model (99.8% f1) is the 
 GPU==model 99.99% - i.e. the deviation of BOTH from the oracle is in the spec'd blend/encode
 chain (t1/t2 conf/u fma chains, the log tonemap). Next: an SR-side probe-bisect of the blend
 intermediate (the rr-post-model-2 rrp2_* method), queued for a free slot.
+
+### 2026-10-27 17:40: mode-2 leverage re-check (before the queued resume) + history split
+
+Fresh inject-after rows at HEAD `d73d418` (the mode-2 rows predate the hist work, per Claude
+Opus 5.5's tuning note): stage8/stage9 rows **reproduce exactly** (stage9 f0 106.75 / f1 77.96
+vs baseline 53.82/54.48 = +52.9/+23.5 dB; M's chain is byte-identical since LP-4, so no shift).
+
+History split (symlink dump forests - `hist` minus/only the dec0-written `hidden0/1`, no host
+change; `build/agents/orch/lev10_*`):
+
+| mask | f0 | f1 | f2 | f3 | f4 | f5 | f6 | f7 | f8 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| baseline | 53.82 | 54.48 | 54.61 | 55.09 | 33.76 | 36.44 | 39.84 | 41.19 | 42.66 |
+| hist (all) | 53.82 | 57.79 | 59.34 | 63.01 | 62.83 | 64.25 | 65.84 | 64.57 | 64.87 |
+| hist minus hidden | 53.82 | 56.02 | 57.83 | 61.24 | **33.74** | 40.21 | 44.46 | 47.77 | 53.70 |
+| hist only hidden | 53.82 | 54.80 | 55.31 | 55.82 | **16.52** | 34.18 | 36.72 | 38.22 | 39.47 |
+
+**Verdict (folds the tuning note into the queue):**
+1. The full-hist +29 dB at f4 comes essentially entirely from `hidden0/1` (minus-hidden f4 =
+   33.74 ~= baseline 33.76); the post-written history (dhist/ihist/full15) adds its share later
+   (minus-hidden reaches 53.70 at f8 vs baseline 42.66).
+2. **Hidden is written by dec0 FROM t8 = stage9's output - so mode-2's error is a root source of
+   the f4-8 history carrier**, on top of its direct +52.9/+23.5 at f0/f1. Mode-2 is therefore
+   STILL MATERIAL relative to the post/history chain: **the queued mode2-closure resume (X1-at-f16
+   probe) proceeds as briefed when a slot frees.**
+3. Caveat re-confirmed: subsets are non-additive (oracle-hidden ALONE reads 16.52 at f4, worse
+   than baseline - the compensation effect again). Single-subset rows measure mixing, not shares;
+   the additivity-invalid reading must not be quoted as "hidden's share is X dB".
+4. Queue note (fresh-data discipline, per the same feedback): **before committing further RR
+   effort** (enc0feat beyond its in-flight spec, or any RR chain work), re-run the RR inject-after
+   leverage at current HEAD - the pre-port table (36.05/32.82 era) predates `5710959`'s rr_post
+   port, and RR's flat per-frame numbers mean SR-style history reasoning does not transfer.
