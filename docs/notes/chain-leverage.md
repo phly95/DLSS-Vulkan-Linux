@@ -202,3 +202,17 @@ history-path residual, (3) preset-L rewiring (separate, V4 for L cells - spawned
 frames 4-8 degradation is NOT visible to this instrument (no oracle dumps past frame 1):
 extending the dumps (`srref --dump-frames` supports it - instrument work, operator-visible
 decision) is the prerequisite for attacking the full-sequence min (33.76).
+
+### Instrument update (2026-10-27 15:40): multi-frame oracle dumps exist now
+
+The "no oracle dumps past frame 1" gap above is closed. Fresh 9-frame collection
+(`build/prof1080/bin/{srref,rrref} ... --dump-frames 0,1,2,3,4,5,6,7,8`, same frames dirs,
+into `build/work/multidump/{sr_M,rr_F}/`, 889 MB, under build/ and never committed):
+**all 9 out_<i>.f32 byte-identical (sha256) to build/breadth-baseline/{sr_M_ref,rr_F_ref}** on
+both cells - the fresh dumps ARE the reference sequence. Per-launch dumps now exist for
+frames 2..8 (same layout as the existing oracle: launches.jsonl + NNN.<name>.bin).
+
+To use them for injection/launch_report on frames 2-8, two follow-ups (host code): lift
+`FrameChain::inj_wanted`'s `fc >= 2` guard (pipeline.cpp:688-ish) for the new dir, and add the
+per-frame dump dir to the injection/measure plumbing. That is the prerequisite for attacking the
+full-sequence min (SR M 33.76 at frames 4-8, RR F 32.26 at frame 8).
