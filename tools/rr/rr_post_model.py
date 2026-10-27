@@ -9,12 +9,29 @@ Launch: oracle launch 21 in frame 0 (rst = 1), launch 22 in frame 1 (rst = 0), s
 build/oracle/oracle-8dbf027a9e-s20261025/rr_F/dump. Inputs are the oracle's own bytes as they stood
 before the launch (newest NNN.<buffer>.bin with NNN < launch, else start.<buffer>.bin).
 
-STATUS (2026-10-27, rr-post-model-2; numbers from `--self-check` on the oracle dump, runtime 2.4 s).
+STATUS (2026-10-27, rr-bil-fix; numbers from `--self-check` on the oracle dump, runtime 2.4 s).
   Frame 0 (reset, no history): A1 PASS. E0cf6 99.9424%, E0cfa 99.9659%, E0c0a 99.9773%, E0c0e 99.9891%.
-  Frame 1 (history):           A2 PASS. E0cf6 99.6293%, E0cfa 99.6977%, E0c0a 99.7825%, E0c0e 99.7372%.
+  Frame 1 (history):           A2 PASS. E0cf6 99.9433%, E0cfa 99.9617%, E0c0a 99.9785%, E0c0e 99.9964%
+                               (BEFORE the rr-bil-fix: 99.6293 / 99.6977 / 99.7825 / 99.7372).
                                Frame 1 = the CR history fetch (SPEC 6a-c), H = e0*decode(h)/e1 (6d),
                                TWO gate blend weights t1/t2 (6e-f: hist+E0c0e from t1, E0cf6/E0cfa
                                from t2), encodes identical to frame 0 (6g).
+
+  2026-10-27 rr-bil-fix: the frame-1 border residual was ONE spec error, fixed here - the CR
+  bilinear's edge addressing (SPEC 6c, _cr_bilinear). Before the fix, _cr_bilinear clipped the
+  lower texel in place and derived the upper texel from the CLIPPED index (the double-clip flagged
+  in 972efdc, byte-for-byte SR's bug): at the left/top border the main tap blended texels 0/1 with
+  the full sub-texel fraction instead of being pure texel 0. The hardware sampler clamps the
+  NORMALIZED coordinate = per-tap PER-TEXEL clamping (RR's own ISA: image_sample_lz x5 at
+  0x173c..0x179c, coords from the UNCLIPPED integer position, no software clamp; sampler
+  hipAddressModeClamp + bilinear + normalized, rrref.cpp:351-362 - the same class as sr_post, whose
+  measurement is build/agents/post-residual/progress.md). No constant touched; the law is the
+  sampler's. Evidence (build/agents/rr-bil-fix/): model self-check frame 1 99.94-99.9964% (was
+  99.63-99.78); GPU fixture frame 1 GPU==oracle 99.98-99.999 (was 99.85-99.89); the post_prep
+  leverage row f1/f2/f3 75.39/70.01/66.53 -> 101.59/100.90/74.59 (min 63.48 -> 70.01, mean 76.26 ->
+  85.99); the full-9 no-mask chain is unchanged at report precision (the changed border band is
+  34-79 scalars/frame, max |delta| 0.0018 f32 linear - a <0.005 dB effect; the post-mask row is
+  117.04-118.83 before and after, unchanged by construction).
   Probe notes: build/agents/rr-post-model-2/progress.md (incl. the patchprobe frame-0 poisoning
   caveat: a probe whose patch fires in frame 0 changes frame 1's env; probes listed in A3 below are
   the ones validated for their env).
@@ -361,16 +378,27 @@ def frame_outputs_frame0(S):
 # ------------------------------------------------------------------ frame 1: history fetch + blend
 def _cr_bilinear(hist, xi, yi, rx, ry):
     """Bilinear sample of hist (H15, W15, 3) f32 at texel lower-left (xi, yi) with sub-texel weights
-    rx, ry (f32, broadcast over the channel axis); clamp-to-edge addressing (rrref: hipAddressModeClamp)."""
-    xi = np.clip(xi, 0, W15 - 1); yi = np.clip(yi, 0, H15 - 1)
+    rx, ry (f32, broadcast over the channel axis).
+
+    ADDRESSING (rr-bil-fix 2026-10-27; the hardware sampler clamps the NORMALIZED coordinate, which
+    is per-tap PER-TEXEL clamping - the law measured on sr_post's identical sampler, and RR's own
+    ISA confirms the same class: image_sample_lz x5 at 0x173c..0x179c with normalized coords built
+    from the UNCLIPPED integer position and no software clamp; sampler = bilinear +
+    hipAddressModeClamp + normalized coords, rrref.cpp:351-362): the two texel indices of each
+    axis are clamped to [0, W15-1] / [0, H15-1] INDEPENDENTLY, both derived from the UNCLIPPED
+    integer position - a tap whose lower texel is -1 blends texel 0 with texel 0 (pure texel 0),
+    NOT texel 0 with texel 1. The previous law clipped xi in place and then took xi+1, which at
+    the left/top borders blended the wrong pair with the full sub-texel fraction (the SR-side
+    double-clip of 972efdc, present here byte-for-byte)."""
+    x0 = np.clip(xi, 0, W15 - 1); y0 = np.clip(yi, 0, H15 - 1)
     x1 = np.clip(xi + 1, 0, W15 - 1); y1 = np.clip(yi + 1, 0, H15 - 1)
     one = F(1.0)
     if np.ndim(rx):
         rx = rx[..., None]
     if np.ndim(ry):
         ry = ry[..., None]
-    h00 = hist[yi, xi]; h01 = hist[yi, x1]
-    h10 = hist[y1, xi]; h11 = hist[y1, x1]
+    h00 = hist[y0, x0]; h01 = hist[y0, x1]
+    h10 = hist[y1, x0]; h11 = hist[y1, x1]
     top = (h00 * (one - rx) + h01 * rx).astype(F)
     bot = (h10 * (one - rx) + h11 * rx).astype(F)
     return (top * (one - ry) + bot * ry).astype(F)

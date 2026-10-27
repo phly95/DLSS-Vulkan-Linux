@@ -134,8 +134,8 @@ uint enc10(vec3 tm) {
 vec3 bil(int xi0, int yi0, float rx, float ry) {
     const int xi = clamp(xi0, 0, W15 - 1);
     const int yi = clamp(yi0, 0, H15 - 1);
-    const int x1 = clamp(xi + 1, 0, W15 - 1);
-    const int y1 = clamp(yi + 1, 0, H15 - 1);
+    const int x1 = clamp(xi0 + 1, 0, W15 - 1);
+    const int y1 = clamp(yi0 + 1, 0, H15 - 1);
     vec3 h00 = vec3(in_hist[uint(yi * W15 + xi)].xyz);
     vec3 h01 = vec3(in_hist[uint(yi * W15 + x1)].xyz);
     vec3 h10 = vec3(in_hist[uint(y1 * W15 + xi)].xyz);
