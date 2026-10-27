@@ -248,7 +248,7 @@ void rmsnorm_row(uint t, uint C, uint goff) {
 
 // The R9 f16 chain on accumulator fragments, in registers: state = rh(state + partial), one component at
 // a time. For a fixed output tile every K=32 group's fragment has the same lane layout (the layout
-// probe's map in coopmm.glsl), so component c of the state pairs with component c of the partial - the
+// probe's map in the reference's math include), so component c of the state pairs with component c of the partial - the
 // model's element-wise chain with no LDS round trip, and one state materialisation per chain instead of
 // one per group. Components are written out by constant index (eight per lane for a 16x16 f32
 // accumulator at wave32), so nothing is dynamically indexed and nothing lands in scratch. The state is
@@ -272,7 +272,7 @@ void rmsnorm_row(uint t, uint C, uint goff) {
     (s)[6] = rh((b) + (p)[6]); (s)[7] = rh((b) + (p)[7]);
 
 // A K=32 fragment's partial combined INTO the f16 state array in place. Component (row, col) of a
-// fragment belongs to exactly one lane (the layout probe's map in coopmm.glsl), so that lane reads the
+// fragment belongs to exactly one lane (the layout probe's map in the reference's math include), so that lane reads the
 // state at its own coordinates, adds its own partial component through rh() and writes it back: no
 // staging store, no cross-lane gather loop, and no barrier between the partial and the state - every
 // later cross-lane reader of the state carries one barrier of its own. Rows are 16*f + 8*(tid/16) + ci,
