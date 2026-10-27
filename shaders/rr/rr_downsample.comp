@@ -1,6 +1,9 @@
 #version 460
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
 #extension GL_EXT_shader_16bit_storage : enable
+#extension GL_GOOGLE_include_directive : require
+
+#include "rh.glsl"
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
@@ -65,58 +68,68 @@ void main() {
     int bx = int(floor((float(ox) + 0.5) * 1.5)) - tile_x0;
     int by = int(floor((float(oy) + 0.5) * 1.5)) - tile_y0;
 
-    float16_t wx[5], wy[5];
+    float wx[5], wy[5];
     if ((ox & 1) != 0) {
-        wx[0] = float16_t(-0.0382996);
-        wx[1] = float16_t(0.3720703);
-        wx[2] = float16_t(0.6201172);
-        wx[3] = float16_t(0.0872803);
-        wx[4] = float16_t(-0.0413513);
+        wx[0] = rh(-0.0382996);
+        wx[1] = rh(0.3720703);
+        wx[2] = rh(0.6201172);
+        wx[3] = rh(0.0872803);
+        wx[4] = rh(-0.0413513);
     } else {
-        wx[0] = float16_t(-0.0413513);
-        wx[1] = float16_t(0.0872803);
-        wx[2] = float16_t(0.6201172);
-        wx[3] = float16_t(0.3720703);
-        wx[4] = float16_t(-0.0382996);
+        wx[0] = rh(-0.0413513);
+        wx[1] = rh(0.0872803);
+        wx[2] = rh(0.6201172);
+        wx[3] = rh(0.3720703);
+        wx[4] = rh(-0.0382996);
     }
 
     if ((oy & 1) != 0) {
-        wy[0] = float16_t(-0.0382996);
-        wy[1] = float16_t(0.3720703);
-        wy[2] = float16_t(0.6201172);
-        wy[3] = float16_t(0.0872803);
-        wy[4] = float16_t(-0.0413513);
+        wy[0] = rh(-0.0382996);
+        wy[1] = rh(0.3720703);
+        wy[2] = rh(0.6201172);
+        wy[3] = rh(0.0872803);
+        wy[4] = rh(-0.0413513);
     } else {
-        wy[0] = float16_t(-0.0413513);
-        wy[1] = float16_t(0.0872803);
-        wy[2] = float16_t(0.6201172);
-        wy[3] = float16_t(0.3720703);
-        wy[4] = float16_t(-0.0382996);
+        wy[0] = rh(-0.0413513);
+        wy[1] = rh(0.0872803);
+        wy[2] = rh(0.6201172);
+        wy[3] = rh(0.3720703);
+        wy[4] = rh(-0.0382996);
     }
 
-    f16vec3 row[5];
+    // f16 FIR as in NeuralHub's ISA (v_pk_fma_f16 / v_fmac_f16): taps 0..4 in order, each an f16 FMA
+    // whose result is rounded before the next tap (rh()); the f16 weights are rh() constants.
+    vec3 row[5];
     for (int k = 0; k < 5; ++k) {
         int yk = by - 2 + k;
-        f16vec3 s0 = s_patch[yk][bx - 2];
-        f16vec3 s1 = s_patch[yk][bx - 1];
-        f16vec3 s2 = s_patch[yk][bx];
-        f16vec3 s3 = s_patch[yk][bx + 1];
-        f16vec3 s4 = s_patch[yk][bx + 2];
+        vec3 s0 = vec3(s_patch[yk][bx - 2]);
+        vec3 s1 = vec3(s_patch[yk][bx - 1]);
+        vec3 s2 = vec3(s_patch[yk][bx]);
+        vec3 s3 = vec3(s_patch[yk][bx + 1]);
+        vec3 s4 = vec3(s_patch[yk][bx + 2]);
 
-        f16vec3 r = s0 * wx[0] + s1 * wx[1] + s2 * wx[2] + s3 * wx[3] + s4 * wx[4];
-        f16vec3 min_val = min(min(min(s0, s1), min(s2, s3)), s4);
-        f16vec3 max_val = max(max(max(s0, s1), max(s2, s3)), s4);
+        vec3 r = rh3(s0 * wx[0]);
+        r = rh3(r + s1 * wx[1]);
+        r = rh3(r + s2 * wx[2]);
+        r = rh3(r + s3 * wx[3]);
+        r = rh3(r + s4 * wx[4]);
+        vec3 min_val = min(min(min(s0, s1), min(s2, s3)), s4);
+        vec3 max_val = max(max(max(s0, s1), max(s2, s3)), s4);
         row[k] = clamp(r, min_val, max_val);
     }
 
-    f16vec3 res = row[0] * wy[0] + row[1] * wy[1] + row[2] * wy[2] + row[3] * wy[3] + row[4] * wy[4];
-    f16vec3 min_row = min(min(min(row[0], row[1]), min(row[2], row[3])), row[4]);
-    f16vec3 max_row = max(max(max(row[0], row[1]), max(row[2], row[3])), row[4]);
+    vec3 res = rh3(row[0] * wy[0]);
+    res = rh3(res + row[1] * wy[1]);
+    res = rh3(res + row[2] * wy[2]);
+    res = rh3(res + row[3] * wy[3]);
+    res = rh3(res + row[4] * wy[4]);
+    vec3 min_row = min(min(min(row[0], row[1]), min(row[2], row[3])), row[4]);
+    vec3 max_row = max(max(max(row[0], row[1]), max(row[2], row[3])), row[4]);
     res = clamp(res, min_row, max_row);
 
     float inv_expo = 1.0 / in_expo.x;
-    out_color[oy * oW + ox] = vec4(inv_tonemap(float(res.r), inv_expo),
-                                  inv_tonemap(float(res.g), inv_expo),
-                                  inv_tonemap(float(res.b), inv_expo),
+    out_color[oy * oW + ox] = vec4(inv_tonemap(res.r, inv_expo),
+                                  inv_tonemap(res.g, inv_expo),
+                                  inv_tonemap(res.b, inv_expo),
                                   1.0);
 }

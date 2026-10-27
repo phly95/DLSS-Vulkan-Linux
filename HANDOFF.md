@@ -69,6 +69,20 @@ RNE on about half the values. Only a 16-bit memory store and load rounds. Every 
 on an f16 cast for rounding must use an explicit integer RNE, `rh()` in `sr_stage.comp`. The other
 port shaders have not been audited for this.
 
+**Corrections and open host bugs (2026-10-26):**
+- **`tools/report/launch_report.py` printed a wrong bit-exact percentage before this date.** It
+  compared the two byte strings as a whole, so every partial match read 0%. Earlier "bit-exact
+  0.0000%" lines from it, such as Step C's baseline table, are wrong. PSNR, r and rRMSE were never
+  affected. Fixed and covered by the self-test.
+- **Host bug (open):** `rr_ae_final` is pushed 8 bytes (W, H), but the shader reads `scale` at
+  push offset 24 and `reset` at 28. Its binding 1 (`previous_ae`) is bound to `expo`, and the
+  injection names E0c22 / E0c2a look swapped (`src/vk/pipeline.cpp` around the RR AE dispatch).
+  Found by the f16 audit.
+- **f16 audit:** explicit rounding (`shaders/include/rh.glsl`) brings `sr_downsample` from 75.30 to
+  118.22 dB per launch and `rr_downsample` from 76.79 to 118.77 dB. `rr_post`, `rr_enc0_feat` and
+  `sr_enc0` compute in f32 where NeuralHub uses f16 chains or a truncating quantizer, so they need
+  their decodes, not a rounding fix.
+
 Review recommendations, pending the operator: score every mode-0 stage on t1 **and** t2 plus three
 sub-blocks (attention vs `--isolate`, MLP given the oracle's input, projection given the oracle's t1);
 generate hypotheses from `sr_pack.py`, the decompile and the ISA, and use the srref probes to

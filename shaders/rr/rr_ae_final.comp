@@ -2,6 +2,9 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
 #extension GL_EXT_shader_16bit_storage : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_GOOGLE_include_directive : require
+
+#include "rh.glsl"
 
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 
@@ -24,7 +27,10 @@ void main() {
     float mean_luma = max(float(accumulator) * scale, 0.005);
     float target = 0.235470891 / mean_luma;
 
-    uint half_bits = packHalf2x16(vec2(target, 0.0)) & 0xffffu;
+    // The target's f16 is round to nearest even: ISA k_ae_final, v_cvt_f16_f32 (RNE), then the bits step
+    // down when that value is above the target. packHalf2x16 does not round to nearest even on RADV, so
+    // rh() makes the rounding; rh(target) is an exact f16 value, so the pack below is exact.
+    uint half_bits = packHalf2x16(vec2(rh(target), 0.0)) & 0xffffu;
     float half_value = unpackHalf2x16(half_bits).x;
     if (half_value > target && half_bits > 0u) {
         half_value = unpackHalf2x16(half_bits - 1u).x;

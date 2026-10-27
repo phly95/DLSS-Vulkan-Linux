@@ -78,8 +78,11 @@ def decode(raw, dtype):
     if dtype == "u32":
         return np.frombuffer(raw, np.uint32).astype(np.float32)
     if dtype == "u8":
-        return raw.astype(np.float32)
+        return np.frombuffer(raw, np.uint8).astype(np.float32)
     raise ValueError(dtype)
+
+
+ELEM = {"fp8": np.uint8, "u8": np.uint8, "f16": np.uint16, "f32": np.uint32, "u32": np.uint32}
 
 
 # ---------------------------------------------------------------- measurement
@@ -114,7 +117,10 @@ def measure(port_raw, oracle_raw, dtype, peak=None):
     r = None if (na == 0.0 or nb == 0.0) else float(np.sum(da * db)) / (na * nb)
 
     rrmse = float("nan") if rms_o == 0.0 else math.sqrt(mse) / rms_o
-    exact = float(np.mean(port_raw == oracle_raw))
+    # element-wise, at the dtype's width (comparing the two bytes objects gave one bool, i.e. 0% or
+    # 100% - the bit-exact line was wrong for every partial match before 2026-10-26, Review R6)
+    et = ELEM[dtype]
+    exact = float(np.mean(np.frombuffer(port_raw, et) == np.frombuffer(oracle_raw, et)))
     return len(a), peak, psnr, r, rrmse, exact
 
 
@@ -222,6 +228,14 @@ def self_test():
     check("identical -> PSNR inf, r == 1, rRMSE == 0, 100% exact",
           (lambda z: z and math.isinf(z[2]) and abs(z[3] - 1.0) < 1e-12
            and z[4] == 0.0 and z[5] == 1.0)(measure(raw, raw, "f32")))
+
+    # bit-exact is element-wise: change exactly 1000 of 4096 f32 elements -> 75.5859%
+    part = ref.copy(); part[:1000] += np.float32(1.0)
+    check("partial match -> element-wise bit-exact (3096/4096)",
+          (lambda z: z and abs(z[5] - 3096 / 4096) < 1e-12)(measure(part.tobytes(), raw, "f32")))
+    b8 = np.arange(256, dtype=np.uint8).tobytes(); b8x = bytes([0] * 64) + b8[64:]
+    check("u8 decodes and counts per byte (193/256 exact)",
+          (lambda z: z and abs(z[5] - 193 / 256) < 1e-12)(measure(b8x, b8, "u8")))
 
     # PSNR with an explicit peak must follow 10*log10(peak^2/mse)
     noisy = (ref + 0.25).astype(np.float32)
