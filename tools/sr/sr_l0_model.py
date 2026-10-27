@@ -51,7 +51,10 @@ marked [ISA] when read off the listing and [dec0] when ported from sr_dec0_model
     chains through f16, Q.Q^T logits, f16 softmax key order + 1/h LUT, ctx -> f16 -> fp8,
     v270 first in the residual, nhgelu, f16 fc1/mlp accumulators, mode-0 projection as the
     bias-first K=32 chain clamped to +-6.28125 (0x4648 present in l0_0.s), fp8 projection
-    input (+-448 staging); mode 2's up projection staged as fp8 (up8) + skip before the block.
+    input (+-448 staging); every f32 -> E4M3 step is the SHADER's f32_to_e4m3_rne - RNE with
+    ties-to-even in the subnormal path too (this file's to_e4m3 overrides sm.to_e4m3 at
+    runtime; see its docstring). Mode 2's up projection staged as fp8 (up8) + skip before
+    the block.
 
   Heads (launch 14) [dec0 = the formulas, oracle = L's channel indices]: the head input is the
     block output at the render crop (144,256), read from LDS as f16 (ds_load_2addr 0x4534-0x454c,
@@ -66,50 +69,67 @@ marked [ISA] when read off the listing and [dec0] when ported from sr_dec0_model
               tanh-byte family: L0Args 0x18/0x20 are NULL, so unlike dec0 there is no hin/mv
               pointer, no warp term and no z gate.
 
-MEASURED (--self-check, tools/report/launch_report.py's measure): see the run at the bottom of
-build/agents/l0-decode/progress.md. L2 passes on both frames (all four heads 99.2-99.9%, bar
-97%); L1 frame0 passes (t0 99.6599%, bar 99%); L1 frame1 is at 95.94% - OPEN, see "Open" below.
+MEASURED (--self-check, tools/report/launch_report.py's measure): L2 passes on both frames (all
+four heads 99.9973-100.0000%, bar 97%); L1 passes on BOTH frames (t0 99.9977% f0 / 99.9980% f1,
+bar 99%); self-check PASS in 2.6 s. The last gap (L1 frame1 at 95.94%) closed by the f32->E4M3
+fix described under to_e4m3 below - see "Resolved" for the full evidence chain.
 
 Per-stage verification table (L3) - every row is model vs the oracle dump (frames 0/1) or an
 ISA listing; numbers are bit-exact % of the named buffer:
 | stage | verification | f0 | f1 |
 |---|---|---|---|
 | l0_in layout | 264x168x32, level-0 content at (2,2); near border byte-identical to the stage's reflect rule (col0==col4, col1==col3, row0==row4, row1==row3) | 100 | 100 |
-| embed clamp e1 in [0,448] | A/B vs oracle l0_skip: [0,448] 99.90/98.24 vs [-448,448] 1.18/4.99 | 99.90 | 98.24 |
+| embed clamp e1 in [0,448] | A/B vs oracle l0_skip (pre-fix A/B): [0,448] 99.90/98.24 vs [-448,448] 1.18/4.99 | 99.90 | 98.24 |
 | embed accumulation order | cur/chunk/chunkr/f64/seq give byte-identical scores -> the f32 K=32 sums are exact | = | = |
-| token reads: buffer vs reflect | buffer reads win (reflect re-computes the far border): 99.897/98.238 vs 98.674/97.255 | 99.897 | 98.238 |
-| block output (= oracle 003.l0_skip) | model vs oracle, fp8 | 99.8972 | 98.2384 |
-| down projection | project(decode(oracle l0_skip)) vs oracle t0 (input exact) - 4 accumulation orders identical | 99.9925 | 99.9922 |
-| t0 (L1, full pipeline) | model vs oracle 003.t0.bin | **99.6599** | **95.9425** |
+| token reads: buffer vs reflect | buffer reads win (pre-fix A/B; reflect re-computes the far border): 99.897/98.238 vs 98.674/97.255 | 99.897 | 98.238 |
+| block output (= oracle 003.l0_skip) | model vs oracle, fp8 (post-cvt-fix) | 99.9991 | 99.9997 |
+| down projection | project(decode(oracle l0_skip)) vs oracle t0 (input exact) - 4 accumulation orders identical | 100.0000 | 100.0000 |
+| t0 (L1, full pipeline) | model vs oracle 003.t0.bin | **99.9977** | **99.9980** |
 | norm ss tree | traced register-by-register in l0_0.s 0x730-0x9c8 = ss_isa's grouping (pairs -> low+high -> dword sum -> lane^16 partner -> lo+hi), +2^-13 as f16 add 0x800, rsqrt LUT load 0x984 = the stage's construction | match | match |
 | swin exp | 0x2466 scale, 0xb873/0x3873 clamps (x16 = stage x16), 0x3b6b = f16(0.92724609), 0x3d80 = f16(1.375), mantissa <<5 + 0x8000 = nr_swin_exp bit for bit | match | match |
-| softmax sum tree | R9 pairing: alternative trees scored 92.69/91.85 (linear) and 95.36/94.21 (adjacent-pair) - worse, so the (i,i+8),(i,i+2) tree is right; reciprocal via f64 identical (no double-rounding case) | 99.897 | 98.238 |
-| every config switch | qq/act/relT/resid/mlpacc/norm/smax/qkv/maxsub/prob8/qk8/relrot/snorm8/proj_in/v8/fc1/ss16/rs16/acc16/ctx8/projacc/projq swept vs l0_skip: all alternatives strictly worse or byte-identical no-ops (progress.md table) | baseline wins | baseline wins |
-| heads: gates c=(0,1,6) | per-byte exact vs oracle (dec0's channels 0,1,10 score ~1%) | 99.89/99.88/99.94 | >=99.6 all |
-| heads: factors c=(7,8,9) | log-ratio corr with p_c 0.999/0.946; full-head exact | 99.884 | 99.666 |
-| heads: aniso A=10,B=11,T=tanh(f0*12) | corr 0.988/0.9997/1.0 (B==1.0 also proves l0<2>'s block output) | 99.679 | 99.218 |
-| heads: hidden0 = tanh(2..5) | per-channel exact; the RR u15 tanh family (no warp: L0Args 0x18/0x20 = NULL) | 99.888 | 99.644 |
+| softmax sum tree | R9 pairing (pre-fix A/B): alternative trees scored 92.69/91.85 (linear) and 95.36/94.21 (adjacent-pair) - worse, so the (i,i+8),(i,i+2) tree is right; reciprocal via f64 identical (no double-rounding case) | 99.897 | 98.238 |
+| every config switch | qq/act/relT/resid/mlpacc/norm/smax/qkv/maxsub/prob8/qk8/relrot/snorm8/proj_in/v8/fc1/ss16/rs16/acc16/ctx8/projacc/projq swept vs l0_skip (pre-fix A/B): all alternatives strictly worse or byte-identical no-ops (progress.md table) | baseline wins | baseline wins |
+| heads: gates c=(0,1,6) | per-byte exact vs oracle (dec0's channels 0,1,10 score ~1%) | 100.0000 | 100.0000 |
+| heads: factors c=(7,8,9) | log-ratio corr with p_c 0.999/0.946; full-head exact | 99.9993 | 99.9993 |
+| heads: aniso A=10,B=11,T=tanh(f0*12) | corr 0.988/0.9997/1.0 (B==1.0 also proves l0<2>'s block output) | 99.9980 | 99.9973 |
+| heads: hidden0 = tanh(2..5) | per-channel exact; the RR u15 tanh family (no warp: L0Args 0x18/0x20 = NULL) | 100.0000 | 100.0000 |
 
-Open (L1 frame1): 95.94% vs the 99% bar. Bisected with a hand-rolled srref --L patchprobe
-(build/agents/l0-decode/probenorm{,2}.py; all probe runs < 1 s; evidence table in
-build/agents/l0-decode/progress.md):
-  post-norm (norm1, exact e2 input):     99.6962% f0 / 99.9080% f1  - input path clean;
-  post-attention (norm2, MLP input):     95.81% f0 / 95.36% f1      - per-wg bimodal, set
-      (first window per wave) confirmed at 100.0000% on matching workgroups;
-  post-MLP (oracle l0_skip):             99.8972% f0 / 98.2384% f1;
-  the block residue correlates only weakly with the norm2 mismatches (f1: 1.39% block-bad at
-  norm2-clean workgroups vs 1.93% at norm2-bad) because norm2 = fp8(norm(X1)) compresses X1
-  differences while X1 itself feeds mlp_acc directly through the residual - i.e. the first
-  stage that carries the divergence to the output is the ATTENTION (between the clean post-norm
-  probe and the post-attention probe). Frame-1's data amplifies it (block 1.76% -> t0 95.94%).
-  Ruled out by measurement: input accumulation order, projection (99.99% from oracle input),
-  every run_stage config switch, ss-tree/rsqrt/+2^-13 variants (<=0.02 pp), fc1/fc2 K=32
-  chunk order (byte-identical), ctx GEMM order (byte-identical), softmax sum tree (alternatives
-  strictly worse). The earliest non-zero measured divergence is the norm formula's own
-  0.09-0.30% (input exact, unexplained, frame-INVERSE-correlated) - too small to explain
-  frame1 alone; the attention expression trees (QKV f16 boundaries, softmax e/prob rounding,
-  ctx->fp8, residual order) against an X1 probe remain untraced - not completed within the
-  follow-up budget; the model is submitted with L1 frame1 at 95.94% and this evidence.
+Resolved (was: L1 frame1 at 95.94% vs the 99% bar): THE POINT was the f32 -> E4M3 step -
+sr_stage_model.to_e4m3's subnormal branch is floor(a*512+0.5) = round-half-UP, while the
+shader's f32_to_e4m3_rne (tools/verify/diffdump.py, tie-tested) rounds TIES-TO-EVEN at the
+fp8 midpoints |t| = (n+0.5)*2^-9 with n even. sr_enc0_model.py:45 had already recorded this
+exact bug as "the whole residual on features 16..19"; for preset L it was the whole frame-1
+gap. This file's to_e4m3 (runtime override of sm.to_e4m3, no read-only file touched) closes it.
+
+Bisection evidence (hand-rolled srref --L patchprobes, build/agents/l0-decode/probenorm{,2,3,4}.py,
+all runs < 1 s, full log in build/agents/l0-decode/progress.md), PRE-fix byte rates:
+
+| probe point | f0 | f1 |
+|---|---|---|
+| post-norm norm1 (+0xc80, exact e2 input) | 99.9975 | 99.9577 |
+| post-attention ctx fp8 (+0x2df4, the Wo input) | 99.9890 | 99.9345 |
+| X1 f16 residual (+0x316c, v61..v64 fragment, coverage vs the FF window pair) | 99.63 | 98.45 |
+| block output (oracle l0_skip) | 99.8972 | 98.2384 |
+| t0 (amplified x2.3 by the projection) | 99.6599 | 95.9425 |
+
+With the cvt fixed: norm1 100.0000/100.0000, ctx fp8 100.0000/100.0000 (both probes, both
+frames), l0_skip 99.9991/99.9997, t0 99.9977/99.9980. The amplification chain explains the
+sizes: a subnormal-tie misround flips ~0.01-0.09% of fp8 bytes; each flipped norm1/ctx byte
+enters 32 output channels -> X1 0.37/1.55% -> l0_skip 0.10/1.76% -> t0 0.34/4.06% (frame 1's
+data sits near more round boundaries).
+
+Refuted on the way (byte-identical or worse vs the sensitive probes): ctx GEMM accumulation
+(f32 sum beat every f16-acc/chunk/seq/tree variant), QKV GEMM order (base/chunk16/chunk8/seq/
+f64 identical; f16 chain double-rounding worse), Wo and fc1/fc2 chunk orders, softmax sum tree
+(alternatives strictly worse), ss-tree/rsqrt/+2^-13 variants, every run_stage config switch,
+and probe2's post-norm2 95% (impossible under the X1 pricing: +-1 ulp at 1/5/10% -> norm2
+0.014/0.071/0.142% - a registration artifact, discarded). The L3 rows marked "pre-fix A/B"
+(embed clamp, token reads, config switches, softmax tree) were relative comparisons made before
+the cvt fix; their conclusions are unchanged, absolute scores rise with the fix.
+
+Chain implication: SR L's real-l0_in chain min 30.12 at frame 4 (the second reset) was the
+prime suspect for this residue; with L1 now 99.9977/99.9980 the follow-up chain re-measure is
+the orchestrator's to run.
 """
 import argparse
 import json
@@ -127,6 +147,36 @@ import sr_stage_model as sm  # noqa: E402  (the stage block spec, Review R9 - re
 from sr_dec0_model import sg  # noqa: E402  (Review R3b's sigmoid, shared with the dec0 heads)
 from sr_pack import frag_offsets  # noqa: E402  (NeuralHub's packer: read-only)
 from launch_report import measure  # noqa: E402  (the canonical per-launch scoring)
+
+
+def to_e4m3(x):
+    """f32 -> E4M3 code, RNE with ties-to-even EVERYWHERE, saturating at +-448, NaN -> 0:
+    exactly the shaders' f32_to_e4m3_rne (tools/verify/diffdump.py, whose tie tests are the
+    reference: 2^-10 -> 0x00, 1.0625 -> 0x38, 464 -> 0x7f).
+
+    This overrides sr_stage_model.to_e4m3 at runtime (q8/encode_act/rmsnorm resolve the global
+    at call time; no file of the read-only module is touched). sm's SUBNORMAL branch is
+    floor(a*512+0.5) = round-half-UP, which differs from the shader at the fp8 midpoints
+    |t| = (n+0.5)*2^-9 with n even - sr_enc0_model.py:45 already recorded that as "the whole
+    residual on features 16..19 (99.28/99.83/99.99 -> 100.0000%)". For preset L it was the
+    whole of the L1 frame-1 gap: with the old cvt the patchprobes measured norm1
+    99.9975/99.9577 and ctx-fp8 99.9890/99.9345 (frames 0/1); with this one both probes are
+    bit-exact 100.0000/100.0000 (build/agents/l0-decode/progress.md)."""
+    x = np.asarray(x, np.float32)
+    x = np.where(np.isnan(x), np.float32(0), x)          # the kernel's cndmask(0, ., not-NaN)
+    sign = np.where(x < 0, 0x80, 0).astype(np.uint32)
+    a = np.minimum(np.abs(x), np.float32(448.0))
+    bits = a.view(np.uint32)
+    s = a * np.float32(512.0)                            # exact: the subnormal grid is 2^-9
+    n = np.floor(s)
+    d = s - n
+    sub = np.where((d > np.float32(0.5)) | ((d == np.float32(0.5)) & ((n.astype(np.int64) & 1) == 1)),
+                   n + np.float32(1), n)                 # ties-to-even (sm rounds half-up here)
+    norm = ((bits + np.uint32(0x407ffff) + ((bits >> 20) & 1)) >> 20) & 0x7f   # RNE
+    return (np.where(a < np.float32(0.015625), sub, norm).astype(np.uint32) | sign).astype(np.uint8)
+
+
+sm.to_e4m3 = to_e4m3                                    # the shader's cvt, for every q8 in the block
 
 f16 = sm.f16
 q8 = sm.q8
