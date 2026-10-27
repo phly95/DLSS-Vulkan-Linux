@@ -89,3 +89,51 @@ injects inside the network (enc0..dec0) measures a segment whose output the live
 never consumes - which is exactly why those injections moved the number little or oddly.
 The live segment is post -> downsample (post-inject 80.79 dB, downsample-inject 120 dB).
 See `docs/notes/sr_chain_decoupling.md` for the proofs and the corrected campaign order.
+
+## 2026-10-27 re-measurement (post-wiring, post-R9, post-`5981a2e`): the first valid network table
+
+Same method and commands as above, re-run by the orchestrator at `731d767` (shader hash
+`1e42c285471471ad40cc207a50a413ec74bbf371048236b9c0ef48dcc7222566`), inputs
+`build/oracle/oracle-8dbf027a9e-s20261025/{sr_M,rr_F}/dump` + `frames/{sr,rr}`, scored per frame
+with `tools/report/pipeline_report.py` against `build/breadth-baseline/{sr_M,rr_F}_ref`. The
+2026-10-26 addendum's caveat no longer applies: the network is wired (`f0c244f`), `sr_stage`/
+`sr_tube_split` implement R9 (`11f3f49`), `sr_dec0` and `sr_post` are rewritten (`1056352`,
+`5981a2e`), `rr_level` implements R9b (`e6755ab`), and `rr_post_prep` consumes the U-Net outputs.
+
+### SR M, frames 0/1 (the two frames the oracle dumps cover; full-sequence is 32.25/33.31)
+
+| inject from | f0 | f1 | reading |
+|---|---:|---:|---|
+| (none, baseline) | 37.89 | 34.48 | the port chain as it runs |
+| gather | 37.89 | 34.48 | EXACT, zero error (unchanged) |
+| enc0 | **53.41** | **55.81** | **enc0's error now costs +15.5/+21.3 dB** - the 2026-10-26 "enc0 gets no further attempts" conclusion is superseded (it held only while the stage was wrong) |
+| stage0 | 53.61 | 56.00 | stage0's own error given oracle t0 ~= 0 (row ~= enc0 row) |
+| stage1 | 38.56 | 38.88 | +0.7 / +4.4 |
+| tube0 / tube5 | 37.65 / 37.65 | 36.75 / 36.83 | ~0 / +2.3 - the tube block is still small |
+| stage8 | 38.50 | 38.88 | +0.6 / +4.4 (launch 11 given oracle t7) |
+| stage9 | **106.75** | **77.96** | launch 12's segment (incl. its t1 skip path) is the largest single block: +68 / +39 dB |
+| dec0 | 108.48 | 77.96 | dec0's own error ~ +1.7 / ~0 |
+| post | 118.83 | 119.31 | post's own error given oracle inputs = 77.96-108.48 dB (matches `5981a2e`) |
+| downsample | 120.00 | 120.00 | done |
+
+**SR work order now:** (1) `k_sr_enc0` - the spec is in flight (`tools/sr/sr_enc0_model.py`), t0 is
+0.92% bit-exact in the shader and removing its error is worth +15.5/+21.3; (2) the mode-2
+decoder segment (launches 11/12 and the t1 skip) - its per-launch numbers are 61-69 dB but the
+segment still carries the most image error once enc0 is oracle; (3) the mid-stage rounding
+residual (the model's own 99.08-99.99% vs oracle); (4) post's 1-ULP hardware residual last.
+
+### RR F, frames 0/1 (full-sequence is 31.56/32.98)
+
+| inject from | f0 | f1 | reading |
+|---|---:|---:|---|
+| (none, baseline) | 36.05 | 32.82 | |
+| gather / ae_block / ae_final | 36.05 | 36.05 -> 32.82 | all EXACT (unchanged) |
+| enc0_feat | 40.69 | 33.01 | E0be8 (72.9% bit-exact) costs +4.6 / +0.2 |
+| post_prep | 40.86 | 33.00 | post_prep's own error ~0 (it is bit-exact); this row is rr_post's own error given fully oracle inputs: **40.86 / 33.00 dB** |
+| post | 118.83 | 117.13 | rr_downsample is clean behind it |
+| downsample | 120.00 | 120.00 | done |
+
+**RR work order now (unchanged in kind, confirmed with fresh numbers):** (1) `k_post` frame-1 spec
+(`tools/rr/rr_post_model.py`, in flight) + rewrite `rr_post.comp` - post's own error is the
+whole gap; (2) `k_enc0_feat`'s E0be8; (3) the U-Net is no longer a lever (R9b made every block
+99.7-99.9% and the image moved ~0.2-4.8 dB).
