@@ -308,6 +308,10 @@ def run_stage(X, Wt, W, H, sx, sy, tile, cfg, skip=None, low=None, attn_only=Fal
         return f16(q8(s.astype(np.float32))) if cfg["snorm8"] else s
 
     s_norm = rmsnorm(s_act, Wt.gain1).astype(np.float32)
+    if cfg.get("_tap") is not None:                       # diagnostic hook (default off): block input
+        cfg["_tap"]["s_act"] = s_act.astype(np.float16)
+        cfg["_tap"]["XY"] = (TX.copy(), TY.copy(),
+                             ((TX >= 0) & (TX < W) & (TY >= 0) & (TY < H)).copy())
     attn = np.zeros(s_act.shape, np.float32)
     heads = list(Wt.heads)
     if cfg.get("relT"):
@@ -369,7 +373,11 @@ def run_stage(X, Wt, W, H, sx, sy, tile, cfg, skip=None, low=None, attn_only=Fal
     else:
         if cfg["resid"] != "isa":                 # isa: v270 was added before the heads
             s_act = f16(s_act.astype(np.float32) + f16(Wt.v270).astype(np.float32))
+        if cfg.get("_tap") is not None:           # diagnostic hook: X1 (post-attention residual)
+            cfg["_tap"]["X1"] = s_act.astype(np.float16)
         s_n2 = rmsnorm(s_act, Wt.gain2).astype(np.float32)
+        if cfg.get("_tap") is not None:           # diagnostic hook: norm2 output (fc1 input)
+            cfg["_tap"]["s_n2"] = s_n2.astype(np.float16)
         s_mlp = np.zeros(s_act.shape, np.float16)
         mlp_acc = f16(s_act.astype(np.float32) + f16(Wt.fc2_bias).astype(np.float32)).astype(np.float32)
         for (W1, b1, W2) in Wt.mlp:
@@ -382,6 +390,8 @@ def run_stage(X, Wt, W, H, sx, sy, tile, cfg, skip=None, low=None, attn_only=Fal
                 h1 = q8(act_fn(f16(mmc(s_n2, W1) + b1).astype(np.float32), cfg["act"]))
             else:
                 h1 = q8(act_fn((mm(s_n2, W1) + b1).astype(np.float32), cfg["act"]))
+            if cfg.get("_tap") is not None:                # diagnostic hook: fc1 hidden (fp8)
+                cfg["_tap"].setdefault("h1", []).append(h1)
             if cfg["mlpacc"] == "isa":            # Review R9: acc = f16(acc + block's f32 fc2 partial)
                 mlp_acc = f16(mlp_acc + h1 @ W2.T).astype(np.float32)
             else:
