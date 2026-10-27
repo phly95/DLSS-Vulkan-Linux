@@ -133,6 +133,27 @@ the RR heads and was out of scope here. `rr_level.comp` still ports the old mode
 15's GPU/model parity follows from this session's spec but is not yet measured. `sr_post.comp` is
 still the hybrid described in row 4; the spec it should now be rewritten against is committed.
 
+**A cost the milestone does not show, measured both ways.** The qq flip moves the whole-pipeline
+numbers differently from the per-launch ones, and the difference is not noise - both sides were run
+twice and reproduce to the last digit:
+
+| pipeline vs the oracle's own 9-frame output | qq=0 | qq=1 (`6a612b0`) | delta |
+|---|---:|---:|---:|
+| SR M min / mean | 31.79 / 33.09 | **32.13 / 33.61** | +0.34 / +0.52 |
+| SR L min / mean | **24.10 / 26.26** | 23.78 / 25.84 | -0.32 / -0.42 |
+
+So the flip costs SR L about 0.4 dB end to end. It is kept, for two reasons that are evidence and
+not preference. First, per-launch against oracle inputs - the metric `launch_report.py` exists to
+state, and the one the referee rules say governs kernel work - qq=1 wins on **both** presets, by a
+wide margin: preset L's stage launches 4/5/12/13 go from 34.16/29.33/32.45/25.45 dB at qq=0 to
+**44.48/37.84/44.37/33.87** at qq=1 (+7 to +12 dB), with r rising from ~0.993 to ~0.999. Preset L's
+`k_sr_stage` is the same mangled kernel as preset M's, so the hardware cannot use one operand for
+one preset and the other for the other. Second, Review R7b read this operand off the hardware. The
+end-to-end L drop is the same effect already recorded for `sr_post` - a faithful consumer of an
+upstream that is still wrong - and the chain's upstream (`enc0`, `dec0`, `post`) is what the stage's
+per-launch measurement deliberately holds at oracle values. The next move on that number is to
+fix the upstream, not to put a wrong operand back.
+
 **Two tool fixes, both worth knowing about.** `tools/report/launch_report.py` gained an `i8` element
 type (`8502fd2`) - signed activations scored as unsigned lose ~12 dB of apparent PSNR - and its
 self-test had been failing since `1720a08` because it regexed `sr_stage.comp` for an `e4m3_lut` table
