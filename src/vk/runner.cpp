@@ -207,6 +207,7 @@ int main(int argc, char** argv) {
         auto jitp = jget(pf, "jitter_prev");
         fp.jpx = float(jitp.size() > 0 ? jitp[0] : 0.0);
         fp.jpy = float(jitp.size() > 1 ? jitp[1] : 0.0);
+        fp.frame_index = fi;      // monotonic sequence index (injection dump dir; pipeline.h)
 
         // Load frame textures
         std::string c_ext = (fp.fmt_col == 0) ? ".f16" : (".c" + std::to_string(fp.fmt_col));

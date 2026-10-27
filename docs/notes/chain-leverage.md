@@ -216,3 +216,43 @@ To use them for injection/launch_report on frames 2-8, two follow-ups (host code
 `FrameChain::inj_wanted`'s `fc >= 2` guard (pipeline.cpp:688-ish) for the new dir, and add the
 per-frame dump dir to the injection/measure plumbing. That is the prerequisite for attacking the
 full-sequence min (SR M 33.76 at frames 4-8, RR F 32.26 at frame 8).
+
+### 2026-10-27 17:00: frames 4-8 made measurable - a host bug found, and what the table says
+
+Host fix (the operator's host-fix purview, orchestrator): `inj_wanted`'s `fc >= 2` guard removed,
+AND a real bug fixed - `inject_after` keyed the dump dir on `fc`, which is the **8-frame history
+ring** (`(fc + 1) & 7`), so frame 8 injected under `/frame0/` (proven: injected `out_8` was
+byte-identical to `ref_out_0`). Injection now keys on `FrameParams.frame_index` (monotonic, set by
+the runner; `pipeline.h` + `runner.cpp` + `pipeline.cpp`), falling back to `fc` when unknown (bridge).
+Sanity: no-injection SR M unchanged at 33.76/45.77; mask-ALL now **120.00 on all 9 frames**
+(instrument fully validated end to end).
+
+SR M, all 9 frames (`pipeline_report` vs `sr_M_ref`; multidump dir):
+
+| port runs from row onward (oracle upstream + oracle history) | f0 | f1 | f2 | f3 | f4 | f5 | f6 | f7 | f8 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| baseline (all port) | 53.82 | 54.48 | 54.61 | 55.09 | **33.76** | 36.44 | 39.84 | 41.19 | 42.66 |
+| from stage0 (oracle gather+enc0) | 53.41 | 55.81 | 56.72 | 56.99 | 16.43 | 17.95 | 19.15 | 20.12 | 21.46 |
+| from tube8/stage8 | 90.01 | 77.20 | 76.09 | 67.57 | 16.43 | 17.94 | 19.17 | 20.14 | 21.49 |
+| from stage9 | 106.75 | 77.96 | 76.65 | 67.77 | 16.43 | 17.94 | 19.17 | 20.14 | 21.49 |
+| from dec0 | 108.48 | 77.96 | 76.65 | 67.77 | 16.43 | 17.94 | 19.17 | 20.14 | 21.49 |
+| from post (oracle everything above) | 118.83 | 119.31 | 117.61 | 117.39 | 119.64 | 119.18 | 118.93 | 119.71 | 118.58 |
+| mask-ALL (ds only downstream) | 120.00 | 120.00 | 120.00 | 120.00 | 120.00 | 120.00 | 120.00 | 120.00 | 120.00 |
+
+Readings:
+1. **The whole f4-8 gap flows through the port's `sr_post`.** Give the image oracle post outputs
+   (any mask including post) and every frame is ~119 dB; give post ANY upstream (oracle gates,
+   oracle t8, oracle t0 - all rows) and f4-8 collapses to 16-36 dB, WORSE than the pure-port
+   baseline. f0-3 behave as expected (the rows rise as the boundary moves downstream).
+2. **Single-point injection is invalid at f4+ for methodology reasons** - the second compensating
+   error: the pure-port chain is self-consistent (port gates + port history cancel), so breaking
+   either side with oracle data exposes the other. The 33-42 baseline is the honest referee
+   number; the 16-21 rows are NOT a segment measurement, they are the compensation breaking.
+3. Non-monotone f3->f4 collapse (67 -> 16) with oracle upstream means the post/history loop
+   DIVERGES nonlinearly when fed mixed data. Decomposing f4-8 further needs a mask design the
+   current inject-after plumbing cannot express (per-frame masks, or history-buffer injection
+   independent of the points) - queued as instrument work if the post-side fixes below do not
+   already lift f4-8.
+4. What this implies for the work order: **post's own frame fidelity + the history loop IS the
+   f4-8 problem** (mode-2 closure and enc0 already landed or in flight lift f0-3, which the
+   table shows are nearly fine: 53-55).

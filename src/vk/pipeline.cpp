@@ -709,7 +709,10 @@ void FrameChain::set_injection(const std::string& dir, const std::string& mask) 
 }
 
 bool FrameChain::inj_wanted(const char* point) const {
-    if (inj_dir.empty() || fc >= 2) return false;
+    // No fc >= 2 guard: injection is gated by the dump's own files (a frame without dumps simply
+    // has nothing to slurp), and build/work/multidump now carries frames 0..8 (chain-leverage.md
+    // "Instrument update 2026-10-27"), which makes the frames 4-8 segments measurable.
+    if (inj_dir.empty()) return false;
     if (inj_mask.empty()) return true;
     for (auto& m : inj_mask) if (m == point) return true;
     return false;
@@ -729,7 +732,7 @@ void FrameChain::inject_after(VkCommandBuffer cmd, const char* point, int launch
     if (!inj_wanted(point)) return;
     char lbuf[16];
     std::snprintf(lbuf, sizeof(lbuf), "%03d", launch);
-    std::string base = inj_dir + "/frame" + std::to_string(fc) + "/" + lbuf + ".";
+    std::string base = inj_dir + "/frame" + std::to_string(inj_frame) + "/" + lbuf + ".";
     bool any = false;
     std::string names;
     for (const auto& kv : inj_targets) {
@@ -760,7 +763,7 @@ void FrameChain::inject_after(VkCommandBuffer cmd, const char* point, int launch
         mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0, nullptr, 0, nullptr);
-        std::fprintf(stderr, "INJECT frame%d %s launch %d <- %s\n", fc, point, launch, names.c_str());
+        std::fprintf(stderr, "INJECT frame%d %s launch %d <- %s\n", inj_frame, point, launch, names.c_str());
     }
 }
 
@@ -886,6 +889,7 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
     int L2w = this->L2w, L2h = this->L2h, L3w = this->L3w, L3h = this->L3h;
     int W15 = this->W15, H15 = this->H15, hW15 = this->hW15, hH15 = this->hH15;
     int p = this->p, fc = this->fc;
+    inj_frame = (fp.frame_index >= 0) ? fp.frame_index : fc;   // injection's true frame key
     int reset = fp.reset;
     int fmt_col = fp.fmt_col, fmt_mv = fp.fmt_mv, fmt_dep = fp.fmt_dep;
     int mvhi = fp.mvhi, ldr = fp.ldr;

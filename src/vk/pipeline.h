@@ -38,6 +38,7 @@ struct FrameParams {
     int reset = 0;     // drop the temporal history
     float jx = 0.0f, jy = 0.0f;      // this frame's jitter
     float jpx = 0.0f, jpy = 0.0f;    // the previous frame's jitter
+    int frame_index = -1;   // monotonic frame number of the sequence (runner); -1 = unknown
 };
 
 // A host-visible (and, for the bridge, transfer-capable) buffer.
@@ -163,6 +164,9 @@ private:
     int W15 = 0, H15 = 0, hW15 = 0, hH15 = 0, mvpitch = 0;
 
     int p = 0, fc = 0;
+    // Injection's frame key: the TRUE sequence index (FrameParams.frame_index), not fc, which is
+    // an 8-frame history ring ((fc + 1) & 7) and wraps frame 8 onto frame 0's dump files.
+    int inj_frame = 0;
     float dec0_s0 = 8.0f, dec0_f0 = 0.078633f, dec0_f1 = 0.0f;
 
     VkDescriptorPool dpool = VK_NULL_HANDLE;
