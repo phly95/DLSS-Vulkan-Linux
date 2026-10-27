@@ -178,3 +178,28 @@ The 2026-11-02 milestone (>= 40 dB per launch on `k_rr_level`) is met on several
   `k_post_prep` / `k_post`;
 - the +0x88 / +0x90 extra inputs, which are used only in that head path;
 - unit 5's frame-1 gap.
+
+### Review R7c (2026-10-26): the per-level heads decoded (o98, oa0)
+
+Read from the ISA of `k_level<96,4,0,128,0,1>` (encoder) and `k_level<160,8,3,0,0,1>` (decoder).
+In each formula, h_r is the f16 chain `bias_r + K=32 chunks of m108[r] . fp8(out)` over the
+unit's own fp8 block output, `sg = f16(sigmoid(h))` with an f32 exp and rcp, and outputs are clamped
+to 65504 (NaN -> 65504):
+
+- **Encoder head** (units 0-5, 3 rows): `o98_c = f16(f16(s1d0 * sg_c) * x88_c)` for c < 3,
+  lane 3 = 0. `x88` is the previous level's `oa0`, and for unit 0 the enc0 feature E0bec.
+- **oa0** (encoders, next-level resolution): the 2 x 2 average of o98, each tap x0.25 in f16,
+  summed as `(p00 + p10) + (p01 + p11)`.
+- **Decoder head** (mode-3 units 7/9/11/13, 4 rows):
+  `o98_c = f16(f16(f16(f16(s1d0 * sg_c) * up_c) * sg_3) + f16(f16(1 - sg_3) * x88_c))`, a gated blend.
+  `up` = a 2x bilinear upsample (weights 0.75 / 0.25 by parity, border tap weight 0) of `x90`,
+  the coarser decoder's o98. `x88` is the same-level encoder head.
+
+Frame 1, per launch vs oracle (PSNR / r / bit-exact):
+- o98, units 0..5: 89.65 / 1.000000 / 96.9%, then 51.43, 54.56, 54.79, 53.13, 45.13 dB;
+- oa0, units 0..4: 86.08 (96.2%), then 55.43, 59.23, 59.87, 56.97 dB;
+- o98, decoders 7 / 9 / 11 / 13: 62.27 / 61.39 / 58.73 / 60.56 dB (r 0.99999).
+
+Non-exactness follows from the about 99% of fp8 block-output codes the heads read. Remaining in
+k_level: unit 15 (mode 4) and its render-resolution outputs E0c02 / E0c16 / E0c1a / E0c1e, which feed
+post_prep / post.

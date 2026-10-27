@@ -107,7 +107,7 @@ DEFAULTS = dict(
     skip_at="before",      # mode 2: skip added before the block (before) | after | both | none
     mode4_guess=1,         # 1: mode 4's O98 lanes 0..2 = block output channels 0..2; 0: zeros   GUESS
     blk="v2",              # v1: the first hypothesis (4x4 windows, no LayerScale); v2: block_v2 (Review R7)
-    relpos=1, den16=1, ls=1, acc16=0, lscale=1.0, qq=1, pv8=1, skip_mix="s6skip",   # block_v2: relpos bias, f16 softmax den + rcp, LayerScale, f16 K-chunk sums
+    relpos=1, den16=1, ls=1, acc16=0, lscale=1.0, qq=1, pv8=1, skip_mix="s6skip", head="v2",   # block_v2: relpos bias, f16 softmax den + rcp, LayerScale, f16 K-chunk sums
 )
 
 
@@ -504,6 +504,72 @@ def head(out, Wt, cfg, nh):
     return o
 
 
+def head_v2(out, Wt, nh, s1d0, x88):
+    """Encoder head (Review R7c, k_level<96,4,0,128,0,1> ISA 0x3908..0x3c70):
+    h_c = f16-chain(bias_c + K=32 chunks of m108[c] . fp8(out)),  g_c = f16(sigmoid(h_c)) (f32 exp/rcp),
+    o98_c = min(f16(f16(s1d0 * g_c) * x88_c), 65504) for c < 3, lane 3 = 0 (0 * x88_3)."""
+    src = q8(out)
+    Wm = Wt["m108f"][:nh]
+    C = src.shape[-1]
+    acc = np.broadcast_to(f16a(Wt["v1b8_f"][:nh]), src.shape[:2] + (nh,)).astype(np.float32)
+    for k0 in range(0, C, 32):
+        acc = f16a(acc + src[..., k0:k0 + 32] @ Wm[:, k0:k0 + 32].T)
+    g = f16a(np.float32(1.0) / (np.float32(1.0) + np.exp(-acc.astype(np.float32))))
+    o = np.zeros(out.shape[:2] + (4,), np.float32)
+    o[..., :nh] = np.minimum(f16a(f16a(np.float32(s1d0) * g) * x88[..., :nh]), np.float32(65504.0))
+    return o
+
+
+def up2_bilinear(c):
+    """2x bilinear upsample with the decoder head's f16 weights: fine p uses coarse base = (p-1)>>1
+    and base+1, weight of base+1 = 0.75 (p even) / 0.25 (p odd); at the borders the out-of-range
+    tap's weight is 0 and the base is clamped. Order (ISA 0x5264..0x533c):
+    f16(f16(f16(f16((1-b) f16((1-a) t1)) + f16((1-b) f16(a t2))) + f16(b f16((1-a) t3))) + f16(b f16(a t4)))"""
+    h, w = c.shape[:2]
+    def axis(n_fine, n_coarse):
+        pidx = np.arange(n_fine)
+        base = (pidx - 1) >> 1
+        wt = np.where(pidx % 2 == 0, np.float32(0.75), np.float32(0.25))
+        lo_bad = base < 0; hi_bad = base + 1 >= n_coarse
+        wt = np.where(lo_bad | hi_bad, np.float32(0.0), wt)
+        base = np.clip(base, 0, n_coarse - 1); nxt = np.clip(base + 1, 0, n_coarse - 1)
+        return base, nxt, wt
+    by, ny, b = axis(2 * h, h); bx, nx, a = axis(2 * w, w)
+    a = a[None, :, None]; b = b[:, None, None]
+    t1 = c[by][:, bx]; t2 = c[by][:, nx]; t3 = c[ny][:, bx]; t4 = c[ny][:, nx]
+    one = np.float32(1.0)
+    r = f16a(f16a((one - b) * f16a((one - a) * t1)) + f16a((one - b) * f16a(a * t2)))
+    r = f16a(r + f16a(b * f16a((one - a) * t3)))
+    return f16a(r + f16a(b * f16a(a * t4)))
+
+
+def head_dec(out, Wt, s1d0, x88, x90):
+    """Decoder (mode 3) head, 4 rows (Review R7c, k_level<160,8,3,0,0,1> ISA 0x515c..0x5394):
+    h_r = f16-chain(bias_r + K=32 chunks of m108[r] . fp8(out)), s_r = f16(sigmoid(h_r)),
+    o98_c = f16( f16( f16( f16(s1d0 * s_c) * up_c ) * s_3 ) + f16( f16(1 - s_3) * x88_c ) ), c < 3,
+    up = up2_bilinear(x90) (the coarser decoder's o98), gate s_3; lane 3 = 0."""
+    src = q8(out); C = src.shape[-1]; Wm = Wt["m108f"][:4]
+    acc = np.broadcast_to(f16a(Wt["v1b8_f"][:4]), src.shape[:2] + (4,)).astype(np.float32)
+    for k0 in range(0, C, 32):
+        acc = f16a(acc + src[..., k0:k0 + 32] @ Wm[:, k0:k0 + 32].T)
+    sg = f16a(np.float32(1.0) / (np.float32(1.0) + np.exp(-acc.astype(np.float32))))
+    up = up2_bilinear(x90)
+    gate = sg[..., 3:4]; inv = f16a(np.float32(1.0) - gate)
+    o = np.zeros(out.shape[:2] + (4,), np.float32)
+    v = f16a(f16a(f16a(f16a(np.float32(s1d0) * sg[..., :3]) * up[..., :3]) * gate) + f16a(inv * x88[..., :3]))
+    o[..., :3] = np.minimum(v, np.float32(65504.0))
+    return o
+
+
+def head_down2(o98):
+    """oa0 (Review R7c, ISA 0x3dcc..0x3ee8): the 2x2 average of the clamped o98, each tap scaled by
+    0.25 in f16 first, summed as (p00 + p10) + (p01 + p11) in f16, clamped to 65504."""
+    q = lambda v: f16a(np.float32(0.25) * v)
+    a, b = q(o98[0::2, 0::2]), q(o98[0::2, 1::2])
+    c, d = q(o98[1::2, 0::2]), q(o98[1::2, 1::2])
+    return np.minimum(f16a(f16a(a + b) + f16a(c + d)), np.float32(65504.0))
+
+
 def model_unit(L, blobbytes, cfg, inputs, Wt):
     """Returns (outs: role -> (raw bytes, dtype)), (hyp: notes)."""
     tm = L["tmpl"]
@@ -551,7 +617,19 @@ def model_unit(L, blobbytes, cfg, inputs, Wt):
         outs["down"] = (encode_grouped(down), "fp8")
     if mode in (0, 1, 3, 5):
         nh = 3 if k < 6 else 4
-        if "m108f" in Wt:
+        if "m108f" in Wt and cfg["head"] == "v2" and mode == 3 and "x88" in inputs and "x90" in inputs:
+            s1d0 = float(np.array([L["scal"][0] & 0xFFFF], np.uint16).view(np.float16)[0])
+            o98 = head_dec(img, Wt, s1d0, inputs["x88"], inputs["x90"])
+            outs["o98"] = (o98.reshape(-1, 4).astype(np.float16).tobytes(), "f16")
+        elif "m108f" in Wt and cfg["head"] == "v2" and "x88" in inputs and k < 6:
+            s1d0 = float(np.array([L["scal"][0] & 0xFFFF], np.uint16).view(np.float16)[0])
+            o98 = head_v2(img, Wt, nh, s1d0, inputs["x88"])
+            outs["o98"] = (o98.reshape(-1, 4).astype(np.float16).tobytes(), "f16")
+            if "oa0" in L["ptr"]:
+                oa = head_down2(o98)
+                outs["oa0"] = (oa.reshape(-1, 4).astype(np.float16).tobytes(), "f16")
+            notes.append("head v2 (decoded for encoder units): s1d0 * sigmoid(m108 . fp8(out) + v1b8) * x88")
+        elif "m108f" in Wt:
             o98 = head(img, Wt, cfg, nh)
             outs["o98"] = (o98.reshape(-1, 4).astype(np.float16).tobytes(), "f16")
             notes.append(f"head ({nh} rows) -> O98 (GUESS)")
@@ -636,6 +714,18 @@ def read_inputs(L, cfg, extra=None):
         inputs["skip"] = decode_grouped(buffer_before(fd, L["ptr"]["skip"], n), C, H, W)
     else:
         inputs["in"] = decode_grouped(buffer_before(fd, L["ptr"]["in"], n), C, H, W)
+    if "x88" in L["ptr"]:
+        raw = buffer_before(fd, L["ptr"]["x88"], n)
+        npx = H * W
+        a = np.frombuffer(raw[:npx * 8], np.float16).astype(np.float32)
+        if a.size == npx * 4:
+            inputs["x88"] = a.reshape(H, W, 4)
+    if "x90" in L["ptr"]:
+        raw = buffer_before(fd, L["ptr"]["x90"], n)
+        npx = (H // 2) * (W // 2)
+        a = np.frombuffer(raw[:npx * 8], np.float16).astype(np.float32)
+        if a.size == npx * 4:
+            inputs["x90"] = a.reshape(H // 2, W // 2, 4)
     if extra:
         inputs.update(extra)
     return inputs
