@@ -1467,3 +1467,30 @@ projacc=isa, act=nhgelu, the exact border rule), every rounding point an explici
 - **Milestone re-verified at this commit**: the k_sr_stage launches measured here are 8/8 >= 52 dB
   per-launch against the oracle (bar: >= 40 dB by 2026-11-02; `6a612b0` recorded 12/24 >= 40 with
   min 31.78 on the wider launch set - the port's per-launch numbers have only moved up since).
+
+#### Mode-2 closure attempt 2 (2026-10-27, `6f6c105` + this note): M1 not reached - blocked WITH DATA
+
+Two sessions of mode2-closure (budget ~52 iterations total) left the M1 bar (launches 11/12 >=
+99.97% vs oracle) unmet but named the point and priced it. Tables byte-identical to baseline
+throughout (no regression; `--self-check` PASS 2.43 s). Current: L11 f0 99.8730 / f1 99.6212,
+L12 f0 99.9217 / f1 99.8795.
+
+- **Named point: the post-attention residual X1 at f16 level, inside the attention chain**
+  (ctx->f16->fp8, softmax/relpos, Wo-residual grouping, the v270 add). Evidence chain: fp8(X1)
+  iso probes 99.9679/99.9886 (masks it); norm2's q8 99.9538-99.9896 (exposes it); every norm2
+  arithmetic component read off the ISA equals the model (ss-tree, eps 2^-13, g_sr_lut rs,
+  scale order f16(rs x gain) then f16(x x ...), RNE sat-448 cvt) => hw-norm2 == model-norm2
+  given equal X1. Priced: fp8 flip 0.0114% + norm2 0.011% imply **~0.35% of (pixel,channel) X1
+  f16 values differ**, amplified x7 through the fp8 hidden stages to the 0.078-0.127% output rate.
+- **Not mode-2-specific**: R9's stage0 attention iso was 99.97% (76.2 dB) - same residue, amplified
+  to visible levels by the mode-2 launches. Closing it helps the whole stage family (and, via
+  dec0's hidden history, frames 4-8 - see chain-leverage's hist split).
+- BLAS/nondeterminism hypothesis ELIMINATED by the orchestrator (cross-process, 1-thread, and
+  in-process double runs byte-identical on the committed model) - the residue is deterministic.
+- Instruments left in build/agents/mode2-closure/: `probe_x1.py` (X1-at-f16 patchprobe at
+  k_sr_stage<64,2,2,96>+0x5470, runs clean) + `fit_x1.py` - blocked by the register->(pixel,
+  channel) reshuffle layout (0% positional votes over every candidate scan). Two cheaper routes
+  remain: (a) infer the reshuffle from the ssa at 0x5298-0x5450, (b) an fp8-level ctx probe at
+  the Wo WMMA (the norm2-probe method, proven fit-able) to split attention sub-ops.
+  Frame-1 probes remain structurally impossible (the temporal chain poisons frame-1 inputs).
+- No shader port needed: no numeric model change landed.

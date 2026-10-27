@@ -336,3 +336,18 @@ change; `build/agents/orch/lev10_*`):
    effort** (enc0feat beyond its in-flight spec, or any RR chain work), re-run the RR inject-after
    leverage at current HEAD - the pre-port table (36.05/32.82 era) predates `5710959`'s rr_post
    port, and RR's flat per-frame numbers mean SR-style history reasoning does not transfer.
+
+### 2026-10-27 18:00: the sr_post bil() fix landed - hist,dec0 row 68-71 -> 103.6-109.9
+
+Commits `972efdc` (model: per-texel clamp law, f1 decoded 66.4 -> 97.58 dB) + `159a694` (shader:
+x1/y1 from the UNCLIPPED index). Orchestrator re-runs: hist,dec0 row =
+**108.48/109.94/104.49/103.95/103.90/104.39/106.58/103.59/103.64** (was .../68.02/70.72/70.13/
+70.10/70.09/68.60) - min 68.02 -> **103.59**, mean 75.70 -> **105.44**. Full-9 judged frame-by-frame:
+SR M mean 45.77 -> 45.79 (f3 +0.24, dips <=0.04), SR L mean 44.40 -> 44.41 (f3 +0.24, f4 -0.11 =
+the compensating-errors effect). The SR f4-8 post/history chain is now capped only by the
+hardware-transcendental 1-ULP class (104-119 vs the ~119 post-mask row); the remaining f4-8
+baseline gap (33-42) is dominated by what the PORT's post WRITES into history when its other
+inputs are port-class - next: fold the fix's per-frame gains into the work order (post's own
+residual is closed as far as the spec can reach; upstream dec0/stage9 + l0's attention residue
+feed the rest). RR carries the same double-clip (rr_post_model 365-366 + rr_post.comp) - queued
+with the fresh-RR-leverage turn.
