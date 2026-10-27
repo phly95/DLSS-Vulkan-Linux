@@ -328,8 +328,9 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         // rr_ae_final.comp declares bindings 0..3 (Accumulator, PreviousAE, NextAE, Exposure); with
         // only 2 in the set layout, bindings 2/3 had no descriptor and the shader addressed garbage
         // - undefined behaviour that is harmless on a native vkCreateDevice and a GPUVM fault on the
-        // device the NGX host hands over.  Push stays 8 bytes, as it always was.
-        add_pipe("rr_ae_final", 4, 8);
+        // device the NGX host hands over.  The push range has to cover the shader's block, which
+        // starts at offset 24 (scale) and ends at 31 (reset) - 8 bytes left both reading garbage.
+        add_pipe("rr_ae_final", 4, 32);
         add_pipe("rr_enc0_feat", 13, 16);
         add_pipe("rr_level", 14, 68);
         add_pipe("rr_post_prep", 4, 40);
@@ -418,6 +419,14 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
     }
     c->ae_next = create_buffer(dev, phys, 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->ae_exp = create_buffer(dev, phys, 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    // The two AE ping-pong slots (oracle E0c26 / E0c2a) start at f16 1.0: rrref seeds both on
+    // every reset frame before k_ae_block (FUN_180127f10), and frame 0 is a reset.  Unseeded
+    // they read as 0, which made ae_final's `exposure[1]` (the previous state) 0 instead of 1.0.
+    {
+        const uint16_t ae_one = 0x3c00;
+        std::memcpy(c->ae_next.mapped, &ae_one, 2);
+        std::memcpy(c->ae_exp.mapped, &ae_one, 2);
+    }
     c->dhist = create_buffer(dev, phys, size_t(hW15) * hH15 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->full15 = create_buffer(dev, phys, size_t(W15) * H15 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->cf2 = create_buffer(dev, phys, size_t(W) * H * 32, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
@@ -1080,16 +1089,34 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
         }
         // 2. Auto exposure (launches 1 + roff, 2 + roff)
         {
+            // rr_ae_final's args are rrref's AEArgs (tools/rr/rrref/rrref.cpp): +0x08/+0x0c W,H;
+            // +0x18 scale = 2.3283064365386963e-06f / (W*H) (reproduces the oracle's bytes on
+            // both dumped frames); +0x1c reset; +0x20 = E0c26 + 4*parity = NEXT; +0x28 = the other
+            // slot = PREV; +0x30 = E0c22, the exposure the rest of the chain consumes.  The dump
+            // pins the roles: ae_final writes the +0x20 slot on both frames and never +0x28.
             uint8_t push[16] = {0};
             std::memcpy(push + 8, &W, 4);
             std::memcpy(push + 12, &H, 4);
+            if (reset) {   // rrref reseeds both slots on every reset, before this launch
+                const uint16_t ae_one = 0x3c00;
+                std::memcpy(ae_next.mapped, &ae_one, 2);
+                std::memcpy(ae_exp.mapped, &ae_one, 2);
+            }
             trace_label = "launch " + std::to_string(1 + roff) + " k_ae_block";
             dispatch(cmd, "rr_ae_block", {&g_col, &dhist}, push, 16, (W + 15) / 16, (H + 15) / 16, 1);
             inject_after(cmd, "ae_block", 1 + roff);
-            uint8_t push_final[8] = {0};
-            std::memcpy(push_final + 0, &W, 4); std::memcpy(push_final + 4, &H, 4);
+
+            uint8_t push_final[32] = {0};
+            std::memcpy(push_final + 8, &W, 4);
+            std::memcpy(push_final + 12, &H, 4);
+            const float ae_scale = 2.3283064365386963e-06f / float(W * H);
+            std::memcpy(push_final + 24, &ae_scale, 4);
+            const uint32_t ae_reset = uint32_t(reset);
+            std::memcpy(push_final + 28, &ae_reset, 4);
+            Buffer* ae_prev = (p == 0) ? &ae_exp : &ae_next;    // +0x28
+            Buffer* ae_next_slot = (p == 0) ? &ae_next : &ae_exp; // +0x20
             trace_label = "launch " + std::to_string(2 + roff) + " k_ae_final";
-            dispatch(cmd, "rr_ae_final", {&dhist, &expo, &ae_next, &ae_exp}, push_final, 8, 1, 1, 1);
+            dispatch(cmd, "rr_ae_final", {&dhist, ae_prev, ae_next_slot, &expo}, push_final, 32, 1, 1, 1);
             inject_after(cmd, "ae_final", 2 + roff);
         }
         // 3. Enc0 feat (launch 3 + roff)
