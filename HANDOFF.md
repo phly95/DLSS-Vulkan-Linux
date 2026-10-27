@@ -74,10 +74,22 @@ port shaders have not been audited for this.
   compared the two byte strings as a whole, so every partial match read 0%. Earlier "bit-exact
   0.0000%" lines from it, such as Step C's baseline table, are wrong. PSNR, r and rRMSE were never
   affected. Fixed and covered by the self-test.
-- **Host bug (open):** `rr_ae_final` is pushed 8 bytes (W, H), but the shader reads `scale` at
-  push offset 24 and `reset` at 28. Its binding 1 (`previous_ae`) is bound to `expo`, and the
-  injection names E0c22 / E0c2a look swapped (`src/vk/pipeline.cpp` around the RR AE dispatch).
-  Found by the f16 audit.
+- **Host bug (FIXED 2026-10-27, `0e592f6`):** `rr_ae_final` was pushed 8 bytes (W, H), but the shader
+  reads `scale` at push offset 24 and `reset` at 28. Its binding 1 (`previous_ae`) was bound to
+  `expo`, and the injection names E0c22 / E0c2a looked swapped (`src/vk/pipeline.cpp` around the RR
+  AE dispatch). Found by the f16 audit. The push now covers the fields the shader reads, `previous_ae`
+  is bound correctly, the ping-pong order and reset seed follow `tools/rr/rrref/rrref.cpp`, and the
+  frame-0 exposure is byte-exact against the oracle's own args
+  (`[1.3994141, 1.0, 0.71458477, 0.0]`, both ping-pong slots). RR F mean 18.01/18.08 -> 18.67/18.76 dB
+  (+0.68); SR M unchanged. `exposure[1]` on frame 1 remains the one gap: the undecoded temporal
+  adaptation (the shader's `0.875` blend) leaves the port `-0.0055` against the oracle's `-0.0015`.
+- **Host bug (FIXED 2026-10-27, `77fb6d6` + `1056352`):** the `sr_dec0` host push left Dec0Args
+  +0x68..+0x9f zero, so the hidden-state warp ran with `r15w = r15h = 0` (px = mv alone, valid only
+  where mv was 0) and with 1/W, 1/W15 and F28* all zero, reading the wrong tap everywhere. Every
+  field is now reproduced from the oracle's own args on both dumped frames. The kernel itself was
+  then rewritten against `tools/sr/sr_dec0_model.py` (Review R3b): GPU vs model
+  99.99966..100.00000% bit-exact on gates/factors/aniso/hidden for both frames. SR M
+  min 31.13 / mean 32.65 -> min 31.79 / mean 33.09 dB.
 - **f16 audit:** explicit rounding (`shaders/include/rh.glsl`) brings `sr_downsample` from 75.30 to
   118.22 dB per launch and `rr_downsample` from 76.79 to 118.77 dB. `rr_post`, `rr_enc0_feat` and
   `sr_enc0` compute in f32 where NeuralHub uses f16 chains or a truncating quantizer, so they need
@@ -87,6 +99,54 @@ Review recommendations, pending the operator: score every mode-0 stage on t1 **a
 sub-blocks (attention vs `--isolate`, MLP given the oracle's input, projection given the oracle's t1);
 generate hypotheses from `sr_pack.py`, the decompile and the ISA, and use the srref probes to
 validate rather than to explore.
+
+## Session 2026-10-27: the stage family's logits, unit 15, and two closed host bugs
+
+Nine commits, `57f5b62`..`HEAD`. Provenance for every number below is the commit named with it;
+`sha256sum build/shaders/*.spv | sha256sum` is the shader identity, and the oracle inputs are
+`build/oracle/oracle-8dbf027a9e-s20261025/{sr_M,rr_F}/dump` plus `frames/{sr,rr}`.
+
+**The milestone is met.** `k_sr_stage`'s logits are Q.Q^T, not Q.K^T (`6a612b0`, Review R8): the
+model default and both shaders changed together. Per-launch PSNR against the oracle, all twelve
+stage launches of both frames, is now min 31.78 / mean 38.41 / max 42.96 dB with **12/24 launches
+>= 40 dB**, against qq=0's 0/24 (min 18.66 / mean 27.41 / max 37.97). That is the 2026-11-02
+milestone of >= 40 dB per-launch on `k_sr_stage` or `k_rr_level`. GPU fixtures confirm the operand
+rather than merely tolerating it: 99.71..100.00% bit-exact against the qq=1 model, and 7.49..45.97%
+against qq=0.
+
+**Two host bugs closed.** `rr_ae_final`'s push now covers the fields its shader reads, with the
+ping-pong order and reset seed from `rrref` (`0e592f6`); the frame-0 exposure is byte-exact against
+the oracle's args. `sr_dec0`'s Dec0Args +0x68..+0x9f block is filled from the oracle's own args
+(`77fb6d6`), and the kernel was then rewritten against its spec (`1056352`) to 99.99966..100.00000%
+GPU-vs-model on both frames. Both are measured, not assumed: SR M went min 31.13/mean 32.65 ->
+31.79/33.09 dB and RR F mean +0.68 dB.
+
+**Two specs finished.** RR unit 15's dec0 heads are decoded (`e08ac56`): o98 68.15 dB, oc8 48.03,
+od0 41.58, oc0 35.37 (signed i8 - it was being scored as unsigned, which cost ~12 dB for nothing),
+od8 51.21, against 4.88 dB before. `k_sr_post` is complete (`6af7efc`): full15 99.9934%, ihist1
+99.9895%, dhist 99.9976% on frame 0 and 99.80..99.85% on frame 1.
+
+**Still open, stated plainly.** The V4 bar is not met and is not close: SR M is min 32.13 /
+mean 33.61 dB against >= 50 / >= 55. `sr_tube_split` was never rewritten for cooperative matrices
+and stays scalar. RR's `block_v2` residual (34-45 dB on every unit) is now the limiting factor for
+the RR heads and was out of scope here. `rr_level.comp` still ports the old mode-4 guess, so unit
+15's GPU/model parity follows from this session's spec but is not yet measured. `sr_post.comp` is
+still the hybrid described in row 4; the spec it should now be rewritten against is committed.
+
+**Two tool fixes, both worth knowing about.** `tools/report/launch_report.py` gained an `i8` element
+type (`8502fd2`) - signed activations scored as unsigned lose ~12 dB of apparent PSNR - and its
+self-test had been failing since `1720a08` because it regexed `sr_stage.comp` for an `e4m3_lut` table
+the cooperative-matrix rewrite replaced with bit arithmetic; it now cross-checks the shader's actual
+`e4m3_to_f32`. The O7 fixture for `sr_dec0` was rewritten (`dd473af`): it had a 96-byte push for a
+160-byte struct, a 4096-byte weight blob for an 8448-byte one, a 1-D grid for a 2-D tile kernel and
+an all-zero input, any one of which makes every output constant.
+
+**A measurement trap, recorded so it is not rediscovered.** `build/agents/stage-shader/fx/` feeds the
+oracle's fragment-order `start.wbuf.bin`. Since `1720a08` the host repacks those matrices row-major,
+and the stage kernels read the repacked copy (binding 5, `build/agents/stage-coopmat/fx/`). Any
+shader run on the old fixtures now scores ~0.5% against the model **regardless of whether it is
+correct**; use `build/agents/stage-coopmat/fx/` for `sr_stage`. `sr_tube_split` is scalar and still
+reads the original layout, so the old fixtures remain right for it.
 
 ## The real machine (where work happens now)
 
