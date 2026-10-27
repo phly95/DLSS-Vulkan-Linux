@@ -178,3 +178,37 @@ fp8 WMMA (parameterized lane layout); the div/rcp/sqrt/fma_mix/pk family; LDS lo
   matching the staged LDS B-tile against the oracle t0 back-solved through one workgroup;
   (e) once the emulator reproduces t0 bit-exactly for wgid(0,0), extract the per-channel
   recipes as a table and implement `sr_enc0.comp` from it (weights from `enc0_w`).
+
+## Review E1 (2026-10-27): the t0 path decoded down to the 20 per-pixel features
+
+Instruments (git-ignored, build/work/review/enc0/):
+- `enc0_loop.ssa`: the ISA listing in execution order. The loop body is the 0x13bc..0x39fc
+  region followed by 0x264..0x13b8; 0x260 jumps into it, 0x13b8 exits to the GEMM at 0x3a00.
+  `ssa.py` therefore tracks values across the two regions.
+- `feat.py` reads a hardware probe of the LDS-staged features: `tools/re/patchprobe.py --net sr
+  --kernel _ZN2sr2io9k_sr_enc0ENS0_8Enc0ArgsE --at 0x3a80` stores LDS bytes [t*32, t*32+32), and
+  then +1024, of every workgroup into t0. Runs: `build/work/review/patch/runs/enc0feat_{0,1024}`,
+  frames build/work/review/frames2.
+
+Measured:
+1. **t0 = a 2x2 stride-2 conv of 20 fp8 features per render pixel.** The packer stores w (64 x 80,
+   [q][f]) as frag(64 x 128) with column c = q*32 + f, so f >= 20 is unused. The bias is 64 f16,
+   P-permuted, at blob +12288, and the blob's first 4096 bytes are a dither table. The rest is
+   `t0 = fp8(clamp(f16(f16(f16(f16(b + S_00) + S_10) + S_01) + S_11), +-6.28125))`, with
+   S_q = W[:, q] . feat(sub-pixel q) (an f32 WMMA pair) and q = dx + 2*dy. The LDS stores each
+   pixel's features P-permuted (stored byte i = logical feature P[i]).
+   **From the probed features this reproduces the oracle's t0 at 99.96%.**
+2. **The features are quantized with a dithered (stochastic) rounding, not RNE:**
+   x16 = f16(min(x, 1024), NaN -> 0), E = x16 & 0xfc00, d = dither_u16[idx] >> 9,
+   idx = ((fc & 7) << 8) | ((y & 15) << 4) | (x & 15) (fc = Args +0xdc);
+   q = (f16(f16(x16 + (E | d)) - E)) & 0xff80, i.e. x + d/1024 ulp, then truncated to 3 mantissa
+   bits, then fp8. Colour features 0..2 = q(tm(e * g_col)) with
+   tm(v) = (log2(max(1 + 100 v, 1e-4)) * 0.30103) * 0.36 (f32): **99.97% of the probed bytes**.
+   The old "half-ulp residual" of attempts 4-7 was this dither.
+3. Feature map (logical index): 0..2 = colour tm; 3..5, 6..8, 9..11, 12..14 = four bilinear dhist
+   samples (R10G10B10 / 1023 * 2.45, i.e. tm) at four reprojected positions. With the oracle's
+   constant MVs, 3/6/9 coincide and 12 differs slightly. 15 is nonzero only on the reset frame
+   (~0.33). 16..19 are the hidden state (int8 / 127), warped.
+   Loads, in loop order: g_dep 3x3 (0x1738..0x1870, depth dilation), g_mv (0x1bac, 0x1c98..0x1cb0:
+   the MV candidates that produce prev_mvec1/mv_ero/mv_nondil), prev_mvec[p] 4 taps (0x2040),
+   dhist 4 x 4 taps (0x2264, 0x290c, 0x2f38, 0x3554), hidden 4 taps (0x618..0x670).
