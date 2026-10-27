@@ -154,9 +154,16 @@ float nr_swin_exp(float x) {
     return unpackHalf2x16(exp_bits).x;
 }
 
-// GELU, tanh form (the model's act_fn 'gelu').
-float gelu_tanh(float z) {
-    return 0.5 * z * (1.0 + tanh(0.7978845608 * (z + 0.044715 * (z * z * z))));
+// NeuralHub's activation (k_sr_stage ISA, the v_pk_*_f16 block with constants 0xad30 / 0x3698):
+// z = f16(acc + b1), t = clamp(z, -2, 2), gate = 0.5 + t * (0.412109375 - 0.0810546875 * |t|),
+// act = z * gate, every step rounded to f16 (rh, since RADV folds float16_t round trips) - the
+// model's act_fn 'nhgelu'.
+float nh_gelu(float z) {
+    float zh = rh(z);
+    float t = clamp(zh, -2.0, 2.0);
+    float u = rh(rh(abs(t) * -0.0810546875) + 0.412109375);
+    float g = rh(rh(t * u) + 0.5);
+    return rh(zh * g);
 }
 
 // RMSNorm of token row t over all 128 channels, but only this thread's head group `h` is written:
@@ -297,7 +304,7 @@ void main() {
                 z += float(s_norm[tok][c]) * float(e4m3_lut[uint(wbuf[fc1 + frag_off(m, c, 128u)])]);
             }
             z += read_f16(b1 + 2u * vidx(m));
-            s_h1[tok][m] = float16_t(q8(gelu_tanh(z)));
+            s_h1[tok][m] = float16_t(q8(nh_gelu(z)));
         }
         barrier();
         for (uint c = 0u; c < 32u; ++c) {

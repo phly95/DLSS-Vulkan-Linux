@@ -35,7 +35,7 @@ The --set switches (defaults = the best measured configuration):
   proj_clamp=6.28125   the projection's output clamp (0 = none)
   ss16=0 rs16=0 acc16=0   rounding-closure candidates (Review R1.8): f16 sum-of-squares tree,
                  f16 rsqrt, GEMM K=32 chunks summed through f16
-  act=gelu|erfgelu|nr                              up_order=qc|cq   mode-2 sub-pixel channel order
+  act=nhgelu|gelu|erfgelu|nr  (nhgelu = NeuralHub's f16 spline)   up_order=qc|cq   mode-2 sub-pixel order
   up_pix=xy|yx   mode-2 sub-pixel order          skip_at=before|after|both|none   where mode 2 adds the skip
 """
 import argparse
@@ -55,7 +55,7 @@ ORACLE = REPO / "build/oracle/oracle-8dbf027a9e-s20261025"
 P = np.array([0, 1, 16, 17, 2, 3, 18, 19, 4, 5, 20, 21, 6, 7, 22, 23,
               8, 9, 24, 25, 10, 11, 26, 27, 12, 13, 28, 29, 14, 15, 30, 31])
 IP = np.argsort(P)
-DEFAULTS = dict(deperm=1, snorm8=1, qk8=1, ctx8=1, prob8=0, v8=0, proj_in="fp8", proj_clamp="6.28125", maxsub=0, ss16=0, rs16=0, acc16=0, act="gelu",
+DEFAULTS = dict(deperm=1, snorm8=1, qk8=1, ctx8=1, prob8=0, v8=0, proj_in="fp8", proj_clamp="6.28125", maxsub=0, ss16=0, rs16=0, acc16=0, relT=0, relrot=0, act="nhgelu",
                 up_order="qc", up_pix="xy", skip_at="before")
 
 
@@ -107,6 +107,15 @@ def act_fn(z, kind):
         return np.float32(0.5) * z * (np.float32(1.0) + np.tanh(np.float32(0.7978845608) * (z + np.float32(0.044715) * z ** 3)))
     if kind == "erfgelu":
         return (0.5 * z * (1.0 + np.vectorize(math.erf)(z / math.sqrt(2.0)))).astype(np.float32)
+    if kind == "nhgelu":
+        # NeuralHub's f16 quadratic-spline GELU (k_sr_stage ISA, the v_pk_*_f16 block with constants
+        # 0xad30 / 0x3698): z = f16(acc + b1), t = clamp(z, -2, 2),
+        # gate = 0.5 + t * (0.412109375 - 0.0810546875 * |t|), act = z * gate - every step in f16.
+        z = f16(z)
+        t = np.clip(z, np.float16(-2.0), np.float16(2.0))
+        u = f16(f16(np.abs(t) * np.float16(-0.0810546875)) + np.float16(0.412109375))
+        g = f16(f16(t * u) + np.float16(0.5))
+        return f16(z * g).astype(np.float32)
     if kind == "nr":                         # the NR network's MpCubicSilu - refuted for SR (Review R1.5)
         t = np.clip(z, -4.0, 4.0)
         return z * (t * (np.float32(-0.055908203125) * np.abs(t) + np.float32(0.447265625)) + np.float32(0.89453125))
@@ -239,7 +248,13 @@ def run_stage(X, Wt, W, H, sx, sy, tile, cfg, skip=None, low=None, attn_only=Fal
 
     s_norm = rmsnorm(s_act, Wt.gain1).astype(np.float32)
     attn = np.zeros(s_act.shape, np.float32)
-    for (Wq, Wk, rel, Wo) in Wt.heads:
+    heads = list(Wt.heads)
+    if cfg.get("relT"):
+        heads = [(a, b, r.T.copy(), o) for (a, b, r, o) in heads]
+    if cfg.get("relrot"):                    # pair head h's QK/Wo with head (h+k)'s relpos table
+        k = int(cfg["relrot"]); rels = [h[2] for h in heads]
+        heads = [(a, b, rels[(i + k) % len(rels)], o) for i, (a, b, r, o) in enumerate(heads)]
+    for (Wq, Wk, rel, Wo) in heads:
         Q = mm(s_norm, Wq)
         K = f16(mm(s_norm, Wk)).astype(np.float32)
         V = K                                     # V = K (Review R1.4), taken before the fp8 step
@@ -415,15 +430,16 @@ def self_check():
                               inject_postattn=None, proj_from_oracle=False, out=None)
     ra = str(REPO / "build/work/probe/real_attn_dump/frame0/003.t1.bin")
     cases = [
-        # Review R1's numbers (its replica rounded V exactly when it rounded K: v8 = qk8)
-        ("R1 decoded, no rounding switches", dict(snorm8=0, qk8=0, ctx8=0, prob8=1, v8=0), {}, "t1", 34.0704),
-        ("R1 decoded, best switches", dict(v8=1), {}, "t1", 34.6343),
+        # Review R1's numbers (tanh GELU; its replica rounded V exactly when it rounded K: v8 = qk8)
+        ("R1 decoded, no rounding switches", dict(snorm8=0, qk8=0, ctx8=0, prob8=1, v8=0, act="gelu"), {}, "t1", 34.0704),
+        ("R1 decoded, best switches", dict(v8=1, act="gelu"), {}, "t1", 34.6343),
         ("R1 attention only vs --isolate", dict(snorm8=0, qk8=0, ctx8=0, prob8=1, v8=0), dict(attn_only=ra), "t1", 36.6338),
         ("R1 attention only, probs unquantized", dict(snorm8=0, qk8=0, ctx8=0, v8=0), dict(attn_only=ra), "t1", 36.8595),
-        ("R1 MLP given oracle post-attention", dict(snorm8=0, qk8=0, ctx8=0, prob8=1, v8=0), dict(inject_postattn=ra), "t1", 34.4195),
+        ("R1 MLP given oracle post-attention", dict(snorm8=0, qk8=0, ctx8=0, prob8=1, v8=0, act="gelu"), dict(inject_postattn=ra), "t1", 34.4195),
         # the current defaults (Review R2)
-        ("R2 defaults, t1", {}, {}, "t1", 35.0790),
-        ("R2 defaults, t2", {}, {}, "t2", 31.9087),
+        ("R2 defaults (tanh GELU), t1", dict(act="gelu"), {}, "t1", 35.0790),
+        ("R2 defaults (tanh GELU), t2", dict(act="gelu"), {}, "t2", 31.9087),
+        ("R4 defaults (NeuralHub f16 GELU), t1", {}, {}, "t1", 35.2614),
     ]
     ok = True
     for label, sw, extra, key, want in cases:
