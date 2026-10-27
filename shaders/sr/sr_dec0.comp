@@ -3,213 +3,276 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
 #extension GL_EXT_shader_16bit_storage : enable
 #extension GL_EXT_shader_8bit_storage : enable
+#extension GL_GOOGLE_include_directive : require
+
+#include "rh.glsl"
+
+// k_sr_dec0 (NeuralHub SR preset M, oracle launch 13). The spec is tools/sr/sr_dec0_model.py
+// (its module docstring = Review R3 + R3b in docs/notes/k_sr_dec0.md): every f16 rounding point is
+// an explicit rh() and every fp8 rounding point an f32_to_e4m3_rne(), in the model's order.
+//
+// Workgroup: one 8x8 render tile (grid (W0/8, H0/8), so the last two rows of groups lie partly
+// past H and write nothing; x < W always). 32 threads x 2 pixels cover the 64 pixels of the tile.
+// The tile is a 4x4 tile of t8 (binding 0: [C/32][H0/2][W0/2][32] fp8, stored index i of a group
+// holds logical channel P(i)).
+//
+// Projection, per render pixel: its t8 pixel (x>>1, y>>1) produces sub-pixel q = (x&1) + 2*(y&1)
+// of the 2x upsample; only channels q*32 + 0..17 of the 128 outputs are read back:
+//   u = rh(rh(bias[j] + sum_{k<32} t8[k]*W[j,k]) + sum_{32<=k<64} t8[k]*W[j,k])   (two f32 chains)
+//   p = fp8(clamp(u, +-448))
+// dec0.bin (binding 7) = frag(128 x 64) fp8 bytes at sr_pack.frag_offsets(128,64) positions
+// (0..8191), then 128 P-permuted f16 biases at byte 8192.
+//
+// Heads (p channels): gates = rndne(255*clamp01(f16(sg(p_c)))), c = 0, 1, 10; factors =
+// rndne(255*clamp01(e_c/(e_11+e_12+e_13))), e_c = exp(p_c - max) in f32, byte 3 = 0; aniso =
+// f16(A*A), f16(B*B), f16((A*B)*tanh(f0*p16)), A = s0*f16(sg(clamp(p14, +-20))), B likewise p15,
+// element 3 = 0. Hidden: z <- p(6+k), h <- p(2+k), k = 0..3:
+//   z = rh(0.5 + rh(0.5*th(rh(0.5*p_z)))), h = rh(rh(z*th(p_h)) + rh(rh(1-z)*warp_k)),
+//   th(a) = copysign(rh((1-e)*(1/(1+e))), a), e = exp2(-2*log2e*|a|); out = rndne(127*clamp(h,+-1)).
+// warp = the previous hidden state (binding 2, 4 x int8 per pixel) bilinearly resampled at the
+// reprojected position (prev_mvec = binding 1), coordinates snapped to 1/256, taps dequantized
+// as max(-1, i8/127), one rh() on the f32 bilinear; 0 when the position leaves [0,W15]x[0,H15]
+// or push +0x88 != 0. (The oracle's host alternates the buffers per frame parity: frame 0 binds
+// hidden0 in / hidden1 out, frame 1 the reverse; the shader only sees binding 2 / binding 6.)
+//
+// Push constants: the oracle launch's own 160-byte Dec0Args passed verbatim; the block starts at
+// offset 64 (bytes 0..0x3f are the HIP struct's device pointers, not pushed by the port host).
 
 layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
 
-layout(set = 0, binding = 0) readonly buffer InT8       { uint8_t in_t8[]; };
-layout(set = 0, binding = 1) readonly buffer InPrevMv   { f16vec2 in_prev_mv[]; };
-layout(set = 0, binding = 2) readonly buffer InHidden   { u8vec4 in_hidden[]; };
-
+layout(set = 0, binding = 0) readonly buffer InT8        { uint8_t in_t8[]; };
+layout(set = 0, binding = 1) readonly buffer InPrevMv    { f16vec2 in_prev_mv[]; };
+layout(set = 0, binding = 2) readonly buffer InHidden    { int8_t in_hidden[]; };
 layout(set = 0, binding = 3) writeonly buffer OutGates   { u8vec4 out_gates[]; };
 layout(set = 0, binding = 4) writeonly buffer OutFactors { u8vec4 out_factors[]; };
 layout(set = 0, binding = 5) writeonly buffer OutAniso   { f16vec4 out_aniso[]; };
-layout(set = 0, binding = 6) writeonly buffer OutHidden  { u8vec4 out_hidden[]; };
-layout(set = 0, binding = 7) readonly buffer InDec0W    { uint8_t dec0_w[]; };
+layout(set = 0, binding = 6) writeonly buffer OutHidden  { int8_t out_hidden[]; };
+layout(set = 0, binding = 7) readonly buffer InDec0W     { uint8_t dec0_w[]; };
 
 layout(push_constant) uniform Dec0Args {
     layout(offset = 64) int W;
     int H;
-    int pad0;
-    int pad1;
+    int W2;                          // +0x48: the render size again (asserted equal on the host)
+    int H2;
     int W0;
     int H0;
     int W15;
     int H15;
-    float dec0_s0;
-    float dec0_f0;
+    float s0;                        // +0x60 aniso scale
+    float f0;                        // +0x64 aniso rho scale
     float F20x;
     float F20y;
     float F28x;
     float F28y;
-    float r15x;
-    float r15y;
-    float invW;
-    float invH;
-    uint depinv;
-    float inv15x;
-    float inv15y;
-    float f28rx;
-    float f28ry;
+    float r15w;
+    float r15h;
+    float iW;                        // +0x80 1/W
+    float iH;                        // 1/H
+    uint flag88;                     // +0x88 warp disabled when nonzero
+    float i15w;                      // +0x8c 1/W15
+    float i15h;                      // 1/H15
+    float F28xW;                     // +0x94 F28x/W
+    float F28yH;                     // F28y/H
 };
 
-const float16_t e4m3_lut[256] = float16_t[256](
-    float16_t(0), float16_t(0.001953125), float16_t(0.00390625), float16_t(0.005859375), float16_t(0.0078125), float16_t(0.009765625), float16_t(0.01171875), float16_t(0.013671875),
-    float16_t(0.015625), float16_t(0.017578125), float16_t(0.01953125), float16_t(0.021484375), float16_t(0.0234375), float16_t(0.025390625), float16_t(0.02734375), float16_t(0.029296875),
-    float16_t(0.03125), float16_t(0.03515625), float16_t(0.0390625), float16_t(0.04296875), float16_t(0.046875), float16_t(0.05078125), float16_t(0.0546875), float16_t(0.05859375),
-    float16_t(0.0625), float16_t(0.0703125), float16_t(0.078125), float16_t(0.0859375), float16_t(0.09375), float16_t(0.1015625), float16_t(0.109375), float16_t(0.1171875),
-    float16_t(0.125), float16_t(0.140625), float16_t(0.15625), float16_t(0.171875), float16_t(0.1875), float16_t(0.203125), float16_t(0.21875), float16_t(0.234375),
-    float16_t(0.25), float16_t(0.28125), float16_t(0.3125), float16_t(0.34375), float16_t(0.375), float16_t(0.40625), float16_t(0.4375), float16_t(0.46875),
-    float16_t(0.5), float16_t(0.5625), float16_t(0.625), float16_t(0.6875), float16_t(0.75), float16_t(0.8125), float16_t(0.875), float16_t(0.9375),
-    float16_t(1), float16_t(1.125), float16_t(1.25), float16_t(1.375), float16_t(1.5), float16_t(1.625), float16_t(1.75), float16_t(1.875),
-    float16_t(2), float16_t(2.25), float16_t(2.5), float16_t(2.75), float16_t(3), float16_t(3.25), float16_t(3.5), float16_t(3.75),
-    float16_t(4), float16_t(4.5), float16_t(5), float16_t(5.5), float16_t(6), float16_t(6.5), float16_t(7), float16_t(7.5),
-    float16_t(8), float16_t(9), float16_t(10), float16_t(11), float16_t(12), float16_t(13), float16_t(14), float16_t(15),
-    float16_t(16), float16_t(18), float16_t(20), float16_t(22), float16_t(24), float16_t(26), float16_t(28), float16_t(30),
-    float16_t(32), float16_t(36), float16_t(40), float16_t(44), float16_t(48), float16_t(52), float16_t(56), float16_t(60),
-    float16_t(64), float16_t(72), float16_t(80), float16_t(88), float16_t(96), float16_t(104), float16_t(112), float16_t(120),
-    float16_t(128), float16_t(144), float16_t(160), float16_t(176), float16_t(192), float16_t(208), float16_t(224), float16_t(240),
-    float16_t(256), float16_t(288), float16_t(320), float16_t(352), float16_t(384), float16_t(416), float16_t(448), float16_t(480),
-    float16_t(-0), float16_t(-0.001953125), float16_t(-0.00390625), float16_t(-0.005859375), float16_t(-0.0078125), float16_t(-0.009765625), float16_t(-0.01171875), float16_t(-0.013671875),
-    float16_t(-0.015625), float16_t(-0.017578125), float16_t(-0.01953125), float16_t(-0.021484375), float16_t(-0.0234375), float16_t(-0.025390625), float16_t(-0.02734375), float16_t(-0.029296875),
-    float16_t(-0.03125), float16_t(-0.03515625), float16_t(-0.0390625), float16_t(-0.04296875), float16_t(-0.046875), float16_t(-0.05078125), float16_t(-0.0546875), float16_t(-0.05859375),
-    float16_t(-0.0625), float16_t(-0.0703125), float16_t(-0.078125), float16_t(-0.0859375), float16_t(-0.09375), float16_t(-0.1015625), float16_t(-0.109375), float16_t(-0.1171875),
-    float16_t(-0.125), float16_t(-0.140625), float16_t(-0.15625), float16_t(-0.171875), float16_t(-0.1875), float16_t(-0.203125), float16_t(-0.21875), float16_t(-0.234375),
-    float16_t(-0.25), float16_t(-0.28125), float16_t(-0.3125), float16_t(-0.34375), float16_t(-0.375), float16_t(-0.40625), float16_t(-0.4375), float16_t(-0.46875),
-    float16_t(-0.5), float16_t(-0.5625), float16_t(-0.625), float16_t(-0.6875), float16_t(-0.75), float16_t(-0.8125), float16_t(-0.875), float16_t(-0.9375),
-    float16_t(-1), float16_t(-1.125), float16_t(-1.25), float16_t(-1.375), float16_t(-1.5), float16_t(-1.625), float16_t(-1.75), float16_t(-1.875),
-    float16_t(-2), float16_t(-2.25), float16_t(-2.5), float16_t(-2.75), float16_t(-3), float16_t(-3.25), float16_t(-3.5), float16_t(-3.75),
-    float16_t(-4), float16_t(-4.5), float16_t(-5), float16_t(-5.5), float16_t(-6), float16_t(-6.5), float16_t(-7), float16_t(-7.5),
-    float16_t(-8), float16_t(-9), float16_t(-10), float16_t(-11), float16_t(-12), float16_t(-13), float16_t(-14), float16_t(-15),
-    float16_t(-16), float16_t(-18), float16_t(-20), float16_t(-22), float16_t(-24), float16_t(-26), float16_t(-28), float16_t(-30),
-    float16_t(-32), float16_t(-36), float16_t(-40), float16_t(-44), float16_t(-48), float16_t(-52), float16_t(-56), float16_t(-60),
-    float16_t(-64), float16_t(-72), float16_t(-80), float16_t(-88), float16_t(-96), float16_t(-104), float16_t(-112), float16_t(-120),
-    float16_t(-128), float16_t(-144), float16_t(-160), float16_t(-176), float16_t(-192), float16_t(-208), float16_t(-224), float16_t(-240),
-    float16_t(-256), float16_t(-288), float16_t(-320), float16_t(-352), float16_t(-384), float16_t(-416), float16_t(-448), float16_t(-480)
-);
+const float L2E = 1.4426950408889634;   // log2(e) as the model's f32 L2E
 
-shared float16_t s_feat[16][128];
+// ---- fp8 (the model's LUT / to_e4m3, bit for bit) -----------------------------------------------
 
-float sigm(float x) {
+float e4m3_to_f32(uint b) {
+    uint e = (b >> 3u) & 15u;
+    float v = (e == 0u) ? float(b & 7u) * 0.001953125
+                        : uintBitsToFloat(((e + 120u) << 23u) | ((b & 7u) << 20u));
+    return ((b & 0x80u) != 0u) ? -v : v;
+}
+
+// f32 -> E4M3, RNE, saturating at 448 (the model's to_e4m3).
+uint f32_to_e4m3_rne(float x) {
+    uint sign = (x < 0.0) ? 0x80u : 0u;
+    float a = min(abs(x), 448.0);
+    uint sub = uint(floor(a * 512.0 + 0.5));
+    uint bits = floatBitsToUint(a);
+    uint norm = (bits + 0x407ffffu + ((bits >> 20u) & 1u)) >> 20u;
+    return sign | ((a < 0.015625) ? sub : (norm & 0x7fu));
+}
+
+// ---- blob indexing ------------------------------------------------------------------------------
+
+// invP: logical channel mod 32 -> index in a P-permuted group (sr_stage's perm_invP).
+uint perm_invP(uint c) {
+    return (((c >> 1u) & 7u) << 2u) | (c & 1u) | (((c >> 4u) & 1u) << 1u);
+}
+
+// Byte of element (r, c) of the 128 x 64 weight matrix: sr_pack.frag_offsets(128, 64), LAYOUT 1.
+uint frag_off(uint r, uint c) {
+    uint u1 = ((r & 0x7FFFFFE1u) | ((r >> 3u) & 2u)) + (r & 0xEu) * 2u;
+    uint u5 = 2u * c;
+    uint low = (u5 & 4u) | (c & 1u) | ((c >> 3u) & 2u);
+    uint high = ((u5 & 0x10u) << 4u) + ((16u * c) & 0xFFFFFE00u) + 1024u * (u1 >> 4u);
+    return (low | high) + ((u1 & 0xFu) + (u5 & 8u) * 2u) * 8u;
+}
+
+// f16 bias of output channel j: byte 8192, P-permuted (the model's bd).
+float bias_f16(uint j) {
+    uint b = 8192u + 2u * ((j & 0xFFFFFFE0u) | perm_invP(j & 31u));
+    return unpackHalf2x16(uint(dec0_w[b]) | (uint(dec0_w[b + 1u]) << 8u)).x;
+}
+
+// ---- the model's scalar functions ------------------------------------------------------------------
+
+float sigm(float x) {                       // sg: f32 exp, IEEE divide
     return 1.0 / (1.0 + exp(-x));
 }
 
-vec4 sample_hidden(float px, float py) {
-    int x0 = clamp(int(floor(px)), 0, W - 1);
-    int x1 = clamp(x0 + 1, 0, W - 1);
-    int y0 = clamp(int(floor(py)), 0, H - 1);
-    int y1 = clamp(y0 + 1, 0, H - 1);
-    float fx = clamp(px - float(x0), 0.0, 1.0);
-    float fy = clamp(py - float(y0), 0.0, 1.0);
+float copysgn(float mag, float sgn) {        // copysign, incl. the sign of zero
+    return ((floatBitsToUint(sgn) & 0x80000000u) != 0u) ? -mag : mag;
+}
 
-    vec4 h00 = vec4(in_hidden[y0 * W + x0]);
-    vec4 h10 = vec4(in_hidden[y0 * W + x1]);
-    vec4 h01 = vec4(in_hidden[y1 * W + x0]);
-    vec4 h11 = vec4(in_hidden[y1 * W + x1]);
+float th(float a) {                         // odd tanh, rounded to f16, sign of a
+    float e = exp2(-2.0 * L2E * abs(a));
+    return copysgn(rh((1.0 - e) * (1.0 / (1.0 + e))), a);
+}
 
-    return mix(mix(h00, h10, fx), mix(h01, h11, fx), fy);
+// f32 tanh for aniso[2]: odd polynomial through x^9 below 0.3 (truncation < 6e-8 relative, no
+// cancellation), the exp form above (no cancellation for |x| >= 0.3).
+float tanh32(float x) {
+    float a = abs(x);
+    float t;
+    if (a < 0.3) {
+        float x2 = a * a;
+        t = a * (1.0 + x2 * (-1.0 / 3.0 + x2 * (2.0 / 15.0
+              + x2 * (-17.0 / 315.0 + x2 * (62.0 / 2835.0)))));
+    } else {
+        float e = exp(-2.0 * a);
+        t = (1.0 - e) / (1.0 + e);
+    }
+    return copysgn(t, x);
+}
+
+float tap_dq(uint i) {                      // max(-1, i8 / 127)
+    return max(-1.0, float(int(in_hidden[i])) * (1.0 / 127.0));
+}
+
+// rh() with the model's f16() sign of zero: rh's sign test is `x < 0.0`, so it returns +0.0 for
+// an input of -0.0, while np.float16(-0.0) is -0.0 (aniso[2] stores that sign). Every other f16
+// rounding point below is insensitive to the sign of zero (its result feeds arithmetic that
+// normalizes it, or a value whose sign is already correct), so rh() stays as-is there.
+float rhz(float x) {
+    float r = rh(x);
+    return (r == 0.0 && floatBitsToUint(x) == 0x80000000u) ? -0.0 : r;
 }
 
 void main() {
     uint tid = gl_LocalInvocationIndex;
-    uint wg_x = gl_WorkGroupID.x * 8u;
-    uint wg_y = gl_WorkGroupID.y * 8u;
-    uint w_base = 0u;
-    uint bias_base = (dec0_w.length() > 8200u) ? 8192u : 0u;
+    uint tile_x = gl_WorkGroupID.x * 8u;
+    uint tile_y = gl_WorkGroupID.y * 8u;
+    uint w_half = uint(W0) >> 1;
+    uint h_half = uint(H0) >> 1;
+    uint row_bytes = w_half * 32u;          // one t8 row, bytes
 
-    uint w_half = uint(W0) / 2u;
-    uint h_half = uint(H0) / 2u;
-
-    // Step 1: Compute s_feat[16][128] collaboratively
-    for (uint i = tid; i < 2048u; i += 32u) {
-        uint p_idx = i / 128u;
-        uint c = i % 128u;
-
-        uint lx_in = p_idx & 3u;
-        uint ly_in = p_idx >> 2u;
-        uint tx = (gl_WorkGroupID.x * 4u) + lx_in;
-        uint ty = (gl_WorkGroupID.y * 4u) + ly_in;
-
-        uint t8_off0 = (ty * w_half + tx) * 32u;
-        uint t8_off1 = (h_half * w_half + ty * w_half + tx) * 32u;
-
-        uint b0 = uint(dec0_w[bias_base + c * 2u]);
-        uint b1 = uint(dec0_w[bias_base + c * 2u + 1u]);
-        float dot_val = unpackHalf2x16(b0 | (b1 << 8u)).x;
-
-        uint n_blk = c / 16u;
-        uint r = c % 16u;
-
-        for (uint kb = 0u; kb < 4u; ++kb) {
-            uint blk_idx = (n_blk * 4u + kb) * 256u;
-            uint t8_base = (kb < 2u) ? (t8_off0 + kb * 16u) : (t8_off1 + (kb - 2u) * 16u);
-            for (uint col = 0u; col < 16u; ++col) {
-                uint w_idx = w_base + blk_idx + r * 16u + col;
-                float w_val = float(e4m3_lut[uint(dec0_w[w_idx])]);
-                float in_val = float(e4m3_lut[uint(in_t8[t8_base + col])]);
-                dot_val += w_val * in_val;
-            }
-        }
-        s_feat[p_idx][c] = float16_t(clamp(dot_val, -448.0, 448.0));
-    }
-
-    barrier();
-
-    // Step 2: Output pixels
     for (uint i = 0u; i < 2u; ++i) {
-        uint p = tid + i * 32u;
-        uint lx = p & 7u;
-        uint ly = p >> 3u;
-        uint x = wg_x + lx;
-        uint y = wg_y + ly;
-
+        uint pix = tid + i * 32u;
+        uint x = tile_x + (pix & 7u);
+        uint y = tile_y + (pix >> 3u);
         if (x >= uint(W) || y >= uint(H)) continue;
         uint idx = y * uint(W) + x;
 
-        uint p_in_t8 = (ly / 2u) * 4u + (lx / 2u);
-        uint sub = ((ly & 1u) << 1u) | (lx & 1u);
-        uint c_base = sub * 32u;
+        // ---- projection: channels q*32 + 0..17 of this pixel's sub-pixel ----
+        uint tx = x >> 1;
+        uint ty = y >> 1;
+        uint j0 = ((x & 1u) + 2u * (y & 1u)) * 32u;
+        uint t8_base = (ty * w_half + tx) * 32u;
 
-        // 1. Gates (channels 24, 8, 20)
-        float g0 = sigm(float(s_feat[p_in_t8][c_base + 24u]));
-        float g1 = sigm(float(s_feat[p_in_t8][c_base + 8u]));
-        float g2 = sigm(float(s_feat[p_in_t8][c_base + 20u]));
-        uint ug0 = uint(clamp(round(g0 * 255.0), 0.0, 255.0));
-        uint ug1 = uint(clamp(round(g1 * 255.0), 0.0, 255.0));
-        uint ug2 = uint(clamp(round(g2 * 255.0), 0.0, 255.0));
-        out_gates[idx] = u8vec4(uint8_t(ug0), uint8_t(ug1), uint8_t(ug2), uint8_t(0));
+        float t[64];
+        for (uint k = 0u; k < 64u; ++k) {
+            uint off = (k >> 5u) * h_half * row_bytes + t8_base + perm_invP(k & 31u);
+            t[k] = e4m3_to_f32(uint(in_t8[off]));
+        }
 
-        // 2. Factors (channels 27, 5, 29 softmax)
-        float f27 = float(s_feat[p_in_t8][c_base + 27u]);
-        float f5  = float(s_feat[p_in_t8][c_base + 5u]);
-        float f29 = float(s_feat[p_in_t8][c_base + 29u]);
-        float f_max = max(max(f27, f5), f29);
-        float e0 = exp(f27 - f_max);
-        float e1 = exp(f5 - f_max);
-        float e2 = exp(f29 - f_max);
-        float esum = e0 + e1 + e2;
-        uint uf0 = uint(clamp(round((e0 / esum) * 255.0), 0.0, 255.0));
-        uint uf1 = uint(clamp(round((e1 / esum) * 255.0), 0.0, 255.0));
-        uint uf2 = uint(clamp(round((e2 / esum) * 255.0), 0.0, 255.0));
-        out_factors[idx] = u8vec4(uint8_t(uf0), uint8_t(uf1), uint8_t(uf2), uint8_t(0));
+        float p[18];
+        for (uint c = 0u; c < 18u; ++c) {
+            uint j = j0 + c;
+            float a0 = 0.0;
+            float a1 = 0.0;
+            for (uint k = 0u; k < 32u; ++k)
+                a0 += t[k] * e4m3_to_f32(uint(dec0_w[frag_off(j, k)]));
+            for (uint k = 32u; k < 64u; ++k)
+                a1 += t[k] * e4m3_to_f32(uint(dec0_w[frag_off(j, k)]));
+            float u = rh(rh(bias_f16(j) + a0) + a1);
+            p[c] = e4m3_to_f32(f32_to_e4m3_rne(u));   // clamp +-448 is inside the encoder
+        }
 
-        // 3. Aniso (channels 28, 25, 4 float16)
-        float a28 = float(s_feat[p_in_t8][c_base + 28u]);
-        float a25 = float(s_feat[p_in_t8][c_base + 25u]);
-        float a4  = float(s_feat[p_in_t8][c_base + 4u]);
-        float s_aniso = (dec0_s0 != 0.0) ? dec0_s0 : 8.0;
-        float f_aniso = (dec0_f0 != 0.0) ? dec0_f0 : 0.0786326;
-        float sx_a = s_aniso * sigm(a28);
-        float sy_a = s_aniso * sigm(a25);
-        float rho = tanh(a4 * f_aniso);
-        float axx = sx_a * sx_a;
-        float ayy = sy_a * sy_a;
-        float axy = rho * sx_a * sy_a;
-        out_aniso[idx] = f16vec4(float16_t(axx), float16_t(ayy), float16_t(axy), float16_t(0.0));
+        // ---- gates: channels 0, 1, 10 ----
+        uint g0 = uint(roundEven(255.0 * clamp(rh(sigm(p[0])), 0.0, 1.0)));
+        uint g1 = uint(roundEven(255.0 * clamp(rh(sigm(p[1])), 0.0, 1.0)));
+        uint g2 = uint(roundEven(255.0 * clamp(rh(sigm(p[10])), 0.0, 1.0)));
+        out_gates[idx] = u8vec4(uint8_t(g0), uint8_t(g1), uint8_t(g2), uint8_t(0));
 
-        // 4. Hidden (channels 0, 5, 9, 12)
-        float h0 = float(s_feat[p_in_t8][c_base + 0u]);
-        float h5 = float(s_feat[p_in_t8][c_base + 5u]);
-        float h9 = float(s_feat[p_in_t8][c_base + 9u]);
-        float h12 = float(s_feat[p_in_t8][c_base + 12u]);
+        // ---- factors: channels 11, 12, 13, f32 softmax ----
+        float xm = max(p[11], max(p[12], p[13]));
+        float ea = exp(p[11] - xm);
+        float eb = exp(p[12] - xm);
+        float ec = exp(p[13] - xm);
+        float esum = (ea + eb) + ec;
+        uint fa = uint(roundEven(255.0 * clamp(ea / esum, 0.0, 1.0)));
+        uint fb = uint(roundEven(255.0 * clamp(eb / esum, 0.0, 1.0)));
+        uint fc = uint(roundEven(255.0 * clamp(ec / esum, 0.0, 1.0)));
+        out_factors[idx] = u8vec4(uint8_t(fa), uint8_t(fb), uint8_t(fc), uint8_t(0));
 
+        // ---- aniso: channels 14, 15, 16 ----
+        float A = s0 * rh(sigm(clamp(p[14], -20.0, 20.0)));
+        float B = s0 * rh(sigm(clamp(p[15], -20.0, 20.0)));
+        float T = tanh32(f0 * p[16]);
+        out_aniso[idx] = f16vec4(float16_t(rh(A * A)), float16_t(rh(B * B)),
+                                 float16_t(rhz((A * B) * T)), float16_t(0.0));
+
+        // ---- hidden: the reprojected position and its tap grid (shared by the 4 channels) ----
         f16vec2 mv = in_prev_mv[idx];
-        float rx_h = float(x) + float(mv.x) + F20x;
-        float ry_h = float(y) + float(mv.y) + F20y;
-        vec4 h_rep = sample_hidden(rx_h, ry_h);
+        float px = fma((float(x) + 0.5) - F20x, r15w, float(mv.x));
+        float py = fma((float(y) + 0.5) - F20y, r15h, float(mv.y));
+        bool ok = (flag88 == 0u) && px >= 0.0 && px <= float(W15)
+                           && py >= 0.0 && py <= float(H15);
+        int xa = 0, xb = 0, ya = 0, yb = 0;
+        float gx = 0.0, gy = 0.0;
+        if (ok) {
+            float cx = fma(px, i15w, F28xW);
+            cx = (cx * float(W)) * iW;
+            cx = cx * float(W) - 0.5;
+            cx = clamp(cx, -2.0, float(W) + 2.0);
+            cx = floor(cx * 256.0 + 0.5) * (1.0 / 256.0);
+            float cy = fma(py, i15h, F28yH);
+            cy = (cy * float(H)) * iH;
+            cy = cy * float(H) - 0.5;
+            cy = clamp(cy, -2.0, float(H) + 2.0);
+            cy = floor(cy * 256.0 + 0.5) * (1.0 / 256.0);
+            int x0 = int(floor(cx));
+            int y0 = int(floor(cy));
+            xa = clamp(x0, 0, W - 1);
+            xb = min(W - 1, max(-1, x0) + 1);
+            ya = clamp(y0, 0, H - 1);
+            yb = min(H - 1, max(-1, y0) + 1);
+            gx = cx - float(x0);            // exact: cx is a multiple of 1/256
+            gy = cy - float(y0);
+        }
 
-        vec4 dh = vec4(h0, h5, h9, h12) * 10.0;
-        vec4 h_out = clamp(h_rep + dh, vec4(0.0), vec4(255.0));
-        out_hidden[idx] = u8vec4(uint8_t(round(h_out.x)), uint8_t(round(h_out.y)),
-                                uint8_t(round(h_out.z)), uint8_t(round(h_out.w)));
+        uint base = idx * 4u;
+        for (uint k = 0u; k < 4u; ++k) {
+            float wk = 0.0;
+            if (ok) {
+                float t00 = tap_dq((uint(ya) * uint(W) + uint(xa)) * 4u + k);
+                float t01 = tap_dq((uint(ya) * uint(W) + uint(xb)) * 4u + k);
+                float t10 = tap_dq((uint(yb) * uint(W) + uint(xa)) * 4u + k);
+                float t11 = tap_dq((uint(yb) * uint(W) + uint(xb)) * 4u + k);
+                float acc = ((1.0 - gx) * (1.0 - gy)) * t00;
+                acc = acc + (gx * (1.0 - gy)) * t01;
+                acc = acc + ((1.0 - gx) * gy) * t10;
+                acc = acc + (gx * gy) * t11;
+                wk = rh(acc);
+            }
+            float z = rh(0.5 + rh(0.5 * th(rh(0.5 * p[6u + k]))));
+            float h = rh(rh(z * th(p[2u + k])) + rh(rh(1.0 - z) * wk));
+            int v = int(roundEven(127.0 * clamp(h, -1.0, 1.0)));
+            out_hidden[base + k] = int8_t(v);
+        }
     }
 }
