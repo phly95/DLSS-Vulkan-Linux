@@ -183,3 +183,22 @@ chain runs M's dec0 in its place. Work order: decode `k_sr_l0<0,2>` (l0_in -> t0
 l0's t0, dispatch l0<2> instead of sr_dec0, L's post + `g_mvhi`), and make the injection indices
 preset-aware so L's leverage becomes measurable. The kernel itself is at 0.0266% bit-exact today
 (PORT-STATUS `k_sr_l0` row).
+
+## 2026-10-27 post-enc0 re-measurement (after `bffc60f`), SR M frames 0/1
+
+| inject from | f0 | f1 | reading |
+|---|---:|---:|---|
+| (none, baseline) | **53.82** | **54.48** | enc0's error is gone (+15.5/+21.3 of the previous table recovered) |
+| enc0 | 53.41 | 55.81 | ~0 (slight cancellation noise) - enc0 DONE |
+| stage0 | 53.61 | 56.00 | ~0 |
+| stage8 | **66.00** | **60.44** | the mode-2 pair (launches 11/12) is the top remaining lever: +12/+6 dB |
+| stage9 | **106.75** | **77.96** | launch 12's segment: +41/+24 dB - GPU==model is 100%, so the residue is the MODEL's (99.62-99.92% vs oracle on launches 11/12) |
+| dec0 | 108.48 | 77.96 | dec0 own ~+2/~0 - effectively closed |
+| post | 118.83 | 119.31 | post's own given oracle: +10 dB f0, 77.96 dB-equivalent f1 (its history path) |
+
+New work order (supersedes the 10:xx one): (1) **mode-2 closure** - find launches 11/12's remaining
+model-vs-oracle rounding point (GPU is exact vs model, so this is pure decode), (2) post's f1
+history-path residual, (3) preset-L rewiring (separate, V4 for L cells - spawned), (4) the
+frames 4-8 degradation is NOT visible to this instrument (no oracle dumps past frame 1):
+extending the dumps (`srref --dump-frames` supports it - instrument work, operator-visible
+decision) is the prerequisite for attacking the full-sequence min (33.76).
