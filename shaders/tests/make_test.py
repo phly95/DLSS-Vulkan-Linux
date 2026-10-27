@@ -225,11 +225,16 @@ def make_test(name, out_dir):
         open(os.path.join(out_dir, "mv_ero.bin"), "wb").write(mv)
         open(os.path.join(out_dir, "mv_nondil.bin"), "wb").write(mv)
         push = bytearray(220)
-        struct.pack_into("<I", push, 16, 0)
-        struct.pack_into("<2i", push, 136, w, h)
-        struct.pack_into("<2i", push, 152, w, h)
-        struct.pack_into("<2i", push, 160, w, h)
-        struct.pack_into("<f2I", push, 168, 1.0, 1, 0)
+        struct.pack_into("<I", push, 16, 0)              # parity
+        struct.pack_into("<2i", push, 136, w, h)         # W, H
+        struct.pack_into("<2i", push, 152, w, h)         # W15, H15 (this fixture renders at the output size)
+        struct.pack_into("<2i", push, 160, w, h)         # hW15, hH15
+        # PostArgs +0xa8..+0xcc as pipeline.cpp now fills them (5981a2e): without dec0_f1, scaleX/Y
+        # and log2_10 the rewritten sr_post computes zeros on every output and O7 sees a constant.
+        struct.pack_into("<f", push, 168, 2.7530112)     # dec0_f1, the oracle's gate0 confidence scale
+        struct.pack_into("<2f", push, 172, 1.0, 1.0)     # scaleX = W/W15, scaleY = H/H15
+        struct.pack_into("<2f", push, 180, 0.0, 0.0)     # jitterX, jitterY
+        struct.pack_into("<I", push, 204, 0x40549A78)    # log2_10
         cfg = {
             "groups": [(w + 15) // 16, (h + 15) // 16, 1],
             "push": push.hex(),
