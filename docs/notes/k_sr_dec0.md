@@ -65,3 +65,36 @@ Open:
   sums go through f16).
 A synthetic-weight srref probe on `dec0.bin` (one projected channel live at a time) settles the
 first two directly.
+
+## Review R3b (2026-10-26): dec0 fully decoded, 99.98-100% bit-exact on both frames
+
+The R3 residue came from the projection's rounding, not the heads. The ISA (0x1f0..0x374) computes
+`u = f16(f16(b + A0) + A1)`, where A0 and A1 are the f32 WMMA chains over t8 channels 0..31 and 32..63.
+It then clamps u to +-448 and stores fp8 to LDS. With that p:
+
+- gates are **single** sigmoids, `rndne(255 * clamp01(f16(1 / (1 + exp(-p_c)))))` for c = 0, 1, 10.
+  The divide is IEEE (`v_div_scale/fmas/fixup`). R3's "OR" data fits are refuted.
+- factors = `255 * softmax(p11..p13)` in f32, not rounded to f16;
+- aniso[2] = `f16((A * B) * tanh(f0 * p16))`, where tanh is the f32 `tanhf` (a polynomial for small
+  |x|, an exp form above it) of the **unrounded** f32 product;
+- hidden: z <- p(6+k), h <- p(2+k) for all four k. The warp is decoded exactly, with an f32
+  reprojection through prev_mvec, coordinates snapped to 1/256, edge-clamped taps, an int8/127
+  dequant, an f32 fma bilinear and one f16 rounding. It is 0 when the reprojected position leaves
+  [0, W15] x [0, H15] or args +0x88 != 0.
+
+The spec is `tools/sr/sr_dec0_model.py` (formulas and rounding points in its docstring).
+
+| frame | gates | factors | aniso | hidden out |
+|---|---:|---:|---:|---:|
+| 0 (reset) | 99.9993% | 100% | 99.9878% | 99.9986% |
+| 1 (warp) | 100% | 99.9973% | 99.9803% | 99.9993% |
+
+`build/venv/bin/python -I tools/sr/sr_dec0_model.py --frame F` (oracle inputs).
+
+The aniso residue is the kernel's tanhf branch choice for |x| < ~2e-3, together with its v_exp
+approximation.
+
+The current `sr_dec0.comp` and the host's push constants (pipeline.cpp fills only +0x40..+0x67, so
+F20, F28 and the scale factors are 0) predate this spec.
+
+Preset L has no dec0. Its equivalent heads come from `k_sr_l0` (launch 14), not yet decoded.
