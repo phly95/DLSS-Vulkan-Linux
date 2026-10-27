@@ -164,24 +164,51 @@ def make_test(name, out_dir):
             ]
         }
     elif name == "sr_dec0":
-        b_mv = np.linspace(0.01, 0.5, n_pix * 2, dtype=np.float16).tobytes()
-        open(os.path.join(out_dir, "in_t8.bin"), "wb").write(np.zeros(n_pix * 16, dtype=np.uint8).tobytes())
-        open(os.path.join(out_dir, "prev_mv.bin"), "wb").write(b_mv)
-        open(os.path.join(out_dir, "hidden.bin"), "wb").write(b_mv)
-        open(os.path.join(out_dir, "wbuf.bin"), "wb").write(np.zeros(4096, dtype=np.uint8).tobytes())
-        push = bytearray(96)
-        struct.pack_into("<6i", push, 64, w, h, w, h, w, h)
+        # k_sr_dec0 is a 2-D tile kernel: grid (W0/8, H0/8), one 8x8 render tile per workgroup,
+        # 32 threads x 2 pixels.  W,H are the render size, W0,H0 the padded one (as the host's
+        # (W+31)&~31), and W15,H15 the level-15 grid the motion vectors live in.  t8 (binding 0)
+        # is [2][H0/2][W0/2][32] fp8, the weight blob (binding 7) is the 128x64 fp8 matrix at
+        # sr_pack.frag_offsets(128,64) positions 0..8191 followed by 128 f16 biases at 8192.
+        w0 = (w + 31) & ~31
+        h0 = (h + 31) & ~31
+        w15, h15 = (w * 3 + 1) >> 1, (h * 3 + 1) >> 1
+        wh, hh = w0 // 2, h0 // 2
+        idx = lambda n: np.arange(n, dtype=np.uint64)
+        mix = lambda n: ((idx(n) * 0x9E3779B97F4A7C15) >> 32).astype(np.uint64)
+        # t8: full-range fp8 bytes, so every head's input varies per pixel (a constant input
+        # makes every output constant, which O7 rejects).
+        open(os.path.join(out_dir, "in_t8.bin"), "wb").write((mix(2 * hh * wh * 32) & 0xFF).astype(np.uint8).tobytes())
+        # prev_mvec: f16vec2 per render pixel, spread wide enough that the reprojected position
+        # leaves [0,W15]x[0,H15] for part of the frame (exercising the warp-disabled path too).
+        mvs = ((mix(n_pix * 2) & 0xFF).astype(np.float64) / 32.0 - 4.0).astype(np.float16)
+        open(os.path.join(out_dir, "prev_mv.bin"), "wb").write(mvs.tobytes())
+        open(os.path.join(out_dir, "hidden.bin"), "wb").write((mix(n_pix * 4) & 0xFF).astype(np.uint8).tobytes())
+        # dec0_w: weights 0..8191 in the moderate fp8 range 0x50..0x6f (|v| 0.031..0.234, so the
+        # 64-term dot lands near 0 and every head stays in its varying regime), 128 f16 biases.
+        wts = (0x50 + (mix(8192) & 0x1F)).astype(np.uint8).tobytes()
+        bias = np.linspace(-1.0, 1.0, 128, dtype=np.float16).tobytes()
+        open(os.path.join(out_dir, "wbuf.bin"), "wb").write(wts + bias)
+        push = bytearray(160)
+        struct.pack_into("<8i", push, 64, w, h, w, h, w0, h0, w15, h15)
+        struct.pack_into("<f", push, 96, 2.0)                    # dec0_s0
+        struct.pack_into("<f", push, 100, 0.75)                  # dec0_f0
+        struct.pack_into("<4f", push, 104, 0.5, 0.25, 0.375, 0.125)   # F20x,F20y,F28x,F28y
+        struct.pack_into("<2f", push, 120, w15 / w, h15 / h)     # r15w, r15h
+        struct.pack_into("<2f", push, 128, 1.0 / w, 1.0 / h)     # 1/W, 1/H
+        struct.pack_into("<I", push, 136, 0)                     # +0x88 warp enabled
+        struct.pack_into("<2f", push, 140, 1.0 / w15, 1.0 / h15)  # 1/W15, 1/H15
+        struct.pack_into("<2f", push, 148, 0.375 / w, 0.125 / h)  # F28x/W, F28y/H
         cfg = {
-            "groups": [(w * h + 31) // 32, 1, 1],
+            "groups": [w0 // 8, h0 // 8, 1],
             "push": push.hex(),
             "bindings": [
                 {"binding": 0, "file": "in_t8.bin"},
                 {"binding": 1, "file": "prev_mv.bin"},
                 {"binding": 2, "file": "hidden.bin"},
-                {"binding": 3, "bytes": n_pix * 4, "output": "gates", "type": "f16"},
-                {"binding": 4, "bytes": n_pix * 4, "output": "factors", "type": "f16"},
+                {"binding": 3, "bytes": n_pix * 4, "output": "gates", "type": "u8"},
+                {"binding": 4, "bytes": n_pix * 4, "output": "factors", "type": "u8"},
                 {"binding": 5, "bytes": n_pix * 8, "output": "aniso", "type": "f16"},
-                {"binding": 6, "bytes": n_pix * 4, "output": "hidden_out", "type": "f16"},
+                {"binding": 6, "bytes": n_pix * 4, "output": "hidden_out", "type": "u8"},
                 {"binding": 7, "file": "wbuf.bin"}
             ]
         }
