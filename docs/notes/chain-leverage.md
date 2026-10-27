@@ -290,3 +290,17 @@ SR M, all 9 frames (multidump dir, `pipeline_report` vs sr_M_ref):
    (some input still differs? the +0xe0/+0xf0 push fields l-rewire found in M's args too? the
    model's transcendental emulation), judged on the FULL 9-frame table per the
    compensating-errors rule.
+
+**Post-residual update (17:05): the +0xe0/+0xf0 push-field hypothesis is REFUTED for M.**
+srref.cpp:506-518 is the authoritative PostArgs map: +0xe0 = g_mvhi (pointer), +0xe8 = oW/oH,
++0xf0 = the F34-derived mv pair (1.5,1.5 on these frames), +0xf8 = mvoff. M's `<false,12,16>`
+template never loads >= 0xe8 (its kernarg loads: b128@0x0, b128@0x18, b64@0x28, b128@0x48,
+b64@0x60, b512@0x88, b96@0xc8 = up to 0xe7, b128@0x48; `build/k_sr_post.s`), so it cannot read
+oW/oH/mv-scale/mvoff at all - the port pushing zeros there is equivalent for M. What M's template
+DOES load beyond the port's documented set: the 0xc8..0xe7 window (log2_10, depinv, ldr, mvhi,
+g_mvhi pointer - the mvhi=false template strips the deref). L's `<true>` template (l-post's job)
+loads differently. => M's post residual under hist,dec0 (68-77 dB at f1+) is NOT the push; it is
+the history-path blend arithmetic itself, where sr_post_model (99.8% f1) is the current cap and
+GPU==model 99.99% - i.e. the deviation of BOTH from the oracle is in the spec'd blend/encode
+chain (t1/t2 conf/u fma chains, the log tonemap). Next: an SR-side probe-bisect of the blend
+intermediate (the rr-post-model-2 rrp2_* method), queued for a free slot.
