@@ -36,6 +36,10 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 CO = REPO / "artifacts/neuralhub-v0.8.0/gfx1201/sr.gfx1201.co"
+NETS = {"sr": dict(co=REPO / "artifacts/neuralhub-v0.8.0/gfx1201/sr.gfx1201.co", ref="build/work/srref",
+                   weights="build/re/packed/M", frames="build/work/probe/frames1"),
+        "rr": dict(co=REPO / "artifacts/neuralhub-v0.8.0/gfx1201/rr.gfx1201.co", ref="build/work/rrref",
+                   weights="build/rr/packed", frames="build/work/review/rrframes1")}
 OUT = REPO / "build/work/review/patch/runs"
 IMG = "docker.io/rocm/dev-ubuntu-24.04:7.2.4"
 
@@ -73,8 +77,10 @@ def assemble(asm):
     return bytes(out)
 
 
-def run(kernel, at, asm, name, frames="build/work/probe/frames1", weights="build/re/packed/M"):
-    data = bytearray(CO.read_bytes())
+def run(kernel, at, asm, name, frames=None, weights=None, net="sr"):
+    cfg = NETS[net]
+    frames, weights = frames or cfg["frames"], weights or cfg["weights"]
+    data = bytearray(cfg["co"].read_bytes())
     off, size = elf_symbol(data, kernel)
     code = assemble(asm)
     if at + len(code) > size:
@@ -86,11 +92,11 @@ def run(kernel, at, asm, name, frames="build/work/probe/frames1", weights="build
     rel = lambda p: str(Path(p).relative_to(REPO))
     cmd = ["podman", "run", "--rm", "--device", "/dev/kfd", "--device", "/dev/dri", "--group-add", "keep-groups",
            "--security-opt", "label=disable", "-v", f"{REPO}:/w", IMG, "bash", "-c",
-           f"cd /w && build/work/srref {rel(co)} {weights} {frames} "
+           f"cd /w && mkdir -p {rel(OUT / (name + '_dump'))} && {cfg['ref']} {rel(co)} {weights} {frames} "
            f"{rel(OUT / (name + '_out'))} --dump {rel(OUT / (name + '_dump'))}"]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode:
-        raise SystemExit(f"srref failed:\n{r.stdout[-1500:]}\n{r.stderr[-1500:]}")
+        raise SystemExit(f"{cfg['ref']} failed:\n{r.stdout[-1500:]}\n{r.stderr[-1500:]}")
     print(f"patched {len(code)} bytes at {kernel}+{at:#x}; dump {OUT / (name + '_dump')}")
     return OUT / f"{name}_dump"
 
@@ -101,11 +107,12 @@ def main():
     ap.add_argument("--at", required=True, type=lambda s: int(s, 0))
     ap.add_argument("--asm", required=True)
     ap.add_argument("--name", required=True)
-    ap.add_argument("--frames", default="build/work/probe/frames1",
-                    help="srref frames dir (repo-relative); e.g. a 2-frame dir to reach frame 1's history")
-    ap.add_argument("--weights", default="build/re/packed/M")
+    ap.add_argument("--net", default="sr", choices=list(NETS), help="sr (srref, sr.co) or rr (rrref, rr.co)")
+    ap.add_argument("--frames", default=None,
+                    help="frames dir (repo-relative); default: a 1-frame dir of the net's oracle sequence")
+    ap.add_argument("--weights", default=None)
     a = ap.parse_args()
-    run(a.kernel, a.at, a.asm, a.name, a.frames, a.weights)
+    run(a.kernel, a.at, a.asm, a.name, a.frames, a.weights, a.net)
 
 
 if __name__ == "__main__":

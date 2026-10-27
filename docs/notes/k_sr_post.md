@@ -165,3 +165,26 @@ computes the spatial filter for both pixels at once, in the lo/hi halves of pack
 
 The current shader's invented parts (the bilinear MV warp, the bilinear history, the discard test)
 are therefore all wrong in kind: MV candidate selection, Catmull-Rom history, a two-candidate mix.
+
+## Review R6 (2026-10-26): `tools/sr/sr_post_model.py`, a partial spec checked against hardware probes
+
+A formula-level NumPy model of launch 14. Its docstring lists every verified formula, constant
+and rounding point. Frame 0: full15 85.67% bit-exact (pixel-0 rows 96.69%, pixel-1 rows 74.66%),
+ihist1 84.93% (94.95% / 74.91%), decoded-value PSNR 47.1 dB. Frame 1 is 20-40%, because the
+history path is not modelled.
+
+Verified by patchprobe (scripts in `build/agents/post-model/`):
+- the 12-field LDS source records: 100%;
+- the output geometry: 100%;
+- the 9 tap identities, the f16 quadratic and `w = exp2(q)`;
+- the f32 weight sum in kx-major order: 95.2%, the rest being v_exp_f32 1-ULP differences;
+- the f16 numerator chains `n = f16(n + f16(w) * field)`: 99.99%;
+- the encodes: `full15 = R11 | G11 << 11 | B10 << 22` with `R = trunc(clamp(fma(2047, f32(k*tm), 0.5),
+  0, 2047))`, `k = 1/2.45`; `ihist1 = f16(S)`, alpha 0.
+
+Open, in order of size:
+1. **Pixel 1's packed hi lane**: right only where pixel 1's base row equals pixel 0's, 0% elsewhere.
+2. The gate blend after the spatial average: a 1-ULP residual that correlates with gate0, even
+   in frame 0.
+3. The MV choice, Catmull-Rom history and second candidate (Review R5, steps 3-5).
+4. `dhist`.
