@@ -30,7 +30,8 @@ std::vector<uint8_t> slurp(const std::string& p) {
 }
 
 // RR U-Net item table from build/rr/packed/params.json: for each of the 16 units, the 21 meta offsets
-// (-1 = absent) and s1d2 / s1d4 / s1d6 as u16 bits, 24 uint32 per unit (rr_level binding 13).
+// (-1 = absent), s1d2 / s1d4 / s1d6 / s1d0 as u16 bits (21..24), and unit 15's dec0_scalars (Args +0xe8 /
+// +0xec, f32 bits, 25 / 26; 0 for the other units). 32 uint32 per unit (rr_level binding 13).
 static bool rr_table_from_params(const std::string& pj, uint32_t* tab) {
     size_t cur = 0;
     for (int k = 0; k < 16; ++k) {
@@ -44,13 +45,16 @@ static bool rr_table_from_params(const std::string& pj, uint32_t* tab) {
             char* e = nullptr;
             long v = std::strtol(pj.c_str() + i, &e, 10);
             if (e == pj.c_str() + i) return false;
-            tab[k * 24 + j] = uint32_t(int32_t(v));
+            tab[k * 32 + j] = uint32_t(int32_t(v));
             i = size_t(e - pj.c_str());
         }
-        cur = i;
-        static const char* const keys[3] = {"\"s1d2\"", "\"s1d4\"", "\"s1d6\""};
-        for (int s = 0; s < 3; ++s) {
-            size_t q = pj.find(keys[s], cur);
+        // the unit's own keys follow its meta and precede the next unit's meta
+        const size_t base = i;
+        const size_t next = (k < 15) ? pj.find("\"meta\"", base) : std::string::npos;
+        static const char* const keys[4] = {"\"s1d2\"", "\"s1d4\"", "\"s1d6\"", "\"s1d0\""};
+        static const int slot[4] = {21, 22, 23, 24};
+        for (int s = 0; s < 4; ++s) {
+            size_t q = pj.find(keys[s], base);
             if (q == std::string::npos) return false;
             size_t c = pj.find(':', q);
             if (c == std::string::npos) return false;
@@ -59,9 +63,26 @@ static bool rr_table_from_params(const std::string& pj, uint32_t* tab) {
             char* e = nullptr;
             long v = std::strtol(pj.c_str() + c, &e, 10);
             if (e == pj.c_str() + c) return false;
-            tab[k * 24 + 21 + s] = uint32_t(v) & 0xFFFFu;
-            cur = size_t(e - pj.c_str());
+            tab[k * 32 + slot[s]] = uint32_t(v) & 0xFFFFu;
         }
+        float dec0[2] = {0.0f, 0.0f};
+        size_t dq = pj.find("\"dec0_scalars\"", base);
+        if (dq != std::string::npos && (next == std::string::npos || dq < next)) {
+            size_t c = pj.find(':', dq);
+            if (c != std::string::npos) {
+                ++c;
+                while (c < pj.size() && (pj[c] == ' ' || pj[c] == '\n' || pj[c] == '\t' || pj[c] == '\r')) ++c;
+                if (c < pj.size() && pj[c] == '[') {
+                    char* e = nullptr;
+                    dec0[0] = std::strtof(pj.c_str() + c + 1, &e);
+                    size_t comma = pj.find(',', size_t(e - pj.c_str()));
+                    if (comma != std::string::npos) dec0[1] = std::strtof(pj.c_str() + comma + 1, nullptr);
+                }
+            }
+        }
+        std::memcpy(&tab[k * 32 + 25], &dec0[0], 4);
+        std::memcpy(&tab[k * 32 + 26], &dec0[1], 4);
+        cur = base;
     }
     return true;
 }
@@ -332,7 +353,7 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         // starts at offset 24 (scale) and ends at 31 (reset) - 8 bytes left both reading garbage.
         add_pipe("rr_ae_final", 4, 32);
         add_pipe("rr_enc0_feat", 13, 16);
-        add_pipe("rr_level", 14, 68);
+        add_pipe("rr_level", 14, 80);
         add_pipe("rr_post_prep", 4, 40);
         add_pipe("rr_post", 6, 120);
         add_pipe("rr_downsample", 4, 48);
@@ -492,7 +513,7 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         c->ue["E0d02"] = create_buffer(dev, phys, 8208, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);   // bicubic table
         c->ue["E0d02"].logical = 8208;
         c->rr_dummy = create_buffer(dev, phys, 256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-        c->rr_tab = create_buffer(dev, phys, 16 * 24 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        c->rr_tab = create_buffer(dev, phys, 16 * 32 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         c->expo.logical = 16;   // the oracle's E0c22 is 16 bytes; dumps report that size
     }
 
@@ -788,8 +809,8 @@ void FrameChain::dispatch(VkCommandBuffer cmd, const std::string& name,
 // are decoded from the oracle's launches.jsonl (identical in both frames) and agree with
 // tools/rr/rrref/rrref.cpp's level().  Role names are oracle buffer names; "" = the argument is null.
 // Args offsets: in +0x10, skip +0x18, out +0x78, out +0x80, in +0x88, in +0x90, out +0x98,
-// out +0xa0, out +0xc0 / +0xc8 / +0xd0 / +0xd8.  rr_level binding 2 takes +0x78, or +0x98 when a
-// unit has no +0x78 (unit 15).
+// out +0xa0, out +0xc0 / +0xc8 / +0xd0 / +0xd8.  rr_level binding 2 takes +0x78 (fp8 out; a dummy for
+// unit 15, which has none); the heads go to bindings 7..12 (+0x98, +0xa0, +0xc0..+0xd8).
 enum RrRole { R_IN, R_SKIP, R_O78, R_O80, R_I88, R_I90, R_O98, R_OA0, R_OC0, R_OC8, R_OD0, R_OD8, R_N };
 struct RrUnit { int C, g, mode, Cdown, Cup, n, in_ch; const char* role[R_N]; };
 static const int kRrUnitLevel[16] = {0, 1, 2, 3, 4, 5, 4, 4, 3, 3, 2, 2, 1, 1, 0, 0};
@@ -1140,18 +1161,23 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             const int sx = kShift[shc][p][0], sy = kShift[shc][p][1];
             const int gx = (uw + sx + 7) >> 3, gy = (uh + sy + 7) >> 3;
 
-            uint8_t push[68] = {0};
+            uint8_t push[80] = {0};
             const int ints[10] = {uw, uh, sx, sy, U.mode, U.C, U.g, U.Cdown, U.Cup, U.n};
             std::memcpy(push + 0, ints, sizeof ints);          // offsets 0..39
             const int in_ch = U.in_ch, blob_off = int(rr_blob_off[u]), unit_idx = u;
             std::memcpy(push + 56, &in_ch, 4);                  // offset 56: channels per token of binding 1
             std::memcpy(push + 60, &blob_off, 4);               // offset 60: this unit's weights in binding 0
             std::memcpy(push + 64, &unit_idx, 4);               // offset 64: this unit's row of binding 13 (rr_tab)
+            // offsets 68 / 72: the render grid (Args +0xe0 / +0xe4, unit 15's render outputs); 76: head flags
+            const int rr_wr = W, rr_hr = H;
+            const int rr_flags = (U.role[R_O98][0] ? 1 : 0) | (U.role[R_OA0][0] ? 2 : 0);
+            std::memcpy(push + 68, &rr_wr, 4); std::memcpy(push + 72, &rr_hr, 4);
+            std::memcpy(push + 76, &rr_flags, 4);
 
             Buffer* in = rr_buf(U.role[R_IN]);
             Buffer* o78 = rr_buf(U.role[R_O78]);
             Buffer* o98 = rr_buf(U.role[R_O98]);
-            Buffer* primary = o78 ? o78 : o98;                  // binding 2 is the one the shader writes
+            Buffer* primary = o78 ? o78 : &rr_dummy;            // binding 2: fp8 out (unit 15 writes none)
             auto or_in = [&](Buffer* b) { return b ? b : in; };
             auto or_dummy = [&](Buffer* b) { return b ? b : &rr_dummy; };
             std::vector<Buffer*> bufs = {
@@ -1168,7 +1194,7 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             std::snprintf(lbl, sizeof lbl, "launch %d k_level<%d,%d,%d,%d,%d,%d>", u + 4 + roff,
                           U.C, U.g, U.mode, U.Cdown, U.Cup, U.n);
             trace_label = lbl;
-            dispatch(cmd, "rr_level", bufs, push, 68, gx, gy, 1);
+            dispatch(cmd, "rr_level", bufs, push, 80, gx, gy, 1);
             inject_after(cmd, ("L" + std::to_string(u + 5)).c_str(), u + 4 + roff);
         }
         // 5. Post prep (launch 20 + roff): inputs are the U-Net's own outputs E0bd4, E0c16, E0c1e

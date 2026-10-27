@@ -17,12 +17,25 @@
 // Down projection (modes 0/1, Cdown > 0): e4m3(clamp(mA8 . merge2x2(q8(out)) + v170, +-6.28125)).
 // Entries: mode 5 (enc0): m1f8 . gelu(m1d8 . F + v218) + v230; mode 1: mC8 . merge2x2(in) + v188;
 // mode 2: x = f16(up + f16(s1d6 * skip)), up = f16(mE8 . low + v1a0), pixel-shuffled.
-// Mode 4 (unit 15): the block output goes to binding 2 as the model's O98 (f16 lanes 0..2, lane 3 = 0).
-// The per-level heads (o98 / oa0 of the other units) and the render-resolution outputs are not written.
+// Heads (after the block, step 7; the model's head_v2 / head_dec / head_down2 / unit15_outputs):
+//   encoders (units 0..5, flags bit 0): g_r = f16(1/(1+exp(-h_r))), h_r = f16 chain (v1b8[r] + K=32 chunks of
+//     m108[r] . q8(out)), r < 3; o98[c] = min(f16(f16(s1d0 g_c) x88_c), 65504), lane 3 = 0 (binding 7);
+//     oa0 (flags bit 1, units 0..4): the 2x2 average of o98 at the next level (binding 8), each tap x0.25 in
+//     f16, (p00 + p10) + (p01 + p11). A 2x2 block never straddles a window (windows and blocks are aligned to
+//     even pixels, sx and sy even), so the window computes its own oa0.
+//   decoders (mode 3, units 7/9/11/13): r < 4 gates as above; o98[c] = blend of up(x90)_c (2x bilinear of the
+//     coarser o98) and x88_c, gate g_3: f16(f16(f16(f16(s1d0 g_c) up_c) g_3) + f16(f16(1 - g_3) x88_c)).
+//   unit 15 (mode 4): the block output is kept as the f16 pk_add result (no clip, no fp8) and its heads read
+//     channels 0..17 of it: o98 (binding 7), oc0 i8 x4 tanh (binding 9), oc8 u8 x4 gates (binding 10), od0 u8
+//     x4 softmax (binding 11), od8 f16 x4 aniso (binding 12), render grid Wr x Hr (push). Spec: the model's
+//     "UNIT 15 SPEC" (tools/rr/rr_level_model.py).
+// The three per-unit scalars come from the table in binding 13: s1d0 (Args +0xa8), s1d2 / s1d4 / s1d6, and for
+// unit 15 dec0_s0 / dec0_f0 (Args +0xe8 / +0xec, f32 bits).
 //
-// Weights (binding 0) are read in the packer's fragment order (tools/rr/rr_layout.py, frag_closed):
-// the per-unit item offsets and the three LayerScale scalars come from the table in binding 13 (24 uints
-// per unit: 21 item offsets with -1 = absent, then s1d2, s1d4, s1d6 as u16 bits).
+// Weights (binding 0) are read in the packer's fragment order (tools/rr/rr_layout.py, frag_closed): the
+// per-unit item offsets come from the table in binding 13 (32 uints per unit: 21 item offsets with -1 =
+// absent, then s1d2, s1d4, s1d6, s1d0 as u16 bits, dec0_s0 and dec0_f0 as f32 bits, 2 unused).
+// m108 (item 14) is packed without permute_rows (frag_rr(permute_rows=False)); v1b8 (item 15) is 16 plain halfs.
 //
 // Activations: [C/32][H][W][32] fp8, stored index i of group cg = logical channel cg*32 + P(i), with
 // P(i) = (i&1) | ((i&2)<<3) | ((i&0x1c)>>1) | (i&0xe0); the inverse is pinv() below.
@@ -31,22 +44,23 @@ layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) readonly buffer InW     { uint8_t w[]; };
 layout(set = 0, binding = 1) readonly buffer InAct   { uint8_t in_act[]; };
-layout(set = 0, binding = 2) writeonly buffer OutAct { uint8_t out_act[]; };   // +0x78, or +0x98 for unit 15
+layout(set = 0, binding = 2) writeonly buffer OutAct { uint8_t out_act[]; };   // +0x78 (fp8 out)
 layout(set = 0, binding = 3) readonly buffer InSkip  { uint8_t skip_act[]; };  // +0x18
 layout(set = 0, binding = 4) writeonly buffer OutB   { uint8_t out_b[]; };     // +0x80 (down)
-layout(set = 0, binding = 5) readonly buffer In5     { uint8_t in_5[]; };      // +0x88 (not consumed)
-layout(set = 0, binding = 6) readonly buffer In6     { uint8_t in_6[]; };      // +0x90 (not consumed)
-layout(set = 0, binding = 7) writeonly buffer OutC   { uint8_t out_c[]; };     // +0x98 (heads: not written)
-layout(set = 0, binding = 8) writeonly buffer OutD   { uint8_t out_d[]; };     // +0xa0 (not written)
-layout(set = 0, binding = 9) writeonly buffer OutE   { uint8_t out_e[]; };     // +0xc0 (not written)
-layout(set = 0, binding = 10) writeonly buffer OutF  { uint8_t out_f[]; };     // +0xc8 (not written)
-layout(set = 0, binding = 11) writeonly buffer OutG  { uint8_t out_g[]; };     // +0xd0 (not written)
-layout(set = 0, binding = 12) writeonly buffer OutH  { uint8_t out_h[]; };     // +0xd8 (not written)
-layout(set = 0, binding = 13) readonly buffer RrTab  { uint tab[]; };          // per-unit item table
+layout(set = 0, binding = 5) readonly buffer In5     { uint8_t in_5[]; };      // +0x88: x88 (f16 [H][W][4])
+layout(set = 0, binding = 6) readonly buffer In6     { uint8_t in_6[]; };      // +0x90: x90 (f16 [H/2][W/2][4])
+layout(set = 0, binding = 7) writeonly buffer OutC   { uint8_t out_c[]; };     // +0x98: o98 (f16 [H][W][4])
+layout(set = 0, binding = 8) writeonly buffer OutD   { uint8_t out_d[]; };     // +0xa0: oa0 (f16 [H/2][W/2][4])
+layout(set = 0, binding = 9) writeonly buffer OutE   { uint8_t out_e[]; };     // +0xc0: oc0 (i8 [Hr][Wr][4])
+layout(set = 0, binding = 10) writeonly buffer OutF  { uint8_t out_f[]; };     // +0xc8: oc8 (u8 [Hr][Wr][4])
+layout(set = 0, binding = 11) writeonly buffer OutG  { uint8_t out_g[]; };     // +0xd0: od0 (u8 [Hr][Wr][4])
+layout(set = 0, binding = 12) writeonly buffer OutH  { uint8_t out_h[]; };     // +0xd8: od8 (f16 [Hr][Wr][4])
+layout(set = 0, binding = 13) readonly buffer RrTab  { uint tab[]; };          // per-unit table, 32 uints a unit
 
-// Per-launch parameters (68 bytes). 0..36: the unit's Args dims and template ints; 40..52: the kernel-test
+// Per-launch parameters (84 bytes). 0..36: the unit's Args dims and template ints; 40..52: the kernel-test
 // fallback; 56: channels per token of binding 1 (C_in); 60: the unit's weight offset in binding 0; 64: the
-// unit index (row of the table in binding 13).
+// unit index (row of the table in binding 13); 68 / 72: render width / height (Args +0xe0 / +0xe4); 76: head
+// flags (bit 0: o98 is written, bit 1: oa0 is written).
 layout(push_constant) uniform RrUnitArgs {
     layout(offset = 0) int W_in;     // Args +0x00: unit width (pixels)
     int H_in;                        // Args +0x04: unit height
@@ -65,15 +79,21 @@ layout(push_constant) uniform RrUnitArgs {
     layout(offset = 56) int C_in;    // channels per token of binding 1
     int blob_off;                    // byte offset of this unit's weights in binding 0
     int unit_in;                     // unit index
+    layout(offset = 68) int Wr_in;   // render width
+    int Hr_in;                       // render height
+    int flags_in;                    // bit 0: o98 (+0x98) written, bit 1: oa0 (+0xa0) written
 };
 
 const uint CM = 160u;                   // LDS row stride: C <= 160 in every unit
+const uint TS = 32u;                    // uints per unit in binding 13
 shared float16_t s_a[64 * 160];         // residual stream X (f16 values; q8 values after the block)
 shared uint8_t   s_n[64 * 160];         // fp8 codes of the normalised stream (q8 of X)
 shared float16_t s_h[64 * 64];          // MLP hidden chunk (q8 values); mode 5 hidden
 shared float16_t s_p[64 * 64];          // fp8 probabilities of the current head
 shared float16_t s_q[64 * 32];          // Q of the current head, then its context
 shared float16_t s_v[64 * 32];          // V of the current head (fp8 values)
+shared float16_t s_g[64 * 4];           // head gates per token (lanes 0..3)
+shared float16_t s_o[64 * 4];           // head o98 per token (lanes 0..3), read by the oa0 step
 
 // e4m3 (OCP, bias 7; code 0x7f = 480 as in launch_report's LUT) decoded exactly by bit arithmetic.
 float e4m3_dec(uint c) {
@@ -129,24 +149,32 @@ uint pidx(uint c, uint x, uint y, uint wd, uint hd) {
     return (((c >> 5u) * hd + y) * wd + x) * 32u + pinv(c & 31u);
 }
 
-// FRAG(r, c) of frag_rr (permute_rows): byte offset of element (row r, col c) in a matrix with `cols` columns.
-uint frag_off(uint r, uint c, uint cols) {
-    uint u = ((r & 0x7FFFFFE1u) | ((r >> 3u) & 2u)) + (r & 0xEu) * 2u;
+// FRAG(u, c) of frag_rr: byte offset of element (row u, col c) in a matrix with `cols` columns (u = the row index
+// after the packer's row expression: permuted for the weight matrices, plain for m108).
+uint frag_u(uint u, uint c, uint cols) {
     return 16u * (u & 15u) + 256u * ((c >> 2u) & 1u) + 8u * ((c >> 3u) & 1u) + 4u * ((c >> 1u) & 1u)
          + 2u * ((c >> 4u) & 1u) + (c & 1u) + 512u * (c >> 5u) + 16u * cols * (u >> 4u);
+}
+// frag_rr with permute_rows (the weight matrices of the blocks).
+uint frag_off(uint r, uint c, uint cols) {
+    uint u = ((r & 0x7FFFFFE1u) | ((r >> 3u) & 2u)) + (r & 0xEu) * 2u;
+    return frag_u(u, c, cols);
 }
 
 float wfp8(uint boff) { return e4m3_dec(uint(w[boff])); }
 float wf16(uint boff) { return f16_dec(uint(w[boff]) | (uint(w[boff + 1u]) << 8u)); }
 
-uint wbase(int item) { return uint(blob_off + int(tab[uint(unit_in) * 24u + uint(item)])); }
+uint wbase(int item) { return uint(blob_off + int(tab[uint(unit_in) * TS + uint(item)])); }
 
 // Logical element L of an f16 vector (P within 32-groups) at item `item` of this unit.
 float vec16(int item, uint L) {
     return wf16(wbase(item) + 2u * ((L & ~31u) + pinv(L & 31u)));
 }
 
-float s1d(int k) { return f16_dec(tab[uint(unit_in) * 24u + 21u + uint(k)] & 0xFFFFu); }  // 0: s1d2, 1: s1d4, 2: s1d6
+float s1d(int k) { return f16_dec(tab[uint(unit_in) * TS + 21u + uint(k)] & 0xFFFFu); }  // 0: s1d2, 1: s1d4, 2: s1d6
+float s1d0() { return f16_dec(tab[uint(unit_in) * TS + 24u] & 0xFFFFu); }                 // Args +0xa8
+float dec0_s0() { return uintBitsToFloat(tab[uint(unit_in) * TS + 25u]); }                // Args +0xe8
+float dec0_f0() { return uintBitsToFloat(tab[uint(unit_in) * TS + 26u]); }                // Args +0xec
 
 int refl(int p, int n) {
     if (p < 0) p = -p;
@@ -176,6 +204,128 @@ float nh_gelu(float z) {
 // act_fn 'gelu' (tanh form, f32): the mode 5 entry activation (enc0_act default).
 float gelu_tanh(float z) {
     return 0.5 * z * (1.0 + tanh(0.7978845608 * (z + 0.044715 * z * z * z)));
+}
+
+// ---- heads ------------------------------------------------------------------------------------------
+// x88 (binding 5) and x90 (binding 6): f16 values at a byte offset.
+float x88_at(uint b) { return f16_dec(uint(in_5[b]) | (uint(in_5[b + 1u]) << 8u)); }
+float x90_at(uint b) { return f16_dec(uint(in_6[b]) | (uint(in_6[b + 1u]) << 8u)); }
+
+// Coarse sample of x90 (f16 [H/2][W/2][4]) at lane `lane`, coarse coordinates (cx, cy); W2 = W / 2.
+float x90c(uint lane, int cx, int cy, int W2) {
+    return x90_at(((uint(cy) * uint(W2) + uint(cx)) * 4u + lane) * 2u);
+}
+
+// up2_bilinear's weights along one axis: fine index p -> coarse base, next tap and the weight of the next tap
+// (0.75 for even p, 0.25 for odd p, 0 at a border; the base is clamped).
+void up_axis(int p, int n2, out int b0, out int nx, out float wgt) {
+    int base = (p - 1) >> 1;
+    wgt = ((p & 1) == 0) ? 0.75 : 0.25;
+    if (base < 0 || base + 1 >= n2) wgt = 0.0;
+    b0 = clamp(base, 0, n2 - 1);
+    nx = clamp(b0 + 1, 0, n2 - 1);
+}
+
+// The 2x bilinear upsample of x90 at fine pixel (x, y), lane `lane` (model: up2_bilinear / u15_up), every f16
+// op rounded in the model's order: f16(f16(f16(f16((1-b) f16((1-a) t1)) + f16((1-b) f16(a t2))) + f16(b f16((1-a) t3)))
+// + f16(b f16(a t4))).
+float up2_tap(uint lane, int x, int y, int W2, int H2) {
+    int bx, nx, by, ny;
+    float a, b;
+    up_axis(x, W2, bx, nx, a);
+    up_axis(y, H2, by, ny, b);
+    const float one = 1.0;
+    float t1 = x90c(lane, bx, by, W2), t2 = x90c(lane, nx, by, W2);
+    float t3 = x90c(lane, bx, ny, W2), t4 = x90c(lane, nx, ny, W2);
+    float r = rh(rh((one - b) * rh((one - a) * t1)) + rh((one - b) * rh(a * t2)));
+    r = rh(r + rh(b * rh((one - a) * t3)));
+    return rh(r + rh(b * rh(a * t4)));
+}
+
+// The kernel's f16 sigmoid of an f32 f16-valued h: f16(v_rcp_f32(1 + 2**(-log2e h))).
+float u15_sig(float h) {
+    const float F32_NEG_L2E = -1.44269502162933349609375;   // f32 0xbfb8aa3b
+    float e = exp2(F32_NEG_L2E * h);
+    return rh(1.0 / (1.0 + e));
+}
+
+// NeuralHub's piecewise f32 tanh of unit 15 (model u15_tanh): polynomial for |x| <= 0.625, else the exp branch.
+float u15_tanh(float x) {
+    const float F32_LOG2E = 1.44269502162933349609375;    // f32 0x3fb8aa3b
+    float ax = abs(x);
+    float y = ax * ax;
+    float c0 = uintBitsToFloat(0xBBBAC73Du), c1 = uintBitsToFloat(0x3CA908C9u);
+    float c2 = uintBitsToFloat(0xBD5C1C4Eu), c3 = uintBitsToFloat(0x3E088382u);
+    float c4 = uintBitsToFloat(0xBEAAAA99u);
+    float p = fma(c0, y, c1);
+    p = fma(y, p, c2);
+    p = fma(y, p, c3);
+    p = fma(y, p, c4);
+    float axp = ax * p;
+    float poly = fma(y, axp, ax);
+    float a = ax + ax;
+    float t = F32_LOG2E * a;
+    float k = roundEven(t);
+    float eps = fma(F32_LOG2E, a, -t);
+    float tail = fma(a, uintBitsToFloat(0x32A5705Fu), eps);
+    float frac = (t - k) + tail;
+    float e2 = ldexp(exp2(frac), int(k));
+    float s = 1.0 + e2;
+    float rcp = 1.0 / s;
+    float expb = fma(rcp, -2.0, 1.0);
+    float mag = (ax <= uintBitsToFloat(0x3F200000u)) ? poly : expb;
+    return uintBitsToFloat((floatBitsToUint(mag) & 0x7FFFFFFFu) | (floatBitsToUint(x) & 0x80000000u));
+}
+
+// ---- the f64 tanh of the od8 straddle fallback (model: np.tanh(float64) rounded to f32) -------------------
+// The kernel evaluates it in f64, which the port's device does not run (no shaderFloat64 is enabled), so it is
+// emulated with double-float (hi, lo) f32 pairs (about 1e-14 relative): exp(2|x|) = 2^k exp(r) with
+// |r| <= ln2/2 (ln2 as a pair), a 17-term Taylor series in pairs, tanh = (E - 1) / (E + 1), and the hi part of
+// the normalised pair is the f32 result. |x| < 2^-12 rounds to x; |x| > 20 is 1.
+vec2 df_quick(float a, float b) { precise float s = a + b; return vec2(s, b - (s - a)); }
+vec2 df_two(float a, float b) { precise float s = a + b; precise float bb = s - a; return vec2(s, (a - (s - bb)) + (b - bb)); }
+vec2 df_add(vec2 a, vec2 b) {
+    vec2 s = df_two(a.x, b.x);
+    vec2 t = df_two(a.y, b.y);
+    s.y += t.x;
+    s = df_quick(s.x, s.y);
+    s.y += t.y;
+    return df_quick(s.x, s.y);
+}
+vec2 df_mul(vec2 a, vec2 b) {
+    precise float p = a.x * b.x;
+    precise float e = fma(a.x, b.x, -p);
+    e += a.x * b.y + a.y * b.x;
+    return df_quick(p, e);
+}
+vec2 df_div(vec2 a, vec2 b) {
+    float q1 = a.x / b.x;
+    vec2 r = df_add(a, -df_mul(vec2(q1, 0.0), b));
+    float q2 = r.x / b.x;
+    r = df_add(r, -df_mul(vec2(q2, 0.0), b));
+    float q3 = r.x / b.x;
+    return df_add(df_quick(q1, q2), vec2(q3, 0.0));
+}
+float tanh64(float x) {
+    float ax = abs(x);
+    if (ax < 0.000244140625) return x;
+    if (ax > 20.0) return (x < 0.0) ? -1.0 : 1.0;
+    const vec2 LN2P = vec2(0.6931471824645996, -1.9046542121259336e-09);
+    const vec2 IF[17] = vec2[17](vec2(4.7794772561329454e-14, 7.62544404448643e-22), vec2(7.647163609812713e-13, 1.2200710471178288e-20), vec2(1.147074536050896e-11, 2.372207689231238e-19), vec2(1.6059044372074283e-10, -5.352526511562726e-18), vec2(2.0876755879584152e-09, 1.1082839147459852e-16), vec2(2.5052107943679403e-08, 4.4176230446483665e-16), vec2(2.755731998149713e-07, -7.575112209051195e-15), vec2(2.7557318844628753e-06, 3.793571224297229e-14), vec2(2.4801587642286904e-05, -3.40699609366682e-13), vec2(0.00019841270113829523, -2.725596874933456e-12), vec2(0.0013888889225199819, -3.3631094437103215e-11), vec2(0.008333333767950535, -4.34617203337595e-10), vec2(0.0416666679084301, -1.2417634698280722e-09), vec2(0.1666666716337204, -4.967053879312289e-09), vec2(0.5, 0.0), vec2(1.0, 0.0), vec2(1.0, 0.0));   // 1/n! for n = 16 .. 0 (Horner, highest first)
+    vec2 y = vec2(2.0 * ax, 0.0);
+    float k = roundEven(y.x * 1.44269502162933349609375);
+    vec2 r = df_add(y, df_mul(vec2(-k, 0.0), LN2P));
+    vec2 p = IF[0];
+    for (int n = 1; n < 17; ++n) p = df_add(df_mul(p, r), IF[n]);
+    vec2 e = p * exp2(k);
+    float t = df_div(df_add(e, vec2(-1.0, 0.0)), df_add(e, vec2(1.0, 0.0))).x;
+    return (x < 0.0) ? -t : t;
+}
+
+// The E0c1a factor: e = f16(2**prod) with the kernel's fix-up (prod bits 0x11c5 -> 0x3c01).
+float sm_e(float prod) {
+    float e = rh(exp2(prod));
+    return (f16_enc(prod) == 0x11C5u) ? f16_dec(0x3C01u) : e;
 }
 
 void main() {
@@ -365,7 +515,8 @@ void main() {
         barrier();
     }
 
-    // ---- 5. out; fp8 copy of out kept in s_a for the down projection; in-range tokens written
+    // ---- 5. out. Units 0..14: fp8 store (in-range tokens) and s_a = q8(out), kept for the down projection and the
+    // heads. Unit 15: s_a = f16(X1 + f16(s1d4 mo)), the f16 block output the heads read (no clip, no fp8 store).
     const bool m4 = (mode == 4);
     [[unroll]] for (uint i = 0u; i < 40u; ++i) {
         if (i < npair) {
@@ -373,31 +524,179 @@ void main() {
             uint t = p / C, c = p % C;
             float mo = rh(acc[i] + vec16(7, c));
             float x1 = float(s_a[t * CM + c]);
-            float ov = clamp(x1 + rh(ls2 * mo), -448.0, 448.0);
             int tx = ox + int(t & 7u), ty = oy + int(t >> 3u);
             bool in_range = tx >= 0 && tx < W && ty >= 0 && ty < H;
-            if (in_range) {
-                if (!m4) {
-                    out_act[pidx(c, uint(tx), uint(ty), Wu, Hu)] = uint8_t(e4m3_enc(ov));
-                } else {
-                    uint base = (uint(ty) * Wu + uint(tx)) * 8u;   // O98: [N][4] f16, lane 3 = 0
-                    if (c < 3u) {
-                        uint bits = f16_enc(rh(ov));
-                        out_act[base + 2u * c] = uint8_t(bits & 0xFFu);
-                        out_act[base + 2u * c + 1u] = uint8_t(bits >> 8u);
-                    }
-                    if (c == 0u) {
-                        out_act[base + 6u] = uint8_t(0);
-                        out_act[base + 7u] = uint8_t(0);
-                    }
-                }
+            if (!m4) {
+                float ov = clamp(x1 + rh(ls2 * mo), -448.0, 448.0);
+                if (in_range) out_act[pidx(c, uint(tx), uint(ty), Wu, Hu)] = uint8_t(e4m3_enc(ov));
+                s_a[t * CM + c] = float16_t(q8f(ov));
+            } else {
+                s_a[t * CM + c] = float16_t(rh(x1 + rh(ls2 * mo)));
             }
-            s_a[t * CM + c] = float16_t(q8f(ov));
         }
     }
     barrier();
 
-    // ---- 6. down projection (modes 0 / 1): 2 x 2 blocks of the window, each a whole down pixel
+    // ---- 6. heads (flags bit 0 = o98 present). Encoders and decoders: 64 tokens x nrow gates (s_g), then the o98
+    // lanes (global, in-range tokens) and s_o; encoders with oa0 (flags bit 1) average their own 2 x 2 blocks.
+    // Unit 15: one thread per token reads the block channels and writes the five unit-15 outputs.
+    const bool enc = (unit_in < 6);        // units 0..5: modes 5 / 1 / 0, the encoder heads
+    const bool dec = (mode == 3);          // decoder heads (units 7 / 9 / 11 / 13)
+    const bool has_o98 = (flags_in & 1) != 0, has_oa0 = (flags_in & 2) != 0;
+    const float s1 = s1d0();
+    if (has_o98 && !m4) {
+        // 6a. gates g_r = f16(1 / (1 + exp(-z_r))), z_r = f16 chain of v1b8[r] and the K=32 chunks of m108[r] . q8(out)
+        {
+            uint t = tid >> 2u, r = tid & 3u;
+            if (r < (dec ? 4u : 3u)) {
+                float z = wf16(wbase(15) + 2u * r);
+                const uint mb = wbase(14);
+                for (uint k0 = 0u; k0 < C; k0 += 32u) {
+                    float d = 0.0;
+                    for (uint k = k0; k < k0 + 32u; ++k) d += float(s_a[t * CM + k]) * wfp8(mb + frag_u(r, k, C));
+                    z = rh(z + d);
+                }
+                s_g[t * 4u + r] = float16_t(rh(1.0 / (1.0 + exp(-z))));
+            }
+        }
+        barrier();
+        // 6b. o98 lanes 0..2 (lane 3 = 0) of the in-range tokens; s_o keeps them for oa0
+        {
+            uint t = tid >> 2u, c = tid & 3u;
+            int tx = ox + int(t & 7u), ty = oy + int(t >> 3u);
+            bool inr = tx >= 0 && tx < W && ty >= 0 && ty < H;
+            float v = 0.0;
+            if (inr && c < 3u) {
+                uint pix = uint(ty) * Wu + uint(tx);
+                float x88c = x88_at((pix * 4u + c) * 2u);
+                float g = float(s_g[t * 4u + c]);
+                if (dec) {
+                    float gate = float(s_g[t * 4u + 3u]);
+                    float up = up2_tap(c, tx, ty, W / 2, H / 2);
+                    float inv = rh(1.0 - gate);
+                    float t1 = rh(s1 * g), t2 = rh(t1 * up), t3 = rh(t2 * gate), t4 = rh(inv * x88c);
+                    v = rh(t3 + t4);
+                } else {
+                    v = rh(rh(s1 * g) * x88c);
+                }
+                v = min(v, 65504.0);
+            }
+            s_o[t * 4u + c] = float16_t(v);
+            if (inr) {
+                uint base = (uint(ty) * Wu + uint(tx)) * 8u + 2u * c;
+                uint bits = f16_enc(v);
+                out_c[base] = uint8_t(bits & 0xFFu);
+                out_c[base + 1u] = uint8_t(bits >> 8u);
+            }
+        }
+        barrier();
+        // 6c. oa0 (encoders, units 0..4): the 2 x 2 blocks (even-aligned, inside one window) at the next level
+        if (enc && has_oa0 && tid < 64u) {
+            uint blk = tid >> 2u, c = tid & 3u;
+            uint bi = blk & 3u, bj = blk >> 2u;
+            uint t00 = (2u * bj) * 8u + 2u * bi;
+            float q0 = rh(0.25 * float(s_o[t00 * 4u + c]));
+            float q1 = rh(0.25 * float(s_o[(t00 + 1u) * 4u + c]));
+            float q2 = rh(0.25 * float(s_o[(t00 + 8u) * 4u + c]));
+            float q3 = rh(0.25 * float(s_o[(t00 + 9u) * 4u + c]));
+            int X = ox / 2 + int(bi), Y = oy / 2 + int(bj);
+            if (X >= 0 && X < W / 2 && Y >= 0 && Y < H / 2) {
+                float v = min(rh(rh(q0 + q1) + rh(q2 + q3)), 65504.0);
+                uint bits = f16_enc(v);
+                uint base = (uint(Y) * (Wu / 2u) + uint(X)) * 8u + 2u * c;
+                out_d[base] = uint8_t(bits & 0xFFu);
+                out_d[base + 1u] = uint8_t(bits >> 8u);
+            }
+        }
+        barrier();
+    }
+    if (m4 && has_o98 && tid < 64u) {
+        // unit 15 (E0bd4 / E0c02 / E0c16 / E0c1a / E0c1e), token tid
+        const uint t = tid;
+        const int tx = ox + int(t & 7u), ty = oy + int(t >> 3u);
+        if (tx >= 0 && tx < W && ty >= 0 && ty < H) {
+            float h[18];
+            for (uint c = 0u; c < 18u; ++c) h[c] = float(s_a[t * CM + c]);
+            const uint pix = uint(ty) * Wu + uint(tx);
+            // o98: the dec0 blend (lanes 0..2), lane 3 = clamp(f16(inv x88_3))
+            float sgv[4];
+            for (uint c = 0u; c < 4u; ++c) sgv[c] = u15_sig(h[c]);
+            const float gate = sgv[3];
+            const float inv = rh(1.0 - gate);
+            for (uint c = 0u; c < 4u; ++c) {
+                float v;
+                if (c < 3u) {
+                    float kk = rh(s1 * sgv[c]);
+                    float prod = rh(kk * up2_tap(c, tx, ty, W / 2, H / 2));
+                    float tt = rh(prod * gate);
+                    v = rh(tt + rh(inv * x88_at((pix * 4u + c) * 2u)));
+                } else {
+                    v = rh(0.0 + rh(inv * x88_at((pix * 4u + 3u) * 2u)));
+                }
+                v = min(v, 65504.0);
+                uint bits = f16_enc(v);
+                uint base = pix * 8u + 2u * c;
+                out_c[base] = uint8_t(bits & 0xFFu);
+                out_c[base + 1u] = uint8_t(bits >> 8u);
+            }
+            // render-resolution outputs (guards y < Hr, x < Wr)
+            if (ty < Hr_in && tx < Wr_in) {
+                const uint rp = uint(ty) * uint(Wr_in) + uint(tx);
+                // E0c02 (oc0): i8 x 4 = rndne(127 * clamp(f16(tanh(block ch 14..17)), -1, 1))
+                for (uint c = 0u; c < 4u; ++c) {
+                    float th = rh(u15_tanh(h[14u + c]));
+                    float v = clamp(th, -1.0, 1.0);
+                    uint bt = uint(int(roundEven(127.0 * v))) & 0xFFu;
+                    out_e[rp * 4u + c] = uint8_t(bt);
+                }
+                // E0c16 (oc8): u8 x 4 gates, lane 3 = 0
+                for (uint c = 0u; c < 3u; ++c) {
+                    float g = u15_sig(h[4u + c]);
+                    out_f[rp * 4u + c] = uint8_t(uint(int(clamp(roundEven(255.0 * g), -128.0, 255.0))) & 0xFFu);
+                }
+                out_f[rp * 4u + 3u] = uint8_t(0);
+                // E0c1a (od0): four-way softmax of block channels 10..13, all f16
+                {
+                    float p0 = h[10], p1 = h[11], p2 = h[12], p3 = h[13];
+                    float m = max(max(p0, p1), max(p2, p3));
+                    const float F16_LOG2E = 1.4423828125;   // f16 0x3dc5
+                    float e0 = sm_e(rh(F16_LOG2E * rh(p0 - m)));
+                    float e1 = sm_e(rh(F16_LOG2E * rh(p1 - m)));
+                    float e2 = sm_e(rh(F16_LOG2E * rh(p2 - m)));
+                    float e3 = sm_e(rh(F16_LOG2E * rh(p3 - m)));
+                    float tot = rh(rh(e0 + e2) + rh(e1 + e3));
+                    float rcp = rh(1.0 / tot);
+                    float es[4] = float[4](e0, e1, e2, e3);
+                    for (uint c = 0u; c < 4u; ++c) {
+                        float ratio = rh(es[c] * rcp);
+                        out_g[rp * 4u + c] = uint8_t(uint(int(clamp(roundEven(255.0 * ratio), -128.0, 255.0))) & 0xFFu);
+                    }
+                }
+                // E0c1e (od8): aniso lanes 0..2 (lane 3 = 0)
+                {
+                    float A = dec0_s0() * u15_sig(clamp(h[7], -20.0, 20.0));
+                    float B = dec0_s0() * u15_sig(clamp(h[8], -20.0, 20.0));
+                    float xx = dec0_f0() * h[9];
+                    float tt = u15_tanh(xx);
+                    float ab = A * B;
+                    uint tb = floatBitsToUint(tt);
+                    float vlo = rh(ab * uintBitsToFloat(tb - 3u));
+                    float vhi = rh(ab * uintBitsToFloat(tb + 3u));
+                    float l0 = rh(A * A), l1 = rh(B * B);
+                    float l2 = (vlo == vhi) ? vlo : rh(ab * tanh64(xx));
+                    float ls[4] = float[4](l0, l1, l2, 0.0);
+                    for (uint c = 0u; c < 4u; ++c) {
+                        uint bits = f16_enc(ls[c]);
+                        uint base = rp * 8u + 2u * c;
+                        out_h[base] = uint8_t(bits & 0xFFu);
+                        out_h[base + 1u] = uint8_t(bits >> 8u);
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- 7. down projection (modes 0 / 1): 2 x 2 blocks of the window, each a whole down pixel
     if ((mode == 0 || mode == 1) && Cdown > 0u) {
         for (uint i = 0u; i < 10u; ++i) {
             uint p = tid + 256u * i;
