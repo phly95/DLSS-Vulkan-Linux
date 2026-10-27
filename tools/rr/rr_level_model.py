@@ -221,7 +221,7 @@ DEFAULTS = dict(
     act="nhgelu",          # gelu (tanh form) | silu | erfgelu | nr    (the MLP activation)
     v128="after_attn",     # after_attn: v128 added to the post-attention residual; off: not added
     entry_act="none",      # mode 1 entry merge (mC8): none | gelu     GUESS
-    enc0_act="gelu",       # mode 5: act between m1d8 and m1f8        GUESS
+    enc0_act="nhgelu",     # mode 5: act between m1d8 and m1f8 (ISA: the 0xad30/0x3698 spline, R9b)
     head_in="q8",          # mode 3 / encoder heads read fp8(out) (q8) or the f16 block output (f16)  GUESS
     proj_clamp=6.28125,    # the down-projection's clamp (0 = none); borrowed from SR's measured clamp
     down_bias=1,           # v170 added to the down-projection
@@ -229,7 +229,7 @@ DEFAULTS = dict(
     skip_at="before",      # mode 2: skip added before the block (before) | after | both | none
     mode4_guess=1,         # 1: mode 4's O98 lanes 0..2 = block output channels 0..2; 0: zeros   GUESS
     blk="v2",              # v1: the first hypothesis (4x4 windows, no LayerScale); v2: block_v2 (Review R7)
-    relpos=1, den16=1, ls=1, acc16=1, chain=1, smax="isa", ctx16=2, chain_io=1, up8=1, upref="low", lscale=1.0, qq=1, pv8=1, skip_mix="s6skip", head="v2",   # block_v2: relpos bias, f16 softmax den + rcp, LayerScale, f16 K-chunk sums
+    relpos=1, den16=1, ls=1, acc16=1, chain=1, smax="isa", ctx16=2, chain_io=1, up8=1, upref="low", entry8=1, enc0_8=1, lscale=1.0, qq=1, pv8=1, skip_mix="s6skip", head="v2",   # block_v2: relpos bias, f16 softmax den + rcp, LayerScale, f16 K-chunk sums
 )
 
 
@@ -1000,6 +1000,8 @@ def model_unit(L, blobbytes, cfg, inputs, Wt):
         if cfg["chain_io"]:
             h = q8(act_fn(chain_mm(F, Wt["m1d8f"], Wt["v218_f"]), cfg["enc0_act"]))
             X = chain_mm(h, Wt["m1f8f"], Wt["v230_f"])
+            if cfg["entry8"] and cfg["enc0_8"]:
+                X = q8(np.clip(X, -448, 448))
         else:
             h = np.asarray(F @ Wt["m1d8f"].T + Wt["v218_f"], np.float32)
             h = q8(act_fn(h, cfg["enc0_act"]))
@@ -1009,6 +1011,8 @@ def model_unit(L, blobbytes, cfg, inputs, Wt):
         X = chain_mm(merge2x2(inputs["in"]), Wt["mC8f"], Wt["v188_f"]) if cfg["chain_io"] else \
             np.asarray(merge2x2(inputs["in"]) @ Wt["mC8f"].T + Wt["v188_f"], np.float32)
         X = (act_fn(X, cfg["entry_act"])).astype(np.float16).astype(np.float32)
+        if cfg["entry8"]:                    # staged in LDS as fp8, as the mode-2 up-projection
+            X = q8(np.clip(X, -448, 448))
         notes.append("mode 1 entry merge (GUESS act): mC8 @ merge2x2(in) + v188")
     elif mode == 2:                                                # decoder: up from the level below, + skip
         X = upsample(inputs["in"], Wt, cfg, H, W, C)

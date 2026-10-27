@@ -239,3 +239,12 @@ R9b addendum: the border rule. k_level (ISA 0x1d0..0x280 of `<160,8,0,0,0,1>`) a
 r = n-1 when b < 0. The model's old single reflection clipped beyond the double fold to 0.
 Unit 5 (8 x 5, frame-1 shift (0,4): rows 8..11) goes from 81.03% to **99.875%**. Both models now
 use the ISA rule, which is identical to a single reflection whenever |p| <= 2(n-1).
+
+R9b addendum 2: the entries. Mode 1's merge (unit 1) and mode 5's two-GEMM entry (unit 0) are
+staged in LDS as **fp8** after a bias-first K=32 chain, exactly as the mode-2 up-projection:
+- mode 1: ISA 0x1200..0x14f8 of `<64,2,1,96,0,1>`, clamp +-448, cvt_pk_fp8, ds_store; no activation;
+- mode 5: the activation between its GEMMs is NeuralHub's f16 GELU spline (the 0xad30 / 0x3698
+  constants at the start of `<32,2,5,0,0,4>`), then fp8 staging.
+
+Unit 0 goes 31.3% -> **99.77%** and unit 1 42.2% -> **99.74%**. All 16 k_level block outputs are
+now **99.73-99.89% bit-exact vs the oracle on frames 0 and 1**; the down projections are 91.4-94.1%.
