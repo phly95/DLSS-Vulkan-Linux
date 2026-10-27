@@ -341,7 +341,10 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         add_pipe("sr_unorm8_table", 1, 0);
         if (preset == "L") {
             add_pipe("sr_enc0L_in", 11, 148);
-            add_pipe("sr_l0", 3, 0);
+            // k_sr_l0: 7 bindings (see sr_l0.comp), push = L0Args' own offsets 0x48..0x67 plus
+            // the port's mode word at 0x68 (0 = k_sr_l0<0,2>, 1 = k_sr_l0<2,2> - the template
+            // parameter has no slot in the oracle's 104-byte args).
+            add_pipe("sr_l0", 7, 112);
         }
     } else {
         add_pipe("rr_gather", 14, 8);
@@ -477,6 +480,19 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
     c->w_enc0 = create_buffer(dev, phys, 65536, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     if (mode == "sr") c->wrep = create_buffer(dev, phys, 16 * 1024 * 1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->w_dec0 = create_buffer(dev, phys, 65536, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+
+    // Preset L's two level-0 tensors (oracle sr_L dump: l0_in 1419264 B = 264x168x32 at 256x144
+    // input = (W0+8)*(H0+8)*32, l0_skip 1310720 B = W0*H0*32).  k_sr_enc0L_in writes l0_in (its
+    // oracle pointer slot 0x118, which the 280-byte Enc0Args cannot push, so the port's binding 9
+    // carries it), k_sr_l0<0,2> reads it and rewrites t0 (t_act[0], stage0's input) plus l0_skip,
+    // and k_sr_l0<2,2> reads l0_skip.  They live in the `ue` map (RR's, unused in SR) so no header
+    // changes are needed; the destructor already destroys ue.
+    if (mode == "sr" && preset == "L") {
+        c->ue["l0_in"] = create_buffer(dev, phys, size_t(W0 + 8) * (H0 + 8) * 32,
+                                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        c->ue["l0_skip"] = create_buffer(dev, phys, size_t(W0) * H0 * 32,
+                                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    }
 
     if (mode == "rr") {
         // U-Net and post-input buffers at the oracle's byte sizes (dump buffers.json).  The U-Net
@@ -670,6 +686,13 @@ void FrameChain::set_injection(const std::string& dir, const std::string& mask) 
             {"t8", &t_act[8]},
             {"out", &out},
         };
+        // Preset L's level-0 tensors: the sr_L dump writes 002.l0_in.bin at the enc0L_in point and
+        // 003.l0_skip.bin at the l0<0> point; without these targets the enc0/l0 masks have nothing
+        // to inject (the flat rows of the 2026-10-27 L leverage table).
+        for (const char* nm : {"l0_in", "l0_skip"}) {
+            auto it = ue.find(nm);
+            if (it != ue.end()) inj_targets[nm] = &it->second;
+        }
     } else {
         inj_targets = {
             {"E0c6e", &g_col}, {"E0c72", &g_dep}, {"E0c76", &g_mv},
@@ -896,10 +919,20 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
 
     if (mode == "sr") {
         // Dump launch numbers per dispatch point (identical in frame 0 and frame 1 dumps).
-        static const int sr_l[] = {/*gather*/0, /*enc0*/2, /*stage0*/3, /*stage1*/4,
-                                   /*tube0*/5, /*tube1*/6, /*tube2*/7, /*tube3*/8, /*tube4*/9,
-                                   /*tube5*/10, /*stage8*/11, /*stage9*/12,
-                                   /*dec0*/13, /*post*/14, /*downsample*/15};
+        // Preset M: enc0 at 2, stage0..stage9 at 3..12, sr_dec0 13, post 14, downsample 15.
+        // Preset L inserts k_sr_l0 at launch 3 (l0<0>, between enc0L_in and stage0) and runs
+        // k_sr_l0<2,2> at 14 where M has sr_dec0, so stage0..stage9 are 4..13 and
+        // dec0/post/downsample are 14/15/16 (oracle sr_L launches.jsonl; the M-based table was
+        // what made the 2026-10-27 L leverage rows flat - docs/notes/chain-leverage.md).
+        static const int sr_l_M[] = {/*gather*/0, /*enc0*/2, /*stage0*/3, /*stage1*/4,
+                                     /*tube0*/5, /*tube1*/6, /*tube2*/7, /*tube3*/8, /*tube4*/9,
+                                     /*tube5*/10, /*stage8*/11, /*stage9*/12,
+                                     /*dec0*/13, /*post*/14, /*downsample*/15};
+        static const int sr_l_L[] = {/*gather*/0, /*enc0L_in*/2, /*stage0*/4, /*stage1*/5,
+                                     /*tube0*/6, /*tube1*/7, /*tube2*/8, /*tube3*/9, /*tube4*/10,
+                                     /*tube5*/11, /*stage8*/12, /*stage9*/13,
+                                     /*l0<2>*/14, /*post*/15, /*downsample*/16};
+        const int* sr_l = (preset == "L") ? sr_l_L : sr_l_M;
         // 1. Gather
         {
             uint8_t push[88] = {0};
@@ -966,9 +999,27 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             std::memcpy(push + 228, &mvpitch, 4);
             std::memcpy(push + 252, &ldr, 4);
             if (preset == "L") {
-                dispatch(cmd, "sr_enc0L_in", {&g_col, &g_dep, mvhi ? &g_mvhi : &g_mv, &prev_mvec[p], &dhist, &hidden[p],
-                                     &prev_mvec[p ^ 1], &mv_ero, &mv_nondil, &t_act[0], &w_enc0}, push, 240, (W * H + 63) / 64, 1, 1);
-                dispatch(cmd, "sr_l0", {&wbuf, &t_act[0], &t_act[1]}, nullptr, 0, 32, 1, 1);
+                // Oracle launch 2 (k_sr_enc0L_in): the port's binding 9 carries the l0_in pointer
+                // (the 280-byte Enc0Args cannot push +0x118), so l0_in lands in its own buffer now
+                // - t_act[0] is t0, which k_sr_l0<0,2> rewrites from l0_in and stage0 reads.
+                // The oracle reads hidden0 (ptr 0x28) on both frames (the dump's own name), not
+                // the M ping-pong slot.
+                dispatch(cmd, "sr_enc0L_in", {&g_col, &g_dep, mvhi ? &g_mvhi : &g_mv, &prev_mvec[p], &dhist, &hidden[0],
+                                     &prev_mvec[p ^ 1], &mv_ero, &mv_nondil, &ue["l0_in"], &w_enc0}, push, 240, (W * H + 63) / 64, 1, 1);
+                // Oracle launch 3 (k_sr_l0<0,2>): l0_in -> embedding (ReLU clamp [0,448]) -> the
+                // C=32 block over the padded (+2) border -> mode-0 down projection -> t0
+                // (t_act[0]); l0_skip = the fp8 block output.  L0Args 0x48.. : (W0,H0) level-0
+                // grid, (sx,sy) window shift (f0 (2,2), f1 (0,2)), (Wr,Hr) render grid.
+                uint8_t lpush[112] = {0};
+                const int l0sx = (p == 0) ? 2 : 0, l0sy = 2, l0mode = 0;
+                std::memcpy(lpush + 0x48, &W0, 4); std::memcpy(lpush + 0x4c, &H0, 4);
+                std::memcpy(lpush + 0x50, &l0sx, 4); std::memcpy(lpush + 0x54, &l0sy, 4);
+                std::memcpy(lpush + 0x58, &W, 4); std::memcpy(lpush + 0x5c, &H, 4);
+                std::memcpy(lpush + 0x68, &l0mode, 4);
+                dispatch(cmd, "sr_l0", {&w_enc0, &ue["l0_in"], &ue["l0_skip"], &t_act[0],
+                                        &ue["l0_skip"], &ue["l0_in"], &ue["l0_in"]},
+                         lpush, 112, (W0 + l0sx + 7) / 8, (H0 + l0sy + 3) / 4, 1);
+                inject_after(cmd, "l0", 3);
             } else {
                 dispatch(cmd, "sr_enc0", {&g_col, &g_dep, mvhi ? &g_mvhi : &g_mv, &prev_mvec[p], &dhist, &hidden[p],
                                      &prev_mvec[p ^ 1], &mv_ero, &mv_nondil, &t_act[0], &w_enc0, &expo}, push, 256, W0 / 8, H0 / 8, 1);
@@ -1020,8 +1071,28 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             inject_after(cmd, st_pt[st], sr_l[2 + st]);
         }
 
-        // 5. Dec0
+        // 5. Dec0 (preset M) or k_sr_l0<2,2> (preset L, oracle launch 14: t8 + l0_skip ->
+        //    gates/factors/aniso/hidden0 - preset L has no sr_dec0, docs/notes/k_sr_dec0.md)
         {
+            if (preset == "L") {
+                // L0Args 0x48.. : (W0,H0), window shift (f0 (0,0), f1 (2,0)), (Wr,Hr),
+                // +0x60 s0 / +0x64 f0 = params.json dec0_s0 / dec0_f0 (the aniso scales;
+                // dec0_f1 is not passed to this kernel), +0x68 the port's mode word.
+                uint8_t lpush[112] = {0};
+                const int l2sx = (p != 0) ? 2 : 0, l2sy = 0, l2mode = 1;
+                std::memcpy(lpush + 0x48, &W0, 4); std::memcpy(lpush + 0x4c, &H0, 4);
+                std::memcpy(lpush + 0x50, &l2sx, 4); std::memcpy(lpush + 0x54, &l2sy, 4);
+                std::memcpy(lpush + 0x58, &W, 4); std::memcpy(lpush + 0x5c, &H, 4);
+                std::memcpy(lpush + 0x60, &dec0_s0, 4);
+                std::memcpy(lpush + 0x64, &dec0_f0, 4);
+                std::memcpy(lpush + 0x68, &l2mode, 4);
+                // The dump writes hidden0 (0x40) on both frames; L0Args 0x18/0x20 are NULL, so
+                // the hidden head has no hin/mv input (no warp, no z gate).
+                dispatch(cmd, "sr_l0", {&w_dec0, &t_act[8], &ue["l0_skip"], &gates, &factors,
+                                        &aniso, &hidden[0]},
+                         lpush, 112, (W0 + l2sx + 7) / 8, (H0 + l2sy + 3) / 4, 1);
+                inject_after(cmd, "dec0", sr_l[12]);
+            } else {
             uint8_t push[160] = {0};
             std::memcpy(push + 64, &W, 4); std::memcpy(push + 68, &H, 4);
             std::memcpy(push + 72, &W, 4); std::memcpy(push + 76, &H, 4);
@@ -1057,6 +1128,7 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             std::memcpy(push + 152, &F28yH, 4);
             dispatch(cmd, "sr_dec0", {&t_act[8], &prev_mvec[p ^ 1], &hidden[p], &gates, &factors, &aniso, &hidden[p ^ 1], &w_dec0}, push, 160, W0 / 8, H0 / 8, 1);
             inject_after(cmd, "dec0", sr_l[12]);
+            }
         }
 
         // 6. Post: NeuralHub's k_sr_post<false,12,16,false,false> (SR M, oracle launch 14). The 256-byte push

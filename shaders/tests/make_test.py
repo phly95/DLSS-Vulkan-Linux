@@ -407,18 +407,70 @@ def make_test(name, out_dir):
             ]
         }
     elif name == "sr_l0":
-        open(os.path.join(out_dir, "wbuf.bin"), "wb").write(np.zeros(4096, dtype=np.uint8).tobytes())
-        in_data = np.linspace(1, 250, 2048, dtype=np.uint8).tobytes()
-        open(os.path.join(out_dir, "in_act.bin"), "wb").write(in_data)
-        bindings = [
-            {"binding": 0, "file": "wbuf.bin"},
-            {"binding": 1, "file": "in_act.bin"},
-            {"binding": 2, "bytes": 2048, "output": "out_act", "type": "u8"}
-        ]
+        # k_sr_l0 (preset L), mode 0 = k_sr_l0<0,2>: l0_in -> embed (ReLU clamp [0,448]) -> the
+        # C=32 block over the padded (+2) border -> mode-0 down projection -> t0, plus l0_skip.
+        # 5x5 workgroups of one 8x4 tile (two 4x4 windows) with shift (2,2) like frame 0, so the
+        # +2 border reads and the in-range guards all run; W0=32/H0=16 keeps the buffers small.
+        # Weights: the real enc0.bin blob shape (30464 B: dither, W1/W2 frag(32,32) + f16 biases,
+        # the 24192 B layer) but synthetic: matrix bytes stay in the small-magnitude codes
+        # (<= 0x1F: |v| <= 0.117) so the embedding never saturates the [0,448] clamp or the
+        # +-6.28125 projection clamp, and the f16 vectors span [-1,1] - every output buffer then
+        # varies per pixel (O7 rejects a constant output) and stays finite.
+        w0, h0 = 32, 16
+        sx = sy = 2
+        padded = (w0 + 8) * (h0 + 8) * 32
+        rng = np.random.default_rng(0x51A0)
+        # moderate E4M3 codes (signs alternating): 0x10..0x1f / 0x90..0x9f, |v| <= 0.117
+        codes = np.where(rng.integers(0, 2, 8192 + 2 * 8192 + 4 * 1024) == 0,
+                         0x10 + rng.integers(0, 16, 8192 + 2 * 8192 + 4 * 1024),
+                         0x90 + rng.integers(0, 16, 8192 + 2 * 8192 + 4 * 1024)).astype(np.uint8)
+        dither = ((np.arange(4096, dtype=np.uint64) * 2654435761 + 1013904223) & 0xFF).astype(np.uint8)
+        at = 0
+        blob = bytearray()
+        blob += dither.tobytes()
+        blob += codes[at:at + 1024].tobytes(); at += 1024
+        blob += np.linspace(-1, 1, 32, dtype=np.float16).tobytes()
+        blob += codes[at:at + 1024].tobytes(); at += 1024
+        blob += np.linspace(-1, 1, 32, dtype=np.float16).tobytes()
+        blob += np.linspace(-1, 1, 32, dtype=np.float16).tobytes()        # gain1
+        for h in range(2):
+            blob += codes[at:at + 1024].tobytes(); at += 1024            # Wq
+            blob += codes[at:at + 1024].tobytes(); at += 1024            # Wk
+            blob += np.linspace(-1.0, 1.0, 256, dtype=np.float16).tobytes()  # rel 16x16
+            blob += codes[at:at + 1024].tobytes(); at += 1024            # Wo
+        blob += np.linspace(-1, 1, 32, dtype=np.float16).tobytes()        # v270
+        blob += np.linspace(-1, 1, 32, dtype=np.float16).tobytes()        # gain2
+        for j in range(4):
+            blob += codes[at:at + 1024].tobytes(); at += 1024            # fc1
+            blob += np.linspace(-1, 1, 32, dtype=np.float16).tobytes()    # b1
+            blob += codes[at:at + 1024].tobytes(); at += 1024            # fc2
+            if j == 0:
+                blob += np.linspace(-1, 1, 32, dtype=np.float16).tobytes()  # fc2_bias
+        blob += codes[at:at + 8192].tobytes(); at += 8192                # dn_W frag(64,128)
+        blob += np.linspace(-1, 1, 64, dtype=np.float16).tobytes()        # dn_b
+        assert len(blob) == 30464, len(blob)
+        open(os.path.join(out_dir, "wbuf.bin"), "wb").write(bytes(blob))
+        # l0_in: moderate codes on a deterministic ramp so every pixel differs
+        idx = np.arange(padded, dtype=np.uint64)
+        mix = ((idx * 0x9E3779B97F4A7C15) >> 32).astype(np.uint64)
+        l0 = np.where((mix & 1) == 0, 0x10 + (mix & 0x0F), 0x90 + (mix & 0x0F)).astype(np.uint8)
+        open(os.path.join(out_dir, "in_act.bin"), "wb").write(l0.tobytes())
+        push = bytearray(112)
+        struct.pack_into("<6i", push, 0x48, w0, h0, sx, sy, w0, h0)   # W0 H0 sx sy Wr Hr
+        struct.pack_into("<2f", push, 0x60, 0.0, 0.0)                  # s0 f0 (mode 0: unused)
+        struct.pack_into("<i", push, 0x68, 0)                          # mode 0
         cfg = {
-            "groups": [32, 1, 1],
-            "push": "",
-            "bindings": bindings
+            "groups": [(w0 + sx + 7) // 8, (h0 + sy + 3) // 4, 1],
+            "push": push.hex(),
+            "bindings": [
+                {"binding": 0, "file": "wbuf.bin"},
+                {"binding": 1, "file": "in_act.bin"},
+                {"binding": 2, "file": "in_act.bin"},
+                {"binding": 3, "bytes": (w0 // 2) * (h0 // 2) * 64, "output": "t0", "type": "u8"},
+                {"binding": 4, "bytes": w0 * h0 * 32, "output": "l0_skip", "type": "u8"},
+                {"binding": 5, "file": "in_act.bin", "bytes": 64},
+                {"binding": 6, "file": "in_act.bin", "bytes": 64}
+            ]
         }
     elif name == "rr_gather":
         col = np.linspace(0.1, 1.0, n_pix * 4, dtype=np.float16).tobytes()
