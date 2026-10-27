@@ -179,6 +179,8 @@ private:
     Buffer t_act[9];
     Buffer ae_next, ae_exp;   // rr_ae_final's bindings 2/3 (writeonly, never read back)
     Buffer out, wbuf, w_enc0, w_dec0;
+    // SR only: the row-major fp8 copy of the stage matrices (same offsets as wbuf), for KHR coopMatLoad.
+    Buffer wrep;
 
     // RR (preset F) buffers that have no SR counterpart, keyed by the oracle's buffer name
     // (E0b54..E0be4 U-Net outputs, E0c02/E0c16/E0c1a/E0c1e U-Net outputs read by post_prep,

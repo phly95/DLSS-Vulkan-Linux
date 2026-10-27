@@ -204,6 +204,58 @@ static uint16_t f32_to_f16_rne(float f) {
     return s | uint16_t(((a & 0x3fff) == 0x3000 || (a & 0x1fff) > 0x1000) + (a >> 13) + 0x4000);
 }
 
+// SR weight repack for the cooperative-matrix stage kernels. NeuralHub stores every fp8 matrix of a stage
+// blob in its per-lane WMMA fragment order (frag_off, the same as tools/sr/sr_pack.py frag_offsets); a KHR
+// coopMatLoad needs rows, so wrep holds each matrix as [N][K] row-major (K contiguous) at the same offset.
+// The vectors (f16 gains, biases) and the relpos tables are copied unchanged. The walk is StageWeights'
+// (tools/sr/sr_stage_model.py) and ends exactly at the blob size, which is checked.
+namespace {
+struct SrStageShape { uint32_t C, g, Cn, mode; };
+// tools/sr/sr_pack.py LAYERS: stage0..9 = enc1, enc2, tube0..5, dec2, dec1.
+const SrStageShape kSrStageShape[10] = {
+    {64, 2, 96, 0}, {96, 4, 128, 0}, {128, 4, 0, 1}, {128, 4, 0, 1}, {128, 4, 0, 1},
+    {128, 4, 0, 1}, {128, 4, 0, 1}, {128, 4, 0, 1}, {96, 4, 128, 2}, {64, 2, 96, 2}};
+
+uint32_t sr_frag_off(uint32_t r, uint32_t c, uint32_t cols) {
+    uint32_t u1 = ((r & 0x7FFFFFE1u) | ((r >> 3) & 2u)) + (r & 0xEu) * 2u;
+    uint32_t u5 = 2u * c;
+    uint32_t u9 = 16u * c;
+    uint32_t low = (u5 & 4u) | (c & 1u) | ((c >> 3) & 2u);
+    uint32_t high = ((u5 & 0x10u) << 4) + (u9 & ~0x1FFu) + (cols << 4) * (u1 >> 4);
+    return (low | high) + ((u1 & 0xFu) + (u5 & 8u) * 2u) * 8u;
+}
+
+// Returns false when the walk does not end at the blob size (the stage is then left unrepacked).
+bool sr_repack_stage(const uint8_t* wbuf, uint8_t* wrep, size_t woff, size_t blob_size, const SrStageShape& s) {
+    size_t cur = 0;
+    auto mat = [&](size_t rel, uint32_t rows, uint32_t cols) {
+        for (uint32_t r = 0; r < rows; ++r)
+            for (uint32_t c = 0; c < cols; ++c)
+                wrep[woff + rel + size_t(r) * cols + c] = wbuf[woff + rel + sr_frag_off(r, c, cols)];
+    };
+    const uint32_t C = s.C, Cn = s.Cn;
+    if (s.mode == 2) { mat(cur, 4 * C, Cn); cur += size_t(4) * C * Cn + 8 * C; }
+    cur += 2 * C;                                             // gain1
+    for (uint32_t h = 0; h < s.g; ++h) {
+        mat(cur, 32, C);                                      // Wq
+        mat(cur + 32 * C, 32, C);                             // Wk
+        cur += size_t(64) * C + 512;                          // + relpos (16 x 16 f16)
+        mat(cur, C, 32);                                      // Wo
+        cur += size_t(32) * C;
+    }
+    cur += 4 * C;                                             // v270, gain2
+    for (uint32_t j = 0; j < C / 8; ++j) {
+        mat(cur, 32, C);                                      // fc1
+        cur += size_t(32) * C + 64;                           // + b1
+        mat(cur, C, 32);                                      // fc2
+        cur += size_t(32) * C;
+        if (j == 0) cur += 2 * C;                             // fc2_bias
+    }
+    if (s.mode == 0) { mat(cur, Cn, 4 * C); cur += size_t(4) * C * Cn + 2 * Cn; }   // dn_W, dn_b
+    return cur == blob_size;
+}
+} // namespace
+
 FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
                                const std::string& mode, const std::string& preset,
                                int W, int H, int oW, int oH,
@@ -260,7 +312,7 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         add_pipe("sr_ae_reduce", 2, 32);
         add_pipe("sr_ae_copy", 2, 24);
         add_pipe("sr_enc0", 11, 240);
-        add_pipe("sr_stage", 5, 56);
+        add_pipe("sr_stage", 6, 56);
         add_pipe("sr_tube_split", 3, 56);
         add_pipe("sr_dec0", 8, 160);
         add_pipe("sr_post", 12, 256);
@@ -393,6 +445,7 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
     c->out = create_buffer(dev, phys, size_t(oW) * oH * 16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->wbuf = create_buffer(dev, phys, 16 * 1024 * 1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->w_enc0 = create_buffer(dev, phys, 65536, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    if (mode == "sr") c->wrep = create_buffer(dev, phys, 16 * 1024 * 1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->w_dec0 = create_buffer(dev, phys, 65536, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
     if (mode == "rr") {
@@ -446,6 +499,15 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
             for (size_t i = 0; i < blob.size(); ++i) {
                 if (!blob[i].empty() && woff[i] + blob[i].size() <= c->wbuf.size) {
                     std::memcpy(static_cast<uint8_t*>(c->wbuf.mapped) + woff[i], blob[i].data(), blob[i].size());
+                }
+            }
+            // wrep: the same bytes, then every stage's fp8 matrices rewritten row-major (sr_repack_stage).
+            std::memcpy(c->wrep.mapped, c->wbuf.mapped, c->wbuf.size);
+            for (int i = 0; i < 10; ++i) {
+                if (blob[i].empty() || woff[i] + blob[i].size() > c->wbuf.size) continue;
+                if (!sr_repack_stage(static_cast<const uint8_t*>(c->wbuf.mapped), static_cast<uint8_t*>(c->wrep.mapped),
+                                     woff[i], blob[i].size(), kSrStageShape[i])) {
+                    std::fprintf(stderr, "SR stage %d: blob size %zu does not match its layer walk\n", i, blob[i].size());
                 }
             }
             if (!blob[10].empty() && blob[10].size() <= c->w_enc0.size) {
@@ -532,6 +594,7 @@ FrameChain::~FrameChain() {
     destroy_buffer(dev, wbuf);
     destroy_buffer(dev, w_enc0);
     destroy_buffer(dev, w_dec0);
+    destroy_buffer(dev, wrep);
 
     for (auto& kv : ue) destroy_buffer(dev, kv.second);
     destroy_buffer(dev, rr_dummy);
@@ -881,11 +944,11 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                 std::memcpy(push + 48, &s0, 4); std::memcpy(push + 52, &s1, 4);
                 // binding 4 is the mode-2 skip; the oracle passes no offset 16 in mode 0,
                 // so bind the stage's own input - the shader never reads it here.
-                dispatch(cmd, "sr_stage", {&wbuf, &t_act[0], &t_act[1], &t_act[2], &t_act[0]}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 7) / 8, 1);
+                dispatch(cmd, "sr_stage", {&wbuf, &t_act[0], &t_act[1], &t_act[2], &t_act[0], &wrep}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 3) / 4, 1);
             } else if (st == 1) { dimW = L2w; dimH = L2h; s0 = pe; s1 = 2;
                 std::memcpy(push + 40, &dimW, 4); std::memcpy(push + 44, &dimH, 4);
                 std::memcpy(push + 48, &s0, 4); std::memcpy(push + 52, &s1, 4);
-                dispatch(cmd, "sr_stage", {&wbuf, &t_act[2], &t_act[3], &t_act[4], &t_act[2]}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 7) / 8, 1);
+                dispatch(cmd, "sr_stage", {&wbuf, &t_act[2], &t_act[3], &t_act[4], &t_act[2], &wrep}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 3) / 4, 1);
             } else if (st <= 7) {
                 Buffer* in_b = (st == 2) ? &t_act[4] : (st & 1) ? &t_act[5] : &t_act[6];
                 Buffer* out_b = (st & 1) ? &t_act[6] : &t_act[5];
@@ -898,12 +961,12 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                 std::memcpy(push + 40, &dimW, 4); std::memcpy(push + 44, &dimH, 4);
                 std::memcpy(push + 48, &s0, 4); std::memcpy(push + 52, &s1, 4);
                 // Oracle launch 11: wbuf+1341440, t6 (in), t3 (skip, StageArgs+16), t7 (out).
-                dispatch(cmd, "sr_stage", {&wbuf, &t_act[6], &t_act[7], &t_act[7], &t_act[3]}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 7) / 8, 1);
+                dispatch(cmd, "sr_stage", {&wbuf, &t_act[6], &t_act[7], &t_act[7], &t_act[3], &wrep}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 3) / 4, 1);
             } else { dimW = L1w; dimH = L1h; s0 = po; s1 = 0;
                 std::memcpy(push + 40, &dimW, 4); std::memcpy(push + 44, &dimH, 4);
                 std::memcpy(push + 48, &s0, 4); std::memcpy(push + 52, &s1, 4);
                 // Oracle launch 12: wbuf+1505536, t7 (in), t1 (skip, StageArgs+16), t8 (out).
-                dispatch(cmd, "sr_stage", {&wbuf, &t_act[7], &t_act[8], &t_act[8], &t_act[1]}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 7) / 8, 1);
+                dispatch(cmd, "sr_stage", {&wbuf, &t_act[7], &t_act[8], &t_act[8], &t_act[1], &wrep}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 3) / 4, 1);
             }
             static const char* st_pt[] = {"stage0", "stage1", "tube0", "tube1", "tube2",
                                           "tube3", "tube4", "tube5", "stage8", "stage9"};
