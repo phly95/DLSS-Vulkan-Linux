@@ -207,6 +207,32 @@ per-frame maxima sit well above the medians (SR M frame max 338.110, RR F max 21
 here is a comparison against `srref`; the reference-side numbers in this file were taken in the ROCm
 container and were not re-taken.
 
+## R9 rounding-closure re-measurement (2026-10-27, orchestrator; commits `9eb91dd` + `11f3f49`)
+
+Same commands, idle GPU, medians over the 9 frames of `build/prof1080/sr`
+(`DLSS5_AMD_PROFILE=1`, `build/vk/vk_runner`, shader hash of the combined R9+R9b tree
+`1e42c285471471ad40cc207a50a413ec74bbf371048236b9c0ef48dcc7222566`), with a same-session HEAD
+control (HEAD's `sr_stage.comp` / `sr_tube_split.comp` compiled into `build/agents/orch/head_shaders`,
+everything else identical). Logs: `build/agents/orch/prof_sr_{1,head}.log`.
+
+| per-frame kernel total, ms | R9 port | HEAD control | ratio |
+|---|---:|---:|---:|
+| `sr_stage` (4 dispatches) | **234.187** | 144.468 | 1.621 |
+| `sr_tube_split` (6 dispatches) | **130.985** | 100.622 | 1.302 |
+| whole SR frame (`FRAME_MS`) | 387.476 | 267.406 | 1.449 |
+
+- **The stage-r9 brief's A3 budget (<= 162.014 ms = 135.012 x 1.2) is NOT met**: 234.187 ms is
+  +73.4% over the 135.012 recorded above, +62.1% over this session's HEAD control. The R9 spec's
+  f16 chains put a store / barrier / combine round trip per K=32 group into every projection; the
+  fidelity port is landed (fidelity-first is standing) and a register-chain optimization - which
+  must preserve GPU == model >= 99.9% - is queued as next work.
+- Per-frame `sr_stage` sums in the R9 run: {0: 323.762, 1: 243.089, 2: 237.370, 3: 234.187,
+  4: 232.172, 5: 234.530, 6: 231.442, 7: 233.160, 8: 233.567}. This file's standing caveat holds:
+  one run per cell, per-frame maxima above the medians.
+- `rr_level` (R9b, `e6755ab`), same method on `build/prof1080/rr`: **1830.448 ms**/frame median
+  against a HEAD control of 1822.050 ms same session (+0.46%); budget 1789.676 x 1.2 = 2147.611 -
+  PASS (A6 of the rr-r9b brief). Logs: `build/agents/orch/prof_rr_{new,head}.log`.
+
 ## Reproduce
 
 ```bash

@@ -1441,3 +1441,29 @@ which equals the model's concatenation order q-major (q0 g0, q0 g1, q1 g0, ...);
 From the ORACLE's t1 it reproduces t2/t4 at **99.994-99.999%** on both frames (f32 sum: 98.6-99.0%).
 From the model's own t1, launch 3 t2 is 98.67 -> 99.65% and launch 4 t4 97.92 -> 99.08%; the rest is
 t1's 0.1% propagated through the 256-input dot product.
+
+#### Landed in the shaders (2026-10-27, `11f3f49`; orchestrator-verified)
+
+The "Open" bullets above ("the shaders still implement the pre-R9 model") are closed:
+`shaders/sr/sr_stage.comp` and `shaders/sr/sr_tube_split.comp` now implement the model's DEFAULTS
+(ss_isa, qkv=chain, smax=isa, resid=isa, fc1=chain, mlpacc=isa, upacc=isa, up8, upref=low,
+projacc=isa, act=nhgelu, the exact border rule), every rounding point an explicit `rh()`.
+
+- **A1** (kernel_run fixtures with oracle inputs, launches 3,4,5,10,11,12 x frames 0,1): GPU vs
+  model min **99.9544%**, 15/16 tensors at 100.0000%; GPU vs oracle **52.0414-69.7009 dB**,
+  r 0.999978-0.999999 (compare against this file's R9 table: the model's own oracle numbers are
+  reproduced by the shader to the digit). Model `--self-check` PASS; `--all` model vs oracle
+  99.08-99.99% both frames.
+- **A2** (9-frame pipeline, `pipeline_report.py`): SR M min 32.25 / mean 33.31 (HEAD 32.15/33.28),
+  SR L 22.88 / 28.18 (HEAD 22.70/28.31); both HEAD baselines re-measured with HEAD shaders.
+- **A3**: `RADV_DEBUG=shaderstats` on device - 13 pipelines, 0 spills / 0 scratch (sr_stage 256
+  VGPRs, 38912 LDS, 19607 insts; sr_tube_split 180 VGPRs, 25600 LDS). **Timing budget NOT met**:
+  1080p->4K sr_stage median 234.187 ms/frame vs the 135.012 ms recorded in
+  `docs/notes/perf_1080p4k.md` (limit 162.014; same-session HEAD control 144.468 ms, ratio 1.621) -
+  see that note's "R9 rounding-closure re-measurement" section. Fidelity-first is standing; a
+  register-chain optimization that keeps GPU == model >= 99.9% is queued.
+- **A4**: O4 lint clean; O7 lavapipe double run finite / non-constant / identical for both shaders;
+  `tools/verify/offline_check.sh` -> PASS 27 pipelines.
+- **Milestone re-verified at this commit**: the k_sr_stage launches measured here are 8/8 >= 52 dB
+  per-launch against the oracle (bar: >= 40 dB by 2026-11-02; `6a612b0` recorded 12/24 >= 40 with
+  min 31.78 on the wider launch set - the port's per-launch numbers have only moved up since).

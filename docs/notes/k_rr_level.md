@@ -248,3 +248,20 @@ staged in LDS as **fp8** after a bias-first K=32 chain, exactly as the mode-2 up
 
 Unit 0 goes 31.3% -> **99.77%** and unit 1 42.2% -> **99.74%**. All 16 k_level block outputs are
 now **99.73-99.89% bit-exact vs the oracle on frames 0 and 1**; the down projections are 91.4-94.1%.
+
+#### Landed in the shader (2026-10-27, `e6755ab`; orchestrator-verified)
+
+`shaders/rr/rr_level.comp` now implements the R9b defaults (acc16, chain, smax=isa, ctx16=2,
+chain_io, up8, upref=low, the exact border rule, the mode-1/mode-5 fp8 entries with the f16 GELU
+spline), every rounding point an explicit `rh()`:
+
+- **A1/A2** (`run_heads.py` with per-unit oracle injection, all 16 units x frames 0/1): GPU vs
+  model min **99.9927%** (frame 1) and **99.9976%** (frame 0) over 39 buffer comparisons each,
+  none missing; GPU vs oracle k_level `out` **57.08-63.48 dB** (30/30 >= 40 dB, mean 60.17-60.28).
+- **A3** (9-frame RR pipeline): min 31.56 / mean 32.98 vs HEAD 31.56 / 32.97 (both measured this
+  session) - the end-to-end number did not move; with every block output now ~99.8% the RR gap is
+  downstream (rr_post), not k_level.
+- **A5**: offline O6 rr_level 216 VGPRs / 108 SGPRs / 0 spills / 0 scratch / 56320 LDS; O7
+  lavapipe double run finite, non-constant, identical.
+- **A6** (PASS): rr_level 1080p->4K median **1830.448 ms**/frame vs HEAD 1822.050 ms same session,
+  budget 1789.676 x 1.2 = 2147.611 ms (`docs/notes/perf_1080p4k.md`, R9 re-measurement section).
