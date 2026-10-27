@@ -55,7 +55,7 @@ ORACLE = REPO / "build/oracle/oracle-8dbf027a9e-s20261025"
 P = np.array([0, 1, 16, 17, 2, 3, 18, 19, 4, 5, 20, 21, 6, 7, 22, 23,
               8, 9, 24, 25, 10, 11, 26, 27, 12, 13, 28, 29, 14, 15, 30, 31])
 IP = np.argsort(P)
-DEFAULTS = dict(deperm=1, snorm8=1, qk8=1, ctx8=1, prob8=0, v8=0, proj_in="fp8", proj_clamp="6.28125", maxsub=0, ss16=0, rs16=0, acc16=0, relT=0, relrot=0, qq=1, norm="isa", qkv="chain", fc1="chain", smax="isa", resid="isa", mlpacc="isa", upacc="isa", act="nhgelu",
+DEFAULTS = dict(deperm=1, snorm8=1, qk8=1, ctx8=1, prob8=0, v8=0, proj_in="fp8", proj_clamp="6.28125", maxsub=0, ss16=0, rs16=0, acc16=0, relT=0, relrot=0, qq=1, norm="isa", qkv="chain", fc1="chain", smax="isa", resid="isa", mlpacc="isa", upacc="isa", up8=1, upref="low", act="nhgelu",
                 up_order="qc", up_pix="xy", skip_at="before")
 
 
@@ -259,6 +259,13 @@ def run_stage(X, Wt, W, H, sx, sy, tile, cfg, skip=None, low=None, attn_only=Fal
     TY = np.broadcast_to(ty, (len(oy), len(ox), 4, 4)).reshape(-1, 16)
     PX, PY = reflect(TX, W), reflect(TY, H)
     s_act = f16(X[PY, PX])                                      # (N, 16, C)
+    if Wt.mode == 2 and cfg["upref"] == "low":   # Review R9: border tokens reflect in LOW-res coordinates
+        U = upsample(low, Wt, cfg, H, W)                        # (H, W, C) on the in-range grid
+        h2, w2 = low.shape[:2]
+        LX, LY = reflect(TX >> 1, w2), reflect(TY >> 1, h2)     # the low-res pixel each token reads
+        UX, UY = 2 * LX + (TX & 1), 2 * LY + (TY & 1)           # its up value at the token's own parity
+        up_t = U[np.clip(UY, 0, H - 1), np.clip(UX, 0, W - 1)]
+        s_act = f16(up_t + skip[PY, PX]) if cfg["skip_at"] in ("before", "both") else f16(up_t)
 
     def mmc(a, Wm):
         """Review R9: the kernel's K=32 WMMA chains, acc = f16(group 0) then acc = f16(acc + group k)
@@ -415,6 +422,8 @@ def upsample(low, Wt, cfg, H, W):
     order = ((0, 0), (1, 0), (0, 1), (1, 1)) if cfg["up_pix"] == "xy" else ((0, 0), (0, 1), (1, 0), (1, 1))
     for q, (dx, dy) in enumerate(order):
         out[dy::2, dx::2, :] = u[:, :, q, :]
+    if cfg["up8"]:                            # Review R9: the up-projection is staged in LDS as fp8
+        return q8(np.clip(f16(out).astype(np.float32), -448, 448))
     return f16(out).astype(np.float32)
 
 

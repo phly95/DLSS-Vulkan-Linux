@@ -1422,3 +1422,16 @@ Open:
 - The mode-0 projection t2/t4 (98%) has not had the chain treatment yet.
 - **The shaders still implement the pre-R9 model**: sr_stage.comp and sr_tube_split.comp need the
   same changes.
+
+#### R9 addendum (2026-10-27): mode 2 closed - the up-projection is staged as fp8, and border tokens reflect in low-res space
+
+- The decoder's up-projection is stored to LDS as **fp8**: up8 = fp8(clamp(f16 chain, +-448)), ISA
+  0x664..0x6fc of `k_sr_stage<64,2,2,96>`. The block input is f16(skip + up8).
+- Tokens outside the image (window shift) reflect in LOW-res coordinates: low pixel
+  reflect(t >> 1) with the token's own sub-pixel parity (t & 1). The full-res image is NOT
+  reflected. Frame 0's launch 12 has shift (0,0), so it never reflects and was already 99.99% at
+  attention level; frame 1's shift (2,0) exposed the rule (all mismatches were in columns 0..7).
+
+Model vs oracle, every SR stage launch on both frames (`--all`), outputs t1/t3/t5-t8: **99.33-99.99%
+bit-exact, 57.9-104.3 dB** (launch 11 t7 frame 1: 28.6% -> 99.62%; launch 12 t8: 21.6% -> 99.88%).
+The mode-0 projections t2/t4 are 97.9-98.7% (48.99-55.21 dB); their chain is still to read.

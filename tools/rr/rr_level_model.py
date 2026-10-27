@@ -229,7 +229,7 @@ DEFAULTS = dict(
     skip_at="before",      # mode 2: skip added before the block (before) | after | both | none
     mode4_guess=1,         # 1: mode 4's O98 lanes 0..2 = block output channels 0..2; 0: zeros   GUESS
     blk="v2",              # v1: the first hypothesis (4x4 windows, no LayerScale); v2: block_v2 (Review R7)
-    relpos=1, den16=1, ls=1, acc16=0, lscale=1.0, qq=1, pv8=1, skip_mix="s6skip", head="v2",   # block_v2: relpos bias, f16 softmax den + rcp, LayerScale, f16 K-chunk sums
+    relpos=1, den16=1, ls=1, acc16=1, chain=1, smax="isa", ctx16=2, chain_io=1, up8=1, upref="low", lscale=1.0, qq=1, pv8=1, skip_mix="s6skip", head="v2",   # block_v2: relpos bias, f16 softmax den + rcp, LayerScale, f16 K-chunk sums
 )
 
 
@@ -424,10 +424,21 @@ def merge2x2(x):
     return np.concatenate(parts, -1)
 
 
+def chain_mm(a, Wm, b):
+    """Review R9b: bias first, then K=32 WMMA chains, each f32 partial added through f16."""
+    z = np.broadcast_to(f16a(b), a.shape[:-1] + (Wm.shape[0],)).astype(np.float32)
+    for k0 in range(0, a.shape[-1], 32):
+        z = f16a(z + a[..., k0:k0 + 32] @ Wm[:, k0:k0 + 32].T)
+    return z
+
+
 def project_down(img, Wt, cfg):
     """Mode 0 / 1 down-projection (verified against the oracle, see the self-check)."""
     cat = merge2x2(q8(img))
-    y = cat @ Wt["mA8"].T + (Wt["v170"] if cfg["down_bias"] else 0.0)
+    if cfg["chain_io"]:
+        y = chain_mm(cat, Wt["mA8"], Wt["v170"] if cfg["down_bias"] else np.zeros(Wt["mA8"].shape[0], np.float32))
+    else:
+        y = cat @ Wt["mA8"].T + (Wt["v170"] if cfg["down_bias"] else 0.0)
     y = np.asarray(y, np.float32)
     lim = float(cfg["proj_clamp"])
     y = np.clip(y, -lim, lim) if lim > 0 else np.clip(y, -448, 448)
@@ -537,7 +548,7 @@ def pair_sum16(e):
     return e[..., 0]
 
 
-def block_v2(X, Wt, cfg, H, W, sx, sy, C, g, scal, attn_only=False, postattn=None, fp8_out=True):
+def block_v2(X, Wt, cfg, H, W, sx, sy, C, g, scal, attn_only=False, postattn=None, fp8_out=True, up_entry=None):
     """Second hypothesis (Review R7): SR's decoded block adapted to the RR packer + ISA facts.
     8x8 windows, relpos bias = the packer's symmetrised 64x64 'gram' (x 2*sqrt(2), as SR's v258),
     V = K (f16), no RMSNorm gain (RR packs none), LayerScale: x += s1d2 * f16(attn + v128),
@@ -546,6 +557,12 @@ def block_v2(X, Wt, cfg, H, W, sx, sy, C, g, scal, attn_only=False, postattn=Non
     TX, TY = window8_tokens(H, W, sx, sy)
     PX, PY = reflect(TX, W), reflect(TY, H)
     s_act = f16a(X[PY, PX])
+    if up_entry is not None:                 # Review R9b (as SR's R9): mode-2 border tokens reflect in low-res space
+        U, skip, s6, (h2, w2) = up_entry
+        LX, LY = reflect(TX >> 1, w2), reflect(TY >> 1, h2)
+        UX, UY = 2 * LX + (TX & 1), 2 * LY + (TY & 1)
+        up_t = U[np.clip(UY, 0, H - 1), np.clip(UX, 0, W - 1)]
+        s_act = f16a(up_t + f16a(np.float32(s6) * skip[PY, PX]))
     def norm(x):
         xf = x.astype(np.float32); ss = (xf * xf).sum(-1, keepdims=True)
         if cfg["norm"] == "none":
@@ -578,26 +595,61 @@ def block_v2(X, Wt, cfg, H, W, sx, sy, C, g, scal, attn_only=False, postattn=Non
         rel = np.frombuffer(Wt["gram"][h].tobytes(), np.float16).astype(np.float32).reshape(64, 64)
         logits = np.float32(cfg["lscale"]) * np.einsum("nqc,nkc->nqk", Q, K8) + (rel[None] if cfg["relpos"] else 0.0)
         pe = nr_swin_exp(logits)
-        if cfg["den16"]:
+        if cfg["smax"] == "isa":             # Review R9b: the kernel's 64-key f16 tree (ISA 0x153c..0x164c)
+            e = f16a(pe)
+            def key(kb, hh, ip, par): return 16 * kb + 8 * hh + 2 * ip + par
+            def V(par):
+                U = []
+                for ip in range(4):
+                    T = [f16a(f16a(e[..., key(0, hh, ip, par)] + e[..., key(1, hh, ip, par)])
+                              + f16a(e[..., key(2, hh, ip, par)] + e[..., key(3, hh, ip, par)])) for hh in (0, 1)]
+                    U.append(f16a(T[0] + T[1]))
+                return f16a(f16a(U[0] + U[1]) + f16a(U[2] + U[3]))
+            tot = f16a(V(0) + V(1))
+            inv = f16a(np.float32(1.0) / tot)
+            prob = f16a(e * inv[..., None])
+        elif cfg["den16"]:
             inv = f16a(1.0 / np.maximum(pair_sum16(f16a(pe)), np.float32(1e-4)))
         else:
             inv = np.float32(1.0) / np.maximum(pe.sum(-1), np.float32(1e-4))
-        prob = f16a(f16a(pe) * inv[..., None]) if cfg["den16"] else pe * inv[..., None]
+        if cfg["smax"] != "isa":
+            prob = f16a(f16a(pe) * inv[..., None]) if cfg["den16"] else pe * inv[..., None]
         if cfg["pv8"]:                       # RR's P @ V is an fp8 WMMA (the RR kernels have no f16 WMMA)
             prob, Vv = q8(prob), K8 if not cfg["qq"] else q8(Kf)
         else:
             Vv = Kf
-        ctx = q8(np.einsum("nqk,nkc->nqc", prob, Vv))
-        attn += mm(ctx, LUT[Wt["m48"][:, 32 * h:32 * h + 32]])
-    a = f16a(attn + Wt["v128_f"])
+        if cfg["ctx16"] == 2:                # Review R9b: P @ V as two K=32 key chains through f16 (ISA 0x18c4/0x1934)
+            ctx = f16a(f16a(np.einsum("nqk,nkc->nqc", prob[..., :32], Vv[:, :32]))
+                       + np.einsum("nqk,nkc->nqc", prob[..., 32:], Vv[:, 32:]))
+            ctx = q8(ctx)
+        else:
+            ctx = np.einsum("nqk,nkc->nqc", prob, Vv)
+            ctx = q8(f16a(ctx)) if cfg["ctx16"] else q8(ctx)
+        if cfg["chain"]:                     # Review R9b: the head loop's f16 accumulator, seeded with v128
+            if h == 0:
+                attn = np.broadcast_to(f16a(Wt["v128_f"]), s_act.shape).astype(np.float32)
+            attn = f16a(attn + ctx @ LUT[Wt["m48"][:, 32 * h:32 * h + 32]].T)
+        else:
+            attn += mm(ctx, LUT[Wt["m48"][:, 32 * h:32 * h + 32]])
+    a = attn if cfg["chain"] else f16a(attn + Wt["v128_f"])
     X1 = f16a(s_act + (f16a(np.float32(ls1) * a) if cfg["ls"] else a))
     if postattn is not None:
         X1 = f16a(postattn[PY, PX])
     if attn_only:
         return scatter(X1, TX, TY, H, W, C), None
     s2 = norm(X1)
-    h1 = q8(act_fn(np.asarray(mm(s2, Wt["W1"]) + Wt["b1"], np.float32), cfg["act"]))
-    mo = f16a(mm(h1, Wt["W2"]) + Wt["b2"])
+    if cfg["chain"]:                         # Review R9b: per 32-hidden block, the MLP loop's f16 accumulator
+        W1, b1, W2 = Wt["W1"], Wt["b1"], Wt["W2"]
+        mo = np.broadcast_to(f16a(Wt["b2"]), X1.shape).astype(np.float32)
+        for j0 in range(0, W1.shape[0], 32):
+            z = np.broadcast_to(f16a(b1[j0:j0 + 32]), s2.shape[:-1] + (32,)).astype(np.float32)
+            for k0 in range(0, s2.shape[-1], 32):
+                z = f16a(z + s2[..., k0:k0 + 32] @ W1[j0:j0 + 32, k0:k0 + 32].T)
+            hb = q8(act_fn(z, cfg["act"]))
+            mo = f16a(mo + hb @ W2[:, j0:j0 + 32].T)
+    else:
+        h1 = q8(act_fn(np.asarray(mm(s2, Wt["W1"]) + Wt["b1"], np.float32), cfg["act"]))
+        mo = f16a(mm(h1, Wt["W2"]) + Wt["b2"])
     add = X1 + (f16a(np.float32(ls2) * mo) if cfg["ls"] else mo)
     # fp8_out=True: the historic clip the fp8 store path sees (identical bytes: to_e4m3 saturates
     # at 448 anyway). fp8_out=False: the kernel's v_pk_add_f16 result, which unit 15's heads read.
@@ -614,12 +666,15 @@ def scatter(out, TX, TY, H, W, C):
 
 def upsample(low, Wt, cfg, H, W, C):
     """Mode 2: u = mE8 @ low + v1a0 (rows [q][c]), pixel-shuffled with q = dx + 2 dy."""
-    u = np.asarray(low @ Wt["mE8f"].T + Wt["v1a0_f"], np.float32)
+    u = chain_mm(low, Wt["mE8f"], Wt["v1a0_f"]) if cfg["chain_io"] else \
+        np.asarray(low @ Wt["mE8f"].T + Wt["v1a0_f"], np.float32)
     u = u.reshape(u.shape[0], u.shape[1], 4, C)
     order = ((0, 0), (1, 0), (0, 1), (1, 1)) if cfg["up_pix"] == "xy" else ((0, 0), (0, 1), (1, 0), (1, 1))
     out = np.zeros((H, W, C), np.float32)
     for q, (dx, dy) in enumerate(order):
         out[dy::2, dx::2, :] = u[:, :, q, :]
+    if cfg["up8"]:                           # Review R9b: the up-projection is staged in LDS as fp8 (as SR's)
+        return q8(np.clip(f16a(out), -448, 448))
     return out.astype(np.float16).astype(np.float32)
 
 
@@ -935,19 +990,27 @@ def model_unit(L, blobbytes, cfg, inputs, Wt):
     H, W, sx, sy = L["H"], L["W"], L["sx"], L["sy"]
     k = L["unit"]
     outs, notes = {}, []
+    up_entry = None
     if mode == 5:                                                  # enc0: features -> C channels
         F = inputs["in"]                                           # (H, W, 64) fp8 logical
-        h = np.asarray(F @ Wt["m1d8f"].T + Wt["v218_f"], np.float32)
-        h = q8(act_fn(h, cfg["enc0_act"]))
-        X = (h @ Wt["m1f8f"].T + Wt["v230_f"]).astype(np.float16).astype(np.float32)
+        if cfg["chain_io"]:
+            h = q8(act_fn(chain_mm(F, Wt["m1d8f"], Wt["v218_f"]), cfg["enc0_act"]))
+            X = chain_mm(h, Wt["m1f8f"], Wt["v230_f"])
+        else:
+            h = np.asarray(F @ Wt["m1d8f"].T + Wt["v218_f"], np.float32)
+            h = q8(act_fn(h, cfg["enc0_act"]))
+            X = (h @ Wt["m1f8f"].T + Wt["v230_f"]).astype(np.float16).astype(np.float32)
         notes.append("mode 5 entry (GUESS): m1f8 @ act(m1d8 @ feat + v218) + v230")
     elif mode == 1:                                                # level 0 -> level 1 merge, then the block
-        X = np.asarray(merge2x2(inputs["in"]) @ Wt["mC8f"].T + Wt["v188_f"], np.float32)
+        X = chain_mm(merge2x2(inputs["in"]), Wt["mC8f"], Wt["v188_f"]) if cfg["chain_io"] else \
+            np.asarray(merge2x2(inputs["in"]) @ Wt["mC8f"].T + Wt["v188_f"], np.float32)
         X = (act_fn(X, cfg["entry_act"])).astype(np.float16).astype(np.float32)
         notes.append("mode 1 entry merge (GUESS act): mC8 @ merge2x2(in) + v188")
     elif mode == 2:                                                # decoder: up from the level below, + skip
         X = upsample(inputs["in"], Wt, cfg, H, W, C)
         s6 = float(np.array([L["scal"][3] & 0xFFFF], np.uint16).view(np.float16)[0])
+        if cfg["upref"] == "low" and cfg["skip_mix"] == "s6skip":
+            up_entry = (X, inputs["skip"], s6, inputs["in"].shape[:2])
         if cfg["skip_mix"] == "s6skip":          # x = up + s1d6 * skip
             X = f16a(X + f16a(np.float32(s6) * inputs["skip"]))
         elif cfg["skip_mix"] == "s6up":          # x = s1d6 * up + skip
@@ -961,7 +1024,7 @@ def model_unit(L, blobbytes, cfg, inputs, Wt):
     if cfg["blk"] == "v2":
         scal = [float(np.array([v & 0xFFFF], np.uint16).view(np.float16)[0]) for v in L["scal"]]
         img, _ = block_v2(X, Wt, cfg, H, W, sx, sy, C, g, scal, attn_only=attn_only,
-                          postattn=postattn, fp8_out=(mode != 4))
+                          postattn=postattn, fp8_out=(mode != 4), up_entry=up_entry)
     else:
         img, _ = block(X, Wt, cfg, H, W, sx, sy, C, g, attn_only=attn_only, postattn=postattn,
                        fp8_out=(mode != 4))

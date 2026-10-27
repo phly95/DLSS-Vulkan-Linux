@@ -203,3 +203,33 @@ Frame 1, per launch vs oracle (PSNR / r / bit-exact):
 Non-exactness follows from the about 99% of fp8 block-output codes the heads read. Remaining in
 k_level: unit 15 (mode 4) and its render-resolution outputs E0c02 / E0c16 / E0c1a / E0c1e, which feed
 post_prep / post.
+
+### Review R9b (2026-10-27): the SR rounding closure transfers to k_level - units 2..15 at 99.7-99.9%
+
+The same kernel family, so the same rounding points. Each was read in `build/work/review/rr/u2.ssa`
+(`k_level<96,4,0,128,0,1>`) and adopted only where the ISA shows it:
+- **QKV** (`acc16=1`): K=32 chains added through f16.
+- **Softmax** (`smax=isa`): the 64-key f16 tree. Per lane, ((tile0 + tile1) + (tile2 + tile3)) for
+  each packed row pair, + the permlanex16 partner, ((rp0 + rp1) + (rp2 + rp3)), then lo + hi; then
+  f16 reciprocal, prob = f16(e * inv).
+- **P @ V** (`ctx16=2`): two K=32 key chains, ctx = fp8(f16(f16(P[:, :32] V[:32]) + P[:, 32:] V[32:])).
+  This was the largest single step (84.9 -> 99.8% on unit 2).
+- **Heads** (`chain=1`): the head loop's accumulator, a = v128, then a = f16(a + Wo_h . ctx_h);
+  X1 = f16(x + f16(s1d2 * a)).
+- **MLP** (`chain=1`): per 32-hidden block, z = f16(f16(b1 + c0) + c1 ...), h = fp8(gelu(z)),
+  m = f16(m + h . W2_b) from m = b2; out = clamp(f16(X1 + f16(s1d4 * m)), +-448).
+- **Projections** (`chain_io=1`): the down projection, the mode-1 merge, the mode-5 entry and the
+  mode-2 up-projection are all bias-first K=32 chains.
+- **Mode 2** (`up8=1`, `upref=low`): exactly SR's decoder rules (fp8-staged up-projection,
+  low-res border reflection).
+
+Model vs oracle (both frames, `--all`):
+- block outputs of units 2..15: **99.73-99.89% bit-exact, 57.1-63.5 dB** (were 34-45 dB);
+- unit 15's render outputs E0c02 / E0c16 / E0c1a / E0c1e: **100.0000%**, and E0bd4 99.93%;
+- the down projections: 91.4-94.1% (their chain is not fully closed).
+
+Open:
+- unit 0 (mode 5 entry, 31%) and unit 1 (mode 1 merge, 42%): their entry structure is still the
+  GUESS of R7, and the ISA must be read;
+- unit 5 (the C=160 bottleneck) is 99.86% on frame 0 but 81% on frame 1, a frame-dependent
+  border case, as mode 2 was.
