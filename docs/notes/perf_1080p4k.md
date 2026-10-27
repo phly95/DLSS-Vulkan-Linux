@@ -165,6 +165,48 @@ enough for any target, is the operator's judgment**; the one thing this measurem
 unambiguously is that no SR fidelity or parity work will be judged against a performance picture
 in which `sr_stage` is still scalar.
 
+## Re-measurement 2026-10-27 (idle GPU, after the cooperative-matrix rewrite and the Q.Q^T flip)
+
+The gate had finished, so nothing else was loading the card. Same commands as above, medians over
+the 9 frames of `build/prof1080/{sr,rr}`; per-frame totals, not per-dispatch means - the
+per-dispatch spread on this machine is wide enough to be useless for claims (`sr_stage` individual
+dispatches ran 16.45..71.70 ms in the same run), so the median over frames is what to compare.
+
+| per-frame kernel total, ms | SR M | SR L | RR F |
+|---|---:|---:|---:|
+| `sr_stage` (4 dispatches) | **135.012** | 135.635 | - |
+| `sr_tube_split` (6 dispatches, still scalar) | **90.253** | 91.004 | - |
+| `sr_post` | 12.405 | 9.527 | - |
+| `sr_downsample` | 3.482 | 3.481 | - |
+| `sr_dec0` | 3.276 | 3.328 | - |
+| `sr_enc0` / `sr_enc0L_in` | 1.589 | 0.485 | - |
+| `sr_gather` | 1.837 | 1.489 | - |
+| **whole SR frame** | **248.755** | **244.092** | - |
+| `rr_level` (16 dispatches) | - | - | **1789.676** |
+| `rr_gather` / `rr_enc0_feat` / `rr_downsample` / `rr_post` / `rr_post_prep` | - | - | 5.795 / 3.876 / 3.833 / 5.364 / 2.365 |
+| `rr_ae_block` / `rr_ae_final` / `rr_pooled2` | - | - | 0.347 / 0.002 / 0.429 |
+| **whole RR frame** | - | - | **1810.159** |
+
+Readings, stated against the figures this file recorded before (`sr_stage` 96.49% of an
+1091.95 ms SR frame; the stage family 1538.5752 -> 139.9240 ms/frame on the A2 check):
+
+- `sr_stage` is now **135.012 ms/frame** (min 132.825, max 182.137 across the 9 frames), i.e. in line
+  with - and marginally under - the 139.9240 ms the rewrite recorded. Part of the gap is plausibly
+  the Q.Q^T flip dropping the `q8(K)` LDS stores, but that is **not attributed here**: a single run
+  on this machine cannot separate ~5 ms from the noise that puts the frame max 59 ms above its median.
+- The whole SR frame fell 1091.95 -> **248.755 ms** (4.4x), and `sr_stage` is no longer the whole
+  frame: 54.3% of it, with `sr_tube_split` at 90.253 ms now the second term. **`sr_tube_split` is
+  still scalar** - it was never rewritten for cooperative matrices - and is the obvious next target.
+- **The A2 target of <= 50 ms/frame for `sr_stage` is not met and remains open**: 135.012 ms is
+  2.70x the target. The 11.00x speedup over the scalar baseline is real; the target is separate.
+- RR F is 1810.159 ms/frame and `rr_level` alone is **1789.676 ms of it (98.9%)** - 16 dispatches of
+  a kernel whose block maths is scalar. RR's frame time will not move until that block does.
+
+Caveat carried forward from this file: these are the port on an idle card, one run each, and the
+per-frame maxima sit well above the medians (SR M frame max 338.110, RR F max 2168.596). Nothing
+here is a comparison against `srref`; the reference-side numbers in this file were taken in the ROCm
+container and were not re-taken.
+
 ## Reproduce
 
 ```bash
