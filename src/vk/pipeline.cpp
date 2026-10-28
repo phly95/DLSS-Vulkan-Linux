@@ -308,6 +308,16 @@ bool sr_repack_dec0(const uint8_t* src, uint8_t* dst, size_t blob_size) {
         }
     return true;
 }
+
+// sr_enc0's embed matrix: the one 64x128 fp8 tile of enc0.bin, at blob offset 4096 in NeuralHub's
+// per-lane fragment order (frag_off, cols = 128), rewritten [N][K] row-major for the cooperative
+// matrix kernel's B operand (K contiguous). The 64 f16 biases at blob +12288 stay in w_enc0: the
+// shader reads them there with its own P-un permutation.
+void sr_repack_enc0(const uint8_t* blob, uint8_t* dst) {
+    for (uint32_t r = 0; r < 64; ++r)
+        for (uint32_t c = 0; c < 128; ++c)
+            dst[size_t(r) * 128 + c] = blob[4096 + sr_frag_off(r, c, 128)];
+}
 } // namespace
 
 FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
@@ -365,7 +375,7 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         add_pipe("sr_ae_luma", 2, 48);
         add_pipe("sr_ae_reduce", 2, 32);
         add_pipe("sr_ae_copy", 2, 24);
-        add_pipe("sr_enc0", 12, 256);
+        add_pipe("sr_enc0", 13, 256);
         add_pipe("sr_stage", 6, 56);
         add_pipe("sr_tube_split", 3, 56);
         add_pipe("sr_dec0", 8, 160);
@@ -518,6 +528,8 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
     c->out = create_buffer(dev, phys, size_t(oW) * oH * 16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->wbuf = create_buffer(dev, phys, 16 * 1024 * 1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->w_enc0 = create_buffer(dev, phys, 65536, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    // enc0's 64x128 tile repacked [N][K] row-major for sr_enc0's fp8 WMMA (8192 B).
+    c->w_enc0r = create_buffer(dev, phys, 8192, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     if (mode == "sr") c->wrep = create_buffer(dev, phys, 16 * 1024 * 1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->w_dec0 = create_buffer(dev, phys, 65536, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     // sr_dec0's own repacked weights (see sr_repack_dec0): [4][32][64] f16 + 4x32 f16 biases = 16640 B.
@@ -600,6 +612,9 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
             }
             if (!blob[10].empty() && blob[10].size() <= c->w_enc0.size) {
                 std::memcpy(c->w_enc0.mapped, blob[10].data(), blob[10].size());
+            }
+            if (!blob[10].empty() && blob[10].size() >= 4096 + 8192) {
+                sr_repack_enc0(blob[10].data(), static_cast<uint8_t*>(c->w_enc0r.mapped));
             }
             if (!blob[11].empty() && blob[11].size() <= c->w_dec0.size) {
                 std::memcpy(c->w_dec0.mapped, blob[11].data(), blob[11].size());
@@ -695,6 +710,7 @@ FrameChain::~FrameChain() {
     destroy_buffer(dev, out);
     destroy_buffer(dev, wbuf);
     destroy_buffer(dev, w_enc0);
+    destroy_buffer(dev, w_enc0r);
     destroy_buffer(dev, w_dec0);
     destroy_buffer(dev, wrep);
 
@@ -1145,8 +1161,11 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                          lpush, 112, (W0 + l0sx + 7) / 8, (H0 + l0sy + 3) / 4, 1);
                 inject_after(cmd, "l0", 3);
             } else {
+                // One workgroup = 4 waves = 4 tiles stacked vertically (H0 is a multiple of 32,
+                // so H0/32 is exact): one-wave workgroups cap residency at ~2 waves a SIMD, which
+                // measured 4% VALU efficiency on the feature build.
                 dispatch(cmd, "sr_enc0", {&g_col, &g_dep, mvhi ? &g_mvhi : &g_mv, &prev_mvec[p], &dhist, &hidden[p],
-                                     &prev_mvec[p ^ 1], &mv_ero, &mv_nondil, &t_act[0], &w_enc0, &expo}, push, 256, W0 / 8, H0 / 8, 1);
+                                     &prev_mvec[p ^ 1], &mv_ero, &mv_nondil, &t_act[0], &w_enc0, &expo, &w_enc0r}, push, 256, W0 / 8, H0 / 8, 1);
             }
             inject_after(cmd, "enc0", sr_l[1]);
         }

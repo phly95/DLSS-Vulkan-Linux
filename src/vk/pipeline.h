@@ -185,6 +185,9 @@ private:
     Buffer out, wbuf, w_enc0, w_dec0, w_dec0rep;
     // SR only: the row-major fp8 copy of the stage matrices (same offsets as wbuf), for KHR coopMatLoad.
     Buffer wrep;
+    // SR only: enc0's 64x128 tile repacked row-major [N][K] for sr_enc0's cooperative-matrix GEMM
+    // (8192 B, src/vk/pipeline.cpp sr_repack_enc0).
+    Buffer w_enc0r;
 
     // RR (preset F) buffers that have no SR counterpart, keyed by the oracle's buffer name
     // (E0b54..E0be4 U-Net outputs, E0c02/E0c16/E0c1a/E0c1e U-Net outputs read by post_prep,

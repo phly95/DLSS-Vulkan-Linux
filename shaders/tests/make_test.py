@@ -131,13 +131,14 @@ def make_test(name, out_dir):
             ]
         }
     elif name == "sr_enc0":
-        # k_sr_enc0 (preset M): grid W0/8 x H0/8, 32 threads. The push is the 256 bytes of
+        # k_sr_enc0 (preset M): grid W0/8 x H0/8, 32 threads (one 8x8 tile = one wave32); the
+        # host pads W0/H0 to 32. The push is the 256 bytes of
         # Enc0Args this device can push (maxPushConstantsSize = 256) at the oracle's own
-        # offsets; binding 11 is expo (+0x80). W15/H15/hW15/hH15 follow the host's formulas
-        # (oW = 2*W), so W15/W = 3.0 like the oracle and the dhist grid is
-        # (W15+1)/2 x (H15+1)/2.
-        w0 = ((w + 7) // 8) * 8
-        h0 = ((h + 7) // 8) * 8
+        # offsets; binding 11 is expo (+0x80), binding 12 the repacked 64x128 weight tile.
+        # W15/H15/hW15/hH15 follow the host's formulas (oW = 2*W), so W15/W = 3.0 like the
+        # oracle and the dhist grid is (W15+1)/2 x (H15+1)/2.
+        w0 = (w + 31) & ~31
+        h0 = (h + 31) & ~31
         w15, h15 = 3 * w, 3 * h
         hw15, hh15 = (w15 + 1) // 2, (h15 + 1) // 2
         b_col = np.linspace(0.1, 1.0, n_pix * 4, dtype=np.float16).tobytes()
@@ -167,6 +168,17 @@ def make_test(name, out_dir):
         blob = dither.tobytes() + wts.tobytes() + bias
         assert len(blob) == 12416
         open(os.path.join(out_dir, "wbuf.bin"), "wb").write(blob)
+        # The kernel's binding 12: the 64x128 tile repacked [N][K] row-major (the host's
+        # sr_repack_enc0 walk, frag order -> rows), K contiguous for the matrix load.
+        def frag_off(r, c):
+            u1 = ((r & 0x7FFFFFE1) | ((r >> 3) & 2)) + (r & 0xE) * 2
+            u5 = 2 * c
+            low = (u5 & 4) | (c & 1) | ((c >> 3) & 2)
+            high = ((u5 & 0x10) << 4) + ((16 * c) & 0xFFFFFE00) + (128 << 4) * (u1 >> 4)
+            return (low | high) + ((u1 & 0xF) + (u5 & 8) * 2) * 8
+        open(os.path.join(out_dir, "wrep.bin"), "wb").write(
+            np.array([wts[frag_off(r, c)] for r in range(64) for c in range(128)],
+                     dtype=np.uint8).tobytes())
         push = bytearray(256)
         struct.pack_into("<4i", push, 88, w, h, w, h)          # W, H, +0x60 render size again
         struct.pack_into("<4i", push, 104, w0, h0, w15, h15)   # W0, H0, W15, H15
@@ -192,7 +204,8 @@ def make_test(name, out_dir):
                 {"binding": 8, "bytes": n_pix * 4, "output": "mv_nondil", "type": "f16"},
                 {"binding": 9, "bytes": (w0 // 2) * (h0 // 2) * 64, "output": "t0", "type": "u8"},
                 {"binding": 10, "file": "wbuf.bin"},
-                {"binding": 11, "file": "expo.bin", "bytes": 4, "type": "f16"}
+                {"binding": 11, "file": "expo.bin", "bytes": 4, "type": "f16"},
+                {"binding": 12, "file": "wrep.bin"}
             ]
         }
     elif name == "sr_dec0":
