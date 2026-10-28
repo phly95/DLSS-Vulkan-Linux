@@ -1,0 +1,158 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_EXT_shader_8bit_storage : enable
+#extension GL_EXT_shader_16bit_storage : enable
+#include "nh_mm.glsl"
+
+// sr_swin_proj: mode 0's 2x2 patch-concat projection (4C -> Cn), split out of the stage block as
+// its own small WMMA dispatch (optimisation phase split, 2026-10-28). Spec:
+// tools/sr/sr_stage_model.py project(): y = f16(dn_b) + cat @ dn_W^T, clamp +-6.28125, E4M3 out,
+// where cat[low pixel] = concat over the four quads ((0,0),(1,0),(0,1),(1,1)) of that low
+// pixel's channels (out-of-image quads contribute 0 - the model's img zeros).
+//
+// Workgroup: 4x4 low pixels = the 16 concat rows (M = 16, one WMMA M-tile) = an 8x8 render-tile's
+// worth of block output. local_size 32, one wave, no subgroup pin (same rule as sr_swin).
+// A = the concat staged fp8 into LDS (16 x 4C), B = dn_W from wrep (row-major [Cn][4C], loaded
+// ColumnMajor so K = 4C is contiguous), f32 accumulation, epilogue = bias + clamp + E4M3 scatter
+// (the legacy tail's own arithmetic, incl. its perm_invP(co) call).
+//
+// C/Cn are derived from w_off (stage 0: 64/96, stage 1: 96/128) - one pipeline for both.
+
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer InW16       { float16_t  wbuf16[]; };
+layout(set = 0, binding = 1) readonly buffer InAct       { uvec4 in_act4[]; };
+layout(set = 0, binding = 2) writeonly buffer OutAct2    { NR_OPERAND out_act2[]; };
+layout(set = 0, binding = 3, std430) readonly buffer WRep { NR_OPERAND wrep[]; };
+
+layout(push_constant) uniform StageArgs {
+    uint wbuf_lo;
+    uint wbuf_hi;
+    layout(offset = 40) int dimW;
+    int dimH;
+    int shiftX;                     // unused here: the projection is per low pixel
+    int shiftY;
+};
+
+// A = the concat (16 rows x 4C, fp8), R = the product (16 x Cn, f16) before the epilogue.
+shared NR_OPERAND sA[16 * 384];
+shared float16_t  sR[16 * 128];
+shared float16_t  sBias[128];      // dn_b cached once (P-permuted -> vidx at staging)
+
+float read_f16(uint byte_off) { return float(wbuf16[byte_off >> 1u]); }
+uint perm_P(uint i)    { return ((i >> 2u) << 1u) | (i & 1u) | (((i >> 1u) & 1u) << 4u); }
+uint perm_invP(uint c) { return (((c >> 1u) & 7u) << 2u) | (c & 1u) | (((c >> 4u) & 1u) << 1u); }
+uint vidx(uint c)      { return (c & ~31u) | perm_invP(c); }
+
+
+// Byte helpers, copied from sr_stage.comp's GROUP_BYTES pattern: the 32 bytes of a channel group
+// arrive as two uvec4 loads (contiguous, coalesced) instead of 32 scalar byte loads - measured on
+// the VRAM base, proj's scalar staging reads were 73% of the dispatch.
+uint byte_of(uint w, uint k) { return (w >> (8u * k)) & 0xffu; }
+float e4m3_to_f32(uint b) {
+    uint e = (b >> 3u) & 15u;
+    float v = (e == 0u) ? float(b & 7u) * 0.001953125
+                        : uintBitsToFloat(((e + 120u) << 23u) | ((b & 7u) << 20u));
+    return ((b & 0x80u) != 0u) ? -v : v;
+}
+#define BYTES_OF(WD, WI, BODY) \
+    BODY(4u * WI + 0u, byte_of(WD, 0u)); BODY(4u * WI + 1u, byte_of(WD, 1u)); \
+    BODY(4u * WI + 2u, byte_of(WD, 2u)); BODY(4u * WI + 3u, byte_of(WD, 3u));
+#define GROUP_BYTES(VA, VB, BODY) \
+    BYTES_OF(VA.x, 0u, BODY) BYTES_OF(VA.y, 1u, BODY) BYTES_OF(VA.z, 2u, BODY) BYTES_OF(VA.w, 3u, BODY) \
+    BYTES_OF(VB.x, 4u, BODY) BYTES_OF(VB.y, 5u, BODY) BYTES_OF(VB.z, 6u, BODY) BYTES_OF(VB.w, 7u, BODY)
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint w_off = wbuf_lo & 0x1fffffu;
+    uint C  = (w_off == 0u) ? 64u : 96u;
+    uint Cn = (C == 64u) ? 96u : 128u;
+    uint K4 = 4u * C;
+    uint HW = uint(dimH * dimW);
+    uint W2 = uint(dimW) >> 1;
+    uint H2 = uint(dimH) >> 1;
+
+    // dn_W follows the block: gain1 (2C) + heads (96C+512)*G + v270/gain2 (4C) +
+    // ffn blocks (64C+64)*(C/8) + the one fc2_bias (2C) - the walk sr_stage does for mode 0.
+    uint G  = (C == 64u) ? 2u : 4u;
+    int  bx = int(gl_WorkGroupID.x) * 4;   // this WG's 4x4 low-pixel tile origin
+    int  by = int(gl_WorkGroupID.y) * 4;
+    uint NB = C / 8u;
+    uint ffn = w_off + 6u * C + G * (96u * C + 512u);
+    uint dnW = ffn + NB * (64u * C + 64u) + 2u * C;
+    uint dnb = dnW + 4u * C * Cn;
+
+    for (uint c = tid; c < Cn; c += 32u) sBias[c] = float16_t(read_f16(dnb + 2u * vidx(c)));
+
+    // ---- stage the concat: rows = the 16 low pixels of this 4x4 tile, k = quad*C + c.
+    // Nested loops (row, quad, group, literal byte): the flat form divided by K4 and by C every
+    // iteration - two 40-cycle divides a byte, ~12-17k cycles a lane, which is what made this
+    // dispatch cost 0.73 ms for a 96-WMMA product. Here no index needs a divide: quad/Cg only
+    // bound loops, perm_P folds on the literal byte.
+    {
+        uint Cg = C / 32u;
+        uint r = tid & 15u;
+        uint ly = r >> 2u, lx = r & 3u;
+        int by_ = by + int(ly);
+        for (uint quad = 0u; quad < 4u; ++quad) {
+            int Y = 2 * by_ + int(quad >> 1u);
+            int X = 2 * (bx + int(lx)) + int(quad & 1u);
+            bool ok = X >= 0 && X < dimW && Y >= 0 && Y < dimH;
+            uint opos = ok ? uint(Y * uint(dimW) + X) : 0u;
+            for (uint cg = 0u; cg < Cg; ++cg) {
+                uint grp = ((cg * HW + (ok ? opos : 0u)) * 32u);
+                uint dst = r * K4 + quad * C + cg * 32u;
+                uvec4 va = in_act4[grp >> 4u];
+                uvec4 vb = in_act4[(grp >> 4u) + 1u];
+#define PT(j, bv) sA[dst + perm_P(j)] = ok ? NR_OPERAND(e4m3_to_f32(bv)) : NR_OPERAND(0.0);
+                GROUP_BYTES(va, vb, PT)
+#undef PT
+            }
+        }
+    }
+
+    // ---- projection: M = 16 low pixels, N = Cn in two-tile chunks, K = 4C unrolled by 2
+    {
+        uint NTCN = Cn / 16u;
+        for (uint n0 = 0u; n0 < NTCN; n0 += 2u) {
+            NR_FRAG_ACC p0 = NR_ACC_ZERO, p1 = NR_ACC_ZERO;
+            for (uint k = 0u; k < K4; k += 32u) {
+                NR_FRAG_A fa0, fa1;
+                NR_LOAD_A(fa0, sA, k, K4);
+                NR_LOAD_A(fa1, sA, k + 16u, K4);
+                NR_FRAG_B b0, b1, b2, b3;
+                NR_LOAD_B(b0, wrep, dnW + 16u * n0 * K4 + k, K4);
+                NR_LOAD_B(b1, wrep, dnW + 16u * n0 * K4 + k + 16u, K4);
+                NR_LOAD_B(b2, wrep, dnW + 16u * (n0 + 1u) * K4 + k, K4);
+                NR_LOAD_B(b3, wrep, dnW + 16u * (n0 + 1u) * K4 + k + 16u, K4);
+                NR_MMA(p0, fa0, b0); NR_MMA(p0, fa1, b1);
+                NR_MMA(p1, fa0, b2); NR_MMA(p1, fa1, b3);
+            }
+            NR_STORE_ACC(NR_NARROW_ACC(p0), sR, 16u * n0, Cn);
+            NR_STORE_ACC(NR_NARROW_ACC(p1), sR, 16u * (n0 + 1u), Cn);
+        }
+    }
+
+    // ---- epilogue: y = clamp(f16(dn_b + y), +-6.28125) as E4M3, scattered to the low grid.
+    // Same shape as the staging: per row the pixel base is hoisted, perm_P folds on the literal
+    // byte, and the bias comes from LDS - no divides, no per-element vidx.
+    {
+        uint Cg = Cn / 32u;          // OUTPUT groups: Cn-wide (96/128), NOT the C-wide input groups
+        uint r = tid & 15u;
+        int X = bx + int(r & 3u);
+        int Y = by + int(r >> 2u);
+        if (X >= 0 && X < int(W2) && Y >= 0 && Y < int(H2)) {
+            uint base = (uint(Y) * W2 + uint(X)) * 32u;
+            for (uint g = 0u; g < Cg; ++g) {
+                for (uint i = 0u; i < 32u; ++i) {
+                    uint co = g * 32u + i;
+                    float y = clamp(float(sR[r * Cn + co]) + float(sBias[co]),
+                                    -6.28125, 6.28125);
+                    out_act2[g * (W2 * H2) * 32u + base + perm_invP(i)] = NR_OPERAND(y);
+                }
+            }
+        }
+    }
+}

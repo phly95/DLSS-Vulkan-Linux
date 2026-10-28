@@ -437,6 +437,14 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         add_pipe("sr_stage_c96m0", 6, 56, 32);
         add_pipe("sr_stage_c96m2", 6, 56, 32);
         add_pipe("sr_stage_c64m2", 6, 56, 32);
+        // sr_stage split into the tube-shaped pieces (optimisation phase 2026-10-28): the Swin block
+        // generalised from sr_tube_split.comp (32 threads = one wave a 4x4 window, NO subgroup pin -
+        // wave32 follows from the workgroup size), plus the mode-0 patch projection and the mode-2
+        // up+skip as their own small GEMM dispatches. sr_stage.comp stays for DLSS5_AMD_STAGE_LEGACY=1.
+        add_pipe("sr_swin64", 4, 56);
+        add_pipe("sr_swin96", 4, 56);
+        add_pipe("sr_swin_proj", 4, 56);
+        add_pipe("sr_swin_up", 5, 56);
         add_pipe("sr_tube_split", 4, 56);
         // sr_dec0 gained binding 8: t8 bound again as 16-byte vectors for the staging loop
         // (one vector load a half-pixel-plane instead of a byte load a channel).
@@ -1399,6 +1407,11 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
         static const uint32_t k_stage_w_off[10] = {
             0, 71936, 235520, 419840, 604160, 788480, 972800, 1157120, 1341440, 1505536
         };
+        // A/B: DLSS5_AMD_STAGE_LEGACY=1 keeps the fused pinned sr_stage for these four launches.
+        static const bool stage_legacy = [] {
+            const char* e = std::getenv("DLSS5_AMD_STAGE_LEGACY");
+            return e != nullptr && e[0] != '\0' && e[0] != '0';
+        }();
         for (int st = 0; st < 10; ++st) {
             uint8_t push[56] = {0};
             uint32_t w_off = k_stage_w_off[st];
@@ -1408,13 +1421,27 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             if (st == 0) { dimW = L1w; dimH = L1h; s0 = pe; s1 = 2;
                 std::memcpy(push + 40, &dimW, 4); std::memcpy(push + 44, &dimH, 4);
                 std::memcpy(push + 48, &s0, 4); std::memcpy(push + 52, &s1, 4);
-                // binding 4 is the mode-2 skip; the oracle passes no offset 16 in mode 0,
-                // so bind the stage's own input - the shader never reads it here.
-                dispatch(cmd, "sr_stage_c64m0", {&wbuf, &t_act[0], &t_act[1], &t_act[2], &t_act[0], &wrep}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 7) / 8, 1);
+                if (stage_legacy) {
+                    // binding 4 is the mode-2 skip; the oracle passes no offset 16 in mode 0,
+                    // so bind the stage's own input - the shader never reads it here.
+                    dispatch(cmd, "sr_stage_c64m0", {&wbuf, &t_act[0], &t_act[1], &t_act[2], &t_act[0], &wrep}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 7) / 8, 1);
+                } else {
+                    dispatch(cmd, "sr_swin64", {&wbuf, &t_act[0], &t_act[1], &wrep}, push, 56,
+                             (dimW + s0 + 3) / 4, (dimH + s1 + 3) / 4, 1);
+                    dispatch(cmd, "sr_swin_proj", {&wbuf, &t_act[1], &t_act[2], &wrep}, push, 56,
+                             ((dimW >> 1) + 3) / 4, ((dimH >> 1) + 3) / 4, 1);
+                }
             } else if (st == 1) { dimW = L2w; dimH = L2h; s0 = pe; s1 = 2;
                 std::memcpy(push + 40, &dimW, 4); std::memcpy(push + 44, &dimH, 4);
                 std::memcpy(push + 48, &s0, 4); std::memcpy(push + 52, &s1, 4);
-                dispatch(cmd, "sr_stage_c96m0", {&wbuf, &t_act[2], &t_act[3], &t_act[4], &t_act[2], &wrep}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 7) / 8, 1);
+                if (stage_legacy) {
+                    dispatch(cmd, "sr_stage_c96m0", {&wbuf, &t_act[2], &t_act[3], &t_act[4], &t_act[2], &wrep}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 7) / 8, 1);
+                } else {
+                    dispatch(cmd, "sr_swin96", {&wbuf, &t_act[2], &t_act[3], &wrep}, push, 56,
+                             (dimW + s0 + 3) / 4, (dimH + s1 + 3) / 4, 1);
+                    dispatch(cmd, "sr_swin_proj", {&wbuf, &t_act[3], &t_act[4], &wrep}, push, 56,
+                             ((dimW >> 1) + 3) / 4, ((dimH >> 1) + 3) / 4, 1);
+                }
             } else if (st <= 7) {
                 Buffer* in_b = (st == 2) ? &t_act[4] : (st & 1) ? &t_act[5] : &t_act[6];
                 Buffer* out_b = (st & 1) ? &t_act[6] : &t_act[5];
@@ -1427,13 +1454,36 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             } else if (st == 8) { dimW = L2w; dimH = L2h; s0 = po; s1 = 0;
                 std::memcpy(push + 40, &dimW, 4); std::memcpy(push + 44, &dimH, 4);
                 std::memcpy(push + 48, &s0, 4); std::memcpy(push + 52, &s1, 4);
-                // Oracle launch 11: wbuf+1341440, t6 (in), t3 (skip, StageArgs+16), t7 (out).
-                dispatch(cmd, "sr_stage_c96m2", {&wbuf, &t_act[6], &t_act[7], &t_act[7], &t_act[3], &wrep}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 7) / 8, 1);
+                if (stage_legacy) {
+                    // Oracle launch 11: wbuf+1341440, t6 (in), t3 (skip, StageArgs+16), t7 (out).
+                    dispatch(cmd, "sr_stage_c96m2", {&wbuf, &t_act[6], &t_act[7], &t_act[7], &t_act[3], &wrep}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 7) / 8, 1);
+                } else {
+                    // The up's output goes to t2, NOT in place on its low t6: each WG stages its
+                    // 16 parents before its own stores, but across WGs there is no ordering - a
+                    // later-WG gather reads low bytes an earlier-WG consume store has already
+                    // overwritten (measured: t8 garbage, r 0.13; the isolated kernel scores
+                    // 44.4 dB vs the model, so the shader itself is right). t2 (L2x96 = exactly
+                    // this tensor's size) is dead here: written by stage 0's projection, last
+                    // read by the tube chain (launch <= 10).
+                    dispatch(cmd, "sr_swin_up", {&wbuf, &t_act[6], &t_act[3], &t_act[2], &wrep}, push, 56,
+                             (dimW + 7) / 8, (dimH + 7) / 8, 1);
+                    dispatch(cmd, "sr_swin96", {&wbuf, &t_act[2], &t_act[7], &wrep}, push, 56,
+                             (dimW + s0 + 3) / 4, (dimH + s1 + 3) / 4, 1);
+                }
             } else { dimW = L1w; dimH = L1h; s0 = po; s1 = 0;
                 std::memcpy(push + 40, &dimW, 4); std::memcpy(push + 44, &dimH, 4);
                 std::memcpy(push + 48, &s0, 4); std::memcpy(push + 52, &s1, 4);
-                // Oracle launch 12: wbuf+1505536, t7 (in), t1 (skip, StageArgs+16), t8 (out).
-                dispatch(cmd, "sr_stage_c64m2", {&wbuf, &t_act[7], &t_act[8], &t_act[8], &t_act[1], &wrep}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 7) / 8, 1);
+                if (stage_legacy) {
+                    // Oracle launch 12: wbuf+1505536, t7 (in), t1 (skip, StageArgs+16), t8 (out).
+                    dispatch(cmd, "sr_stage_c64m2", {&wbuf, &t_act[7], &t_act[8], &t_act[8], &t_act[1], &wrep}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 7) / 8, 1);
+                } else {
+                    // Same scratch rule as stage 8: t0 (>= L1x64, dead after stage 0 read it) holds
+                    // the up's output; the block reads it into t8.
+                    dispatch(cmd, "sr_swin_up", {&wbuf, &t_act[7], &t_act[1], &t_act[0], &wrep}, push, 56,
+                             (dimW + 7) / 8, (dimH + 7) / 8, 1);
+                    dispatch(cmd, "sr_swin64", {&wbuf, &t_act[0], &t_act[8], &wrep}, push, 56,
+                             (dimW + s0 + 3) / 4, (dimH + s1 + 3) / 4, 1);
+                }
             }
             static const char* st_pt[] = {"stage0", "stage1", "tube0", "tube1", "tube2",
                                           "tube3", "tube4", "tube5", "stage8", "stage9"};

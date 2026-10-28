@@ -332,7 +332,7 @@ def make_test(name, out_dir):
                 {"binding": 13, "bytes": ow * oh * 4, "output": "full15", "type": "u32"}
             ]
         }
-    elif name == "sr_tube_split":
+    elif name in ("sr_tube_split", "sr_swin64", "sr_swin96"):
         # One wave per 4x4 window (16 tokens). The shader walks the whole 184576-byte tube blob
         # through wbuf16 (f16 vectors, binding 0) and wrep (row-major matrices, binding 3), and the
         # push dims are 16x16, so the tensors cover [4][16][16][32] = 32768 elements. in_act/out_act
@@ -354,6 +354,50 @@ def make_test(name, out_dir):
                 {"binding": 1, "file": "in_act.bin"},
                 {"binding": 2, "bytes": 65536, "output": "out_act", "type": "u8"},
                 {"binding": 3, "file": "wrep.bin"}
+            ]
+        }
+    elif name == "sr_swin_proj":
+        # mode-0 patch projection: wbuf16 (dn_b), in_act (the block's output, fp8), out_act2,
+        # wrep (dn_W). Push is the same StageArgs; the grid covers the low-pixel tiles.
+        open(os.path.join(out_dir, "in_act.bin"), "wb").write(
+            np.tile(np.linspace(1, 250, 4096, dtype=np.uint8), 8).tobytes())        # 32768 B
+        open(os.path.join(out_dir, "wbuf.bin"), "wb").write(
+            np.tile(np.linspace(0.5, 2.0, 32768, dtype=np.float16).tobytes(), 6))   # 393216 B
+        open(os.path.join(out_dir, "wrep.bin"), "wb").write(
+            np.tile(np.linspace(0.05, 0.5, 32768, dtype=np.float16).tobytes(), 6))  # 393216 B
+        push = bytearray(56)
+        struct.pack_into("<4i", push, 40, 16, 16, 0, 0)
+        cfg = {
+            "groups": [2, 2, 1],
+            "push": push.hex(),
+            "bindings": [
+                {"binding": 0, "file": "wbuf.bin"},
+                {"binding": 1, "file": "in_act.bin"},
+                {"binding": 2, "bytes": 32768, "output": "out_act2", "type": "u8"},
+                {"binding": 3, "file": "wrep.bin"}
+            ]
+        }
+    elif name == "sr_swin_up":
+        # mode-2 up + skip: wbuf16 (up_b), in_low, in_skip, out (the block's input), wrep.
+        # wbuf_lo = 0 in this push, so the shader reads the C=96 / Cn=128 shape.
+        open(os.path.join(out_dir, "wbuf.bin"), "wb").write(
+            np.tile(np.linspace(0.5, 2.0, 32768, dtype=np.float16).tobytes(), 6))   # 393216 B
+        open(os.path.join(out_dir, "wrep.bin"), "wb").write(
+            np.tile(np.linspace(0.05, 0.5, 32768, dtype=np.float16).tobytes(), 6))  # 393216 B
+        for f in ("low.bin", "skip.bin"):
+            open(os.path.join(out_dir, f), "wb").write(
+                np.tile(np.linspace(1, 250, 4096, dtype=np.uint8), 8).tobytes())    # 32768 B
+        push = bytearray(56)
+        struct.pack_into("<4i", push, 40, 16, 16, 0, 0)
+        cfg = {
+            "groups": [2, 2, 1],
+            "push": push.hex(),
+            "bindings": [
+                {"binding": 0, "file": "wbuf.bin"},
+                {"binding": 1, "file": "low.bin"},
+                {"binding": 2, "file": "skip.bin"},
+                {"binding": 3, "bytes": 32768, "output": "out", "type": "u8"},
+                {"binding": 4, "file": "wrep.bin"}
             ]
         }
     elif name in ("sr_stage", "sr_stage_c64m0", "sr_stage_c96m0", "sr_stage_c96m2", "sr_stage_c64m2"):
