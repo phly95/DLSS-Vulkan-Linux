@@ -53,6 +53,12 @@ layout(push_constant) uniform DownArgs {
 // f16 LDS element costs a load PLUS a v_cvt per tap (75 conversions a thread); staging the f32 the
 // unpack already produced removes all of them for 1.8x the LDS, which this kernel has to spare.
 shared f16vec3 s_patch[28][28];
+// TRUE two-pass separable FIR (opus/PROPOSALs s3): the horizontal pass at (source row, output
+// column) depends only on those two, and a 16x16 output tile spans exactly 28 source rows - so the
+// 5-tap row filter runs ONCE per (row, column) = 448 times per tile instead of 5x per output pixel
+// (1280). The vertical pass then reads 5 of them per output. Same arithmetic, same order: the row
+// sum and its Karis clamp are computed identically, only hoisted.
+shared f16vec3 s_row[28][16];
 
 f16vec3 unpack_color(uint u) {
     float r = float(u & 0x7ffu);
@@ -68,7 +74,9 @@ f16vec3 unpack_color(uint u) {
     }
 }
 
-float inv_tonemap(float16_t v0) {
+// inv_e is hoisted: the old form divided by expo once per CHANNEL (3 rcp sequences a pixel);
+// one reciprocal and three multiplies instead.
+float inv_tonemap(float16_t v0, float inv_e) {
     float v = float(v0);
     if (ldr != 0u) {
         return float(v0);
@@ -79,9 +87,7 @@ float inv_tonemap(float16_t v0) {
 
     float p = (c * kInv036) * uintBitsToFloat(log2_10);
     float e = exp2(p) - 1.0;
-    float m = e * k001;
-
-    return m / max(float(expo[parity]), 0.0001);
+    return e * k001 * inv_e;
 }
 
 void main() {
@@ -99,6 +105,45 @@ void main() {
 
     barrier();
 
+    // The two 5-tap sets are the even/odd halves of the same symmetric kernel
+    const float16_t wA0 = float16_t(-0.0413513), wA1 = float16_t(0.0872803), wA2 = float16_t(0.6201172);
+    const float16_t wA3 = float16_t(0.3720703),  wA4 = float16_t(-0.0382996);
+    const float16_t wB0 = float16_t(-0.0382996), wB1 = float16_t(0.3720703), wB2 = float16_t(0.6201172);
+    const float16_t wB3 = float16_t(0.0872803),  wB4 = float16_t(-0.0413513);
+
+    // ---- pass 1 (horizontal): one row filter per (source row, output column) ----
+    for (uint i = gl_LocalInvocationIndex; i < 28u * 16u; i += 256u) {
+        int py = int(i / 16u);
+        int lx = int(int(i) % 16);
+        int oxl = 16 * int(gl_WorkGroupID.x) + lx;
+        int bxl = int(floor((float(oxl) + 0.5) * 1.5)) - tile_x0;
+        f16vec3 t0 = s_patch[py][bxl - 2];
+        f16vec3 t1 = s_patch[py][bxl - 1];
+        f16vec3 t2 = s_patch[py][bxl + 0];
+        f16vec3 t3 = s_patch[py][bxl + 1];
+        f16vec3 t4 = s_patch[py][bxl + 2];
+        // the x weights are set by the OUTPUT column's parity (16*gx is even, so lx's parity)
+        bool odd = (lx & 1) != 0;
+        f16vec2 r = t0.xy * f16vec2(odd ? wB0 : wA0);
+        r = fma(t1.xy, f16vec2(odd ? wB1 : wA1), r);
+        r = fma(t2.xy, f16vec2(odd ? wB2 : wA2), r);
+        r = fma(t3.xy, f16vec2(odd ? wB3 : wA3), r);
+        r = fma(t4.xy, f16vec2(odd ? wB4 : wA4), r);
+        float16_t rb = t0.z * (odd ? wB0 : wA0);
+        rb = fma(t1.z, odd ? wB1 : wA1, rb);
+        rb = fma(t2.z, odd ? wB2 : wA2, rb);
+        rb = fma(t3.z, odd ? wB3 : wA3, rb);
+        rb = fma(t4.z, odd ? wB4 : wA4, rb);
+        f16vec2 mn = min(min(min(t0.xy, t1.xy), min(t2.xy, t3.xy)), t4.xy);
+        f16vec2 mx = max(max(max(t0.xy, t1.xy), max(t2.xy, t3.xy)), t4.xy);
+        r = clamp(r, mn, mx);
+        float16_t bmn = min(min(min(t0.z, t1.z), min(t2.z, t3.z)), t4.z);
+        float16_t bmx = max(max(max(t0.z, t1.z), max(t2.z, t3.z)), t4.z);
+        rb = clamp(rb, bmn, bmx);
+        s_row[py][lx] = f16vec3(r.x, r.y, rb);
+    }
+    barrier();
+
     int ox = int(gl_GlobalInvocationID.x);
     int oy = int(gl_GlobalInvocationID.y);
     if (ox >= oW || oy >= oH) {
@@ -107,69 +152,40 @@ void main() {
 
     int bx = int(floor((float(ox) + 0.5) * 1.5)) - tile_x0;
     int by = int(floor((float(oy) + 0.5) * 1.5)) - tile_y0;
+    int lx = ox - 16 * int(gl_WorkGroupID.x);
 
-    // The two 5-tap sets are the even/odd halves of the same symmetric kernel
-    const float16_t wA0 = float16_t(-0.0413513), wA1 = float16_t(0.0872803), wA2 = float16_t(0.6201172);
-    const float16_t wA3 = float16_t(0.3720703),  wA4 = float16_t(-0.0382996);
-    const float16_t wB0 = float16_t(-0.0382996), wB1 = float16_t(0.3720703), wB2 = float16_t(0.6201172);
-    const float16_t wB3 = float16_t(0.0872803),  wB4 = float16_t(-0.0413513);
-    float16_t wx[5], wy[5];
-    if ((ox & 1) != 0) {
-        wx[0] = wB0; wx[1] = wB1; wx[2] = wB2; wx[3] = wB3; wx[4] = wB4;
-    } else {
-        wx[0] = wA0; wx[1] = wA1; wx[2] = wA2; wx[3] = wA3; wx[4] = wA4;
-    }
+    float16_t wy[5];
     if ((oy & 1) != 0) {
         wy[0] = wB0; wy[1] = wB1; wy[2] = wB2; wy[3] = wB3; wy[4] = wB4;
     } else {
         wy[0] = wA0; wy[1] = wA1; wy[2] = wA2; wy[3] = wA3; wy[4] = wA4;
     }
 
-    // packed f16 FIR: RG ride one f16vec2 (one instruction covers two channels of every tap and
-    // every clamp bound), B on its own float16_t - exactly the instruction shape of NeuralHub's
-    // k_sr_downsample. Compare-select clamp on the packed halves, as their ISA does.
+    // ---- pass 2 (vertical): ONE tap per source row - the horizontal sum is already in s_row ----
+    // Per output: 5 LDS reads + 5 fma + 10 running min/max, against the old 25 reads + 75 fma +
+    // 42 min/max. The accumulation order (j = 0..4, fma into a zeroed accumulator) and the two
+    // clamps are exactly the old pass's, so the result is bit-identical.
     f16vec2 colrg = f16vec2(0.0);
     float16_t colb = float16_t(0.0);
     f16vec2 colmn = f16vec2(65504.0), colmx = f16vec2(-65504.0);
     float16_t colbn = float16_t(65504.0), colbx = float16_t(-65504.0);
 
     for (int j = 0; j < 5; ++j) {
-        int py = by - 2 + j;
-        f16vec3 s0 = s_patch[py][bx - 2];
-        f16vec3 s1 = s_patch[py][bx - 1];
-        f16vec3 s2 = s_patch[py][bx + 0];
-        f16vec3 s3 = s_patch[py][bx + 1];
-        f16vec3 s4 = s_patch[py][bx + 2];
-        f16vec2 r = s0.xy * f16vec2(wx[0]);
-        r = fma(s1.xy, f16vec2(wx[1]), r);
-        r = fma(s2.xy, f16vec2(wx[2]), r);
-        r = fma(s3.xy, f16vec2(wx[3]), r);
-        r = fma(s4.xy, f16vec2(wx[4]), r);
-        float16_t rb = s0.z * wx[0];
-        rb = fma(s1.z, wx[1], rb);
-        rb = fma(s2.z, wx[2], rb);
-        rb = fma(s3.z, wx[3], rb);
-        rb = fma(s4.z, wx[4], rb);
-        // Karis firefly clamp over the same five taps, on the packed halves
-        f16vec2 mn = min(min(min(s0.xy, s1.xy), min(s2.xy, s3.xy)), s4.xy);
-        f16vec2 mx = max(max(max(s0.xy, s1.xy), max(s2.xy, s3.xy)), s4.xy);
-        r = clamp(r, mn, mx);               // plain min/max: mix(f16vec2,f16vec2,bvec2) miscompiles
-        float16_t bmn = min(min(min(s0.z, s1.z), min(s2.z, s3.z)), s4.z);
-        float16_t bmx = max(max(max(s0.z, s1.z), max(s2.z, s3.z)), s4.z);
-        rb = clamp(rb, bmn, bmx);
-
-        colrg = fma(r, f16vec2(wy[j]), colrg);
-        colb = fma(rb, wy[j], colb);
-        colmn = min(colmn, r); colmx = max(colmx, r);
-        colbn = min(colbn, rb); colbx = max(colbx, rb);
+        f16vec3 t = s_row[by - 2 + j][lx];
+        colrg = fma(t.xy, f16vec2(wy[j]), colrg);
+        colb = fma(t.z, wy[j], colb);
+        colmn = min(colmn, t.xy);
+        colmx = max(colmx, t.xy);
+        colbn = min(colbn, t.z);
+        colbx = max(colbx, t.z);
     }
-    colrg = clamp(colrg, colmn, colmx);     // same
+    colrg = clamp(colrg, colmn, colmx);
     colb = clamp(colb, colbn, colbx);
-    vec3 col_filtered = vec3(colrg.x, colrg.y, colb);
 
-    vec3 final_rgb = vec3(inv_tonemap(colrg.x),
-                          inv_tonemap(colrg.y),
-                          inv_tonemap(colb));
+    float inv_e = 1.0 / max(float(expo[parity]), 0.0001);
+    vec3 final_rgb = vec3(inv_tonemap(colrg.x, inv_e),
+                          inv_tonemap(colrg.y, inv_e),
+                          inv_tonemap(colb, inv_e));
 
     int src_x = clamp(int(ox * W / oW), 0, W - 1);
     int src_y = clamp(int(oy * H / oH), 0, H - 1);
