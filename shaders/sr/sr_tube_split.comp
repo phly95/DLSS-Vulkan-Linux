@@ -40,7 +40,7 @@ layout(push_constant) uniform StageArgs {
 };
 
 shared NR_OPERAND sX[16 * 128];   // raw fp8: decode happens where it is read
-shared NR_OPERAND sN[16 * 128];
+shared NR_OPERAND sN[16 * 144];   // stride 144 B: 128 B put every lane of an A load in 4 LDS banks; 144 (T=9 odd, 16B aligned) spreads to 2-way
 shared NR_OPERAND sQ[16 * 32];
 shared float16_t  sP[16 * 16];    // probabilities stay f16 (prob8=0 in the model)
 shared NR_OPERAND sC[16 * 32];
@@ -152,8 +152,9 @@ void main() {
         for (uint t = 0u; t < 8u; ++t) {
             float g = read_f16(w_off + 2u * vidx(16u * t + col));
             for (uint i = 0u; i < 8u; ++i) {
-                uint k = (8u * rowh + i) * 128u + 16u * t + col;
-                sN[k] = NR_OPERAND(quant8(float(sX[k]) * (rs[i] * g)));
+                uint ks = 8u * rowh + i;
+                uint k = ks * 144u + 16u * t + col;          // sN: padded stride (bank spread)
+                sN[k] = NR_OPERAND(quant8(float(sX[ks * 128u + 16u * t + col]) * (rs[i] * g)));
             }
         }
     }
@@ -187,7 +188,7 @@ void main() {
         // fully serial (0.91 total). Straight-line code lets the scheduler interleave them.
         [[unroll]] for (uint kk = 0u; kk < 8u; ++kk) {
             NR_FRAG_A fa;
-            NR_LOAD_A(fa, sN, 16u * kk, 128u);
+            NR_LOAD_A(fa, sN, 16u * kk, 144u);
             NR_FRAG_B bq0;
             NR_LOAD_B(bq0, wrep, hb + 16u * kk, 128u);
             NR_FRAG_B bq1;
@@ -284,7 +285,7 @@ void main() {
         for (uint t = 0u; t < 8u; ++t) {
             float g = read_f16(gain2 + 2u * vidx(16u * t + col));
             for (uint i = 0u; i < 8u; ++i) {
-                uint k = (8u * rowh + i) * 128u + 16u * t + col;
+                uint k = (8u * rowh + i) * 144u + 16u * t + col;
                 sN[k] = NR_OPERAND(quant8(st[t][i] * (rs[i] * g)));
             }
         }
@@ -303,10 +304,10 @@ void main() {
         // A = sN's eight K slices are FIXED for all 16 MLP blocks: load them ONCE here instead
         // of 8 loads x16 blocks (128 -> 8; fragments are registers, +~8 VGPR while live).
         NR_FRAG_A na0, na1, na2, na3, na4, na5, na6, na7;
-        NR_LOAD_A(na0, sN,   0u, 128u); NR_LOAD_A(na1, sN,  16u, 128u);
-        NR_LOAD_A(na2, sN,  32u, 128u); NR_LOAD_A(na3, sN,  48u, 128u);
-        NR_LOAD_A(na4, sN,  64u, 128u); NR_LOAD_A(na5, sN,  80u, 128u);
-        NR_LOAD_A(na6, sN,  96u, 128u); NR_LOAD_A(na7, sN, 112u, 128u);
+        NR_LOAD_A(na0, sN,   0u, 144u); NR_LOAD_A(na1, sN,  16u, 144u);
+        NR_LOAD_A(na2, sN,  32u, 144u); NR_LOAD_A(na3, sN,  48u, 144u);
+        NR_LOAD_A(na4, sN,  64u, 144u); NR_LOAD_A(na5, sN,  80u, 144u);
+        NR_LOAD_A(na6, sN,  96u, 144u); NR_LOAD_A(na7, sN, 112u, 144u);
         for (uint j = 0u; j < 16u; ++j) {
             uint base = ffn + j * 8256u + ((j == 0u) ? 0u : 256u);
             uint fc1 = base;
