@@ -72,10 +72,14 @@ layout(set = 0, binding = 4) readonly buffer InAniso    { f16vec4 aniso[]; };
 // binding 9 is written as a storage image. The sampler is what the 5-tap Catmull-Rom's bilinear
 // fetches were written for - cr_axis already quantises the sub-texel fractions to 1/256 precisely
 // because hardware bilinear weights are 8-bit, so this changes the fetch, not the arithmetic.
-layout(set = 0, binding = 5) uniform sampler2D inHist;
+// The history is r16g16b16a16_UINT: RGB hold round(tm * 24000), A is the spec's unused 0. An
+// integer image is not filterable, so the sampler is NEAREST and the bilinear/CR arithmetic is
+// done here from the gathered texels (which is what this kernel already did) - but the texels are
+// now 16-bit fixed point in the spec's own tm domain instead of f16, 12-25x finer at the same 8 B.
+layout(set = 0, binding = 5) uniform usampler2D inHist;
 layout(set = 0, binding = 8) readonly buffer InMvNondil { f16vec2 in_mv_nondil[]; };
 
-layout(set = 0, binding = 9, rgba16f) writeonly uniform image2D outHist;
+layout(set = 0, binding = 9, rgba16ui) writeonly uniform uimage2D outHist;
 layout(set = 0, binding = 10) writeonly buffer OutFull15 { uint full15[]; };
 layout(set = 0, binding = 11) writeonly buffer OutDhist  { uint out_dhist[]; };
 // binding 12 carries no descriptor (the history no longer needs a packed second view); full15
@@ -145,6 +149,43 @@ vec3 decode_lin(vec3 h, float l210) {
     return C_PT01 * (exp2((hc * C_I036) * l210) - 1.0);
 }
 
+// PERF pass 7: the history's STORAGE, as 16-bit FIXED POINT in the spec's own tm domain.
+//
+// Why not a remap (the orchestrator's first suggestion): the stored value IS the CR filter's input,
+// so changing the domain changes what the 5-tap average computes. Measured on this cell:
+//   tm(L) in f16 (spec, f16 grid)    sr_L_static G1 -0.189   B1 59.25
+//   sqrt(1+100L) in f16              sr_L_static G1 -0.087   B1 59.25
+//   (1+100L)/51 in f16 (linear avg)  sr_L_static G1 -0.141   B1 57.44  <- filter diverged
+//   L/(1+L) in f16                   rejected on arithmetic: 50% error at L=10000 (saturates)
+// So the domain must stay tm; only the QUANTISATION can move. tm in [0, 2.706] stored as
+// round(tm * 24000) in an r16g16b16a16_UINT image gives 4.2e-5 of absolute precision - 12-25x
+// finer than f16's grid at the same 8 bytes per texel - and because the texels stay integer the
+// CR average runs on exact tm values (integer->f32 conversion is exact), i.e. the filter behaves
+// like the rgba32f build that scored G1 -0.024.
+// It is also the cheapest of the three: one fma to write, one multiply to read, no sqrt/exp2 in
+// either direction beyond the tm conversion the spec already has.
+#define HIST_SCALE 24000.0f                  // 2.706 * 24000 = 64944 < 65535
+#define HIST_INV_SCALE (1.0f / 24000.0f)
+
+// the stored value: tm(L) quantised to u16
+uint hist_write(float x) {
+    float t = (log2(fma(100.0, x, 1.0)) * C_TM_LOG10_2) * C_TM_SCALE;   // tm_lin, scalar
+    return uint(clamp(round(t * HIST_SCALE), 0.0, 65535.0));
+}
+uvec3 hist_write(vec3 x) {
+    vec3 t = (log2(fma(vec3(100.0), x, vec3(1.0))) * C_TM_LOG10_2) * C_TM_SCALE;
+    return uvec3(clamp(round(t * HIST_SCALE), vec3(0.0), vec3(65535.0)));
+}
+// back to the linear domain: the gathered value is tm * 24000
+float hist_read(float h) {
+    float t = clamp(h * HIST_INV_SCALE, 0.0, 3.0);      // the old decode's [0, 3] tm clamp
+    return 0.01 * (exp2(t * C_I036 * log2_10) - 1.0);
+}
+vec3 hist_read(vec3 h) {
+    vec3 t = clamp(h * HIST_INV_SCALE, vec3(0.0), vec3(3.0));
+    return C_PT01 * (exp2(t * C_I036 * log2_10) - vec3(1.0));
+}
+
 // SPEC 6, the 1D Catmull-Rom weights of the sub-texel fraction f (clamped to [0,1]):
 // returns w(-1), w(2), a = w0 + w1 and the 8-bit round-to-nearest quantised fraction r = w1 / a.
 void cr_axis(float f0, out float wm1, out float w2, out float a, out float rq) {
@@ -188,6 +229,8 @@ vec3 cr_bil(vec2 uv, float rx, float ry) {
     vec4 gr = textureGather(inHist, uv, 0);
     vec4 gg = textureGather(inHist, uv, 1);
     vec4 gb = textureGather(inHist, uv, 2);
+    // the image is r16g16b16a16_UINT: each component is the fixed-point tm of one texel, so the
+    // gather hands back exact tm * 24000 with no float16 conversion anywhere
     vec3 h00 = vec3(gr.w, gg.w, gb.w);       // (u,   v  ) top-left
     vec3 h01 = vec3(gr.z, gg.z, gb.z);       // (u+1, v  ) top-right
     vec3 h10 = vec3(gr.x, gg.x, gb.x);       // (u,   v+1) bottom-left
@@ -407,7 +450,10 @@ void main() {
             int sx = clamp(int(floor(posxE * scaleX)), 0, W - 1);
             int sy = clamp(int(floor(posyE * scaleY)), 0, H - 1);
             f16vec4 cg = g_col[uint(sy * W + sx)];
-            hE = vec3(tm_rec(float(cg.x), e_prev), tm_rec(float(cg.y), e_prev), tm_rec(float(cg.z), e_prev));
+            vec3 prev = vec3(hist_write(min(float(cg.x) * e_prev, 32752.0)),
+                             hist_write(min(float(cg.y) * e_prev, 32752.0)),
+                             hist_write(min(float(cg.z) * e_prev, 32752.0)));
+            hE = prev;
         }
         if (posxO >= 0.0 && posxO <= float(W15) && posyO >= 0.0 && posyO <= float(H15)) {
             hO = cr_sample(posxO, posyO);
@@ -415,13 +461,16 @@ void main() {
             int sx = clamp(int(floor(posxO * scaleX)), 0, W - 1);
             int sy = clamp(int(floor(posyO * scaleY)), 0, H - 1);
             f16vec4 cg = g_col[uint(sy * W + sx)];
-            hO = vec3(tm_rec(float(cg.x), e_prev), tm_rec(float(cg.y), e_prev), tm_rec(float(cg.z), e_prev));
+            vec3 prev = vec3(hist_write(min(float(cg.x) * e_prev, 32752.0)),
+                             hist_write(min(float(cg.y) * e_prev, 32752.0)),
+                             hist_write(min(float(cg.z) * e_prev, 32752.0)));
+            hO = prev;
         }
 
         // SPEC 6: A = e0 * decode(h); x = fma(t, B - A, A) for the t1 blend (ihist1, dhist) and the
         // t2 blend (full15). On frame 0 the history is zero, so h = 0 and A = e * decode(0).
-        AE[c] = e * decode_lin(hE, log2_10);
-        AO[c] = e * decode_lin(hO, log2_10);
+        AE[c] = e * hist_read(hE);
+        AO[c] = e * hist_read(hO);
         x1E[c] = fma(vec3(t1E), BE[c] - AE[c], AE[c]);
         x1O[c] = fma(vec3(t1O), BO[c] - AO[c], AO[c]);
         x2E[c] = fma(vec3(t2E), BE[c] - AE[c], AE[c]);
@@ -435,10 +484,10 @@ void main() {
     if (v0 && v1) {
         const int iE = ye * W15 + x15;
         const int iO = yo * W15 + x15;
-        imageStore(outHist, ivec2(x15,     ye), vec4(tm_lin(x1E[0]), 0.0));
-        imageStore(outHist, ivec2(x15 + 1, ye), vec4(tm_lin(x1E[1]), 0.0));
-        imageStore(outHist, ivec2(x15,     yo), vec4(tm_lin(x1O[0]), 0.0));
-        imageStore(outHist, ivec2(x15 + 1, yo), vec4(tm_lin(x1O[1]), 0.0));
+        imageStore(outHist, ivec2(x15,     ye), uvec4(hist_write(x1E[0]), 0u));
+        imageStore(outHist, ivec2(x15 + 1, ye), uvec4(hist_write(x1E[1]), 0u));
+        imageStore(outHist, ivec2(x15,     yo), uvec4(hist_write(x1O[0]), 0u));
+        imageStore(outHist, ivec2(x15 + 1, yo), uvec4(hist_write(x1O[1]), 0u));
         out_full15_2[iE >> 1] = uvec2(enc_full15(tm_lin(x2E[0])), enc_full15(tm_lin(x2E[1])));
         out_full15_2[iO >> 1] = uvec2(enc_full15(tm_lin(x2O[0])), enc_full15(tm_lin(x2O[1])));
     } else {
@@ -446,16 +495,16 @@ void main() {
         if (v0) {
             const int iE = ye * W15 + x15;
             const int iO = yo * W15 + x15;
-            imageStore(outHist, ivec2(x15, ye), vec4(tm_lin(x1E[0]), 0.0));
-            imageStore(outHist, ivec2(x15, yo), vec4(tm_lin(x1O[0]), 0.0));
+            imageStore(outHist, ivec2(x15, ye), uvec4(hist_write(x1E[0]), 0u));
+            imageStore(outHist, ivec2(x15, yo), uvec4(hist_write(x1O[0]), 0u));
             full15[iE] = enc_full15(tm_lin(x2E[0]));
             full15[iO] = enc_full15(tm_lin(x2O[0]));
         }
         if (v1) {
             const int iE = ye * W15 + x15 + 1;
             const int iO = yo * W15 + x15 + 1;
-            imageStore(outHist, ivec2(x15 + 1, ye), vec4(tm_lin(x1E[1]), 0.0));
-            imageStore(outHist, ivec2(x15 + 1, yo), vec4(tm_lin(x1O[1]), 0.0));
+            imageStore(outHist, ivec2(x15 + 1, ye), uvec4(hist_write(x1E[1]), 0u));
+            imageStore(outHist, ivec2(x15 + 1, yo), uvec4(hist_write(x1O[1]), 0u));
             full15[iE] = enc_full15(tm_lin(x2E[1]));
             full15[iO] = enc_full15(tm_lin(x2O[1]));
         }

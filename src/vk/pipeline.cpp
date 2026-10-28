@@ -610,7 +610,7 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         for (int i = 0; i < 2; ++i) {
             VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
             ici.imageType = VK_IMAGE_TYPE_2D;
-            ici.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+            ici.format = VK_FORMAT_R16G16B16A16_UINT;
             ici.extent = {uint32_t(W15), uint32_t(H15), 1};
             ici.mipLevels = 1;
             ici.arrayLayers = 1;
@@ -635,13 +635,16 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
             VkImageViewCreateInfo ivci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
             ivci.image = c->sr_hist_img[i];
             ivci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-            ivci.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+            ivci.format = VK_FORMAT_R16G16B16A16_UINT;
             ivci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
             vkCreateImageView(dev, &ivci, nullptr, &c->sr_hist_view[i]);
         }
         VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-        sci.magFilter = VK_FILTER_LINEAR;              // the bilinear the CR weights assume
-        sci.minFilter = VK_FILTER_LINEAR;
+        // The history image is an integer format (16-bit fixed-point tm), which Vulkan only allows
+        // with NEAREST filtering - and this kernel never filters through the sampler anyway: the
+        // CR's bilinear is computed here from the gathered texels (see sr_post.comp).
+        sci.magFilter = VK_FILTER_NEAREST;
+        sci.minFilter = VK_FILTER_NEAREST;
         sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
         sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;

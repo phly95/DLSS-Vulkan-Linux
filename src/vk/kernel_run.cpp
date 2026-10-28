@@ -187,6 +187,7 @@ static LaunchConfig parse_launch_json(const std::string& json_str) {
 
 static VkFormat format_from_string(const std::string& s) {
     if (s == "r16g16b16a16_sfloat") return VK_FORMAT_R16G16B16A16_SFLOAT;
+    if (s == "r16g16b16a16_uint") return VK_FORMAT_R16G16B16A16_UINT;
     if (s == "r32g32b32a32_sfloat") return VK_FORMAT_R32G32B32A32_SFLOAT;
     if (s == "r32g32_sfloat") return VK_FORMAT_R32G32_SFLOAT;
     if (s == "r8g8b8a8_unorm") return VK_FORMAT_R8G8B8A8_UNORM;
@@ -196,6 +197,7 @@ static VkFormat format_from_string(const std::string& s) {
 static uint32_t format_texel_bytes(VkFormat f) {
     switch (f) {
     case VK_FORMAT_R16G16B16A16_SFLOAT: return 8;
+    case VK_FORMAT_R16G16B16A16_UINT: return 8;
     case VK_FORMAT_R32G32B32A32_SFLOAT: return 16;
     case VK_FORMAT_R32G32_SFLOAT: return 8;
     case VK_FORMAT_R8G8B8A8_UNORM: return 4;
@@ -633,8 +635,12 @@ int main(int argc, char** argv) {
 
         if (b.img.sampled) {
             VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-            sci.magFilter = VK_FILTER_LINEAR;            // the bilinear the 5-tap CR wants
-            sci.minFilter = VK_FILTER_LINEAR;
+            // integer formats are not filterable: NEAREST is the only legal choice (and the only
+            // one this kernel uses - its CR bilinear is computed in the shader)
+            const bool ifmt = (im.format == VK_FORMAT_R16G16B16A16_UINT ||
+                               im.format == VK_FORMAT_R32_UINT || im.format == VK_FORMAT_R32_SINT);
+            sci.magFilter = ifmt ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+            sci.minFilter = ifmt ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
             sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
             sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
             sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;

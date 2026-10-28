@@ -318,12 +318,12 @@ def make_test(name, out_dir):
                 # 5 is the history SAMPLED image and 9 the history STORAGE image (both W15 x H15
                 # rgba16f; the sampler is linear/clamp-to-edge, set by kernel_run). The readback of
                 # binding 9 is the same raw tightly-packed texel bytes the old f16 buffer dumped.
-                {"binding": 5, "image": {"format": "r32g32b32a32_sfloat", "width": ow,
+                {"binding": 5, "image": {"format": "r16g16b16a16_uint", "width": ow,
                                          "height": oh, "file": "ihist.bin", "sampled": True}},
                 {"binding": 6, "file": "prev_mv.bin"},
                 {"binding": 7, "file": "mv_ero.bin"},
                 {"binding": 8, "file": "mv_nondil.bin"},
-                {"binding": 9, "image": {"format": "r32g32b32a32_sfloat", "width": ow,
+                {"binding": 9, "image": {"format": "r16g16b16a16_uint", "width": ow,
                                          "height": oh, "sampled": False, "output": "out_ihist"}},
                 # 10 is the scalar full15 fallback (odd W15 only); 13 is the packed view the kernel
                 # actually writes, so it carries the output name the O7/referee dumps read.
