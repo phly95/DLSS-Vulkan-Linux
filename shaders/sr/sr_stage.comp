@@ -235,11 +235,24 @@ void main() {
     int py = reflect_coord(y0 + dy, dimH);
 
     uint w_off = wbuf_lo & 0x1fffffu;
+#if !defined(NR_SR_ST0) && !defined(NR_SR_ST1)
     bool st0 = (w_off == 0u || w_off == 1505536u);
+#endif
+#ifdef NR_SR_ST0
+    bool st0 = true;
+#elif defined(NR_SR_ST1)
+    bool st0 = false;
+#endif
     uint C = st0 ? 64u : 96u;
     uint NH = st0 ? 2u : 4u;             // g
     uint Cn = st0 ? 96u : 128u;
+#if defined(NR_SR_M0)
+    uint mode = 0u;
+#elif defined(NR_SR_M2)
+    uint mode = 2u;
+#else
     uint mode = (w_off >= 1341440u) ? 2u : 0u;
+#endif
     uint HW = uint(dimH * dimW);
     uint pos = uint(py * dimW + px);     // the token's own (reflected) full-res position
     uint NTC = C / 16u;                  // N tiles of a C-wide output
@@ -550,9 +563,42 @@ void main() {
         // 2f. Wo: M = this wave's 32 tokens (two windows), N = C in two-tile chunks, K = 32; each
         // chunk lands in the residual through f16 (RESID_ADD).
         {
-            for (uint n0 = 0u; n0 < NTC; n0 += 2u) {
-                NR_FRAG_ACC a00 = NR_ACC_ZERO, a01 = NR_ACC_ZERO, a10 = NR_ACC_ZERO, a11 = NR_ACC_ZERO;
-                {   // K = 32 in one shot: 8 loads in flight, 8 v_wmma, no loop overhead
+            for (uint n0 = 0u; n0 < NTC; n0 += 4u) {
+                if (n0 + 3u < NTC) {
+                    // register warptile [R3]: four N tiles = 16 v_wmma, A fragments reused from
+                    // registers across the tiles (rows are wave-local, all N columns covered).
+                    NR_FRAG_ACC a00 = NR_ACC_ZERO, a01 = NR_ACC_ZERO, a02 = NR_ACC_ZERO, a03 = NR_ACC_ZERO;
+                    NR_FRAG_ACC a10 = NR_ACC_ZERO, a11 = NR_ACC_ZERO, a12 = NR_ACC_ZERO, a13 = NR_ACC_ZERO;
+                    NR_FRAG_A fa0, fa1, fc0, fc1;
+                    NR_LOAD_A(fa0, sH, 16u * wbase * 32u + 0u, 32u);
+                    NR_LOAD_A(fa1, sH, 16u * (wbase + 1u) * 32u + 0u, 32u);
+                    NR_LOAD_A(fc0, sH, 16u * wbase * 32u + 16u, 32u);
+                    NR_LOAD_A(fc1, sH, 16u * (wbase + 1u) * 32u + 16u, 32u);
+                    NR_FRAG_B fb0, fb1, fe0, fe1, fg0, fg1, fh0, fh1;
+                    NR_LOAD_B(fb0, wrep, wo + 16u * n0 * 32u + 0u, 32u);
+                    NR_LOAD_B(fb1, wrep, wo + 16u * n0 * 32u + 16u, 32u);
+                    NR_LOAD_B(fe0, wrep, wo + 16u * (n0 + 1u) * 32u + 0u, 32u);
+                    NR_LOAD_B(fe1, wrep, wo + 16u * (n0 + 1u) * 32u + 16u, 32u);
+                    NR_LOAD_B(fg0, wrep, wo + 16u * (n0 + 2u) * 32u + 0u, 32u);
+                    NR_LOAD_B(fg1, wrep, wo + 16u * (n0 + 2u) * 32u + 16u, 32u);
+                    NR_LOAD_B(fh0, wrep, wo + 16u * (n0 + 3u) * 32u + 0u, 32u);
+                    NR_LOAD_B(fh1, wrep, wo + 16u * (n0 + 3u) * 32u + 16u, 32u);
+                    NR_MMA(a00, fa0, fb0); NR_MMA(a01, fa0, fe0); NR_MMA(a02, fa0, fg0); NR_MMA(a03, fa0, fh0);
+                    NR_MMA(a10, fa1, fb0); NR_MMA(a11, fa1, fe0); NR_MMA(a12, fa1, fg0); NR_MMA(a13, fa1, fh0);
+                    NR_MMA(a00, fc0, fb1); NR_MMA(a01, fc0, fe1); NR_MMA(a02, fc0, fg1); NR_MMA(a03, fc0, fh1);
+                    NR_MMA(a10, fc1, fb1); NR_MMA(a11, fc1, fe1); NR_MMA(a12, fc1, fg1); NR_MMA(a13, fc1, fh1);
+                    RESID_ADD(a00, 16u * wbase, 16u * n0)
+                    RESID_ADD(a01, 16u * wbase, 16u * (n0 + 1u))
+                    RESID_ADD(a02, 16u * wbase, 16u * (n0 + 2u))
+                    RESID_ADD(a03, 16u * wbase, 16u * (n0 + 3u))
+                    RESID_ADD(a10, 16u * (wbase + 1u), 16u * n0)
+                    RESID_ADD(a11, 16u * (wbase + 1u), 16u * (n0 + 1u))
+                    RESID_ADD(a12, 16u * (wbase + 1u), 16u * (n0 + 2u))
+                    RESID_ADD(a13, 16u * (wbase + 1u), 16u * (n0 + 3u))
+                    continue;
+                }
+                {   // tail (C=96: tiles n0, n0+1); last chunk
+                    NR_FRAG_ACC a00 = NR_ACC_ZERO, a01 = NR_ACC_ZERO, a10 = NR_ACC_ZERO, a11 = NR_ACC_ZERO;
                     NR_FRAG_A fa0, fa1, fc0, fc1;
                     NR_LOAD_A(fa0, sH, 16u * wbase * 32u + 0u, 32u);
                     NR_LOAD_A(fa1, sH, 16u * (wbase + 1u) * 32u + 0u, 32u);
@@ -567,11 +613,12 @@ void main() {
                     NR_MMA(a10, fa1, fb0); NR_MMA(a11, fa1, fb1);
                     NR_MMA(a00, fc0, fe0); NR_MMA(a01, fc0, fe1);
                     NR_MMA(a10, fc1, fe0); NR_MMA(a11, fc1, fe1);
+                    RESID_ADD(a00, 16u * wbase, 16u * n0)
+                    RESID_ADD(a01, 16u * wbase, 16u * (n0 + 1u))
+                    RESID_ADD(a10, 16u * (wbase + 1u), 16u * n0)
+                    RESID_ADD(a11, 16u * (wbase + 1u), 16u * (n0 + 1u))
                 }
-                RESID_ADD(a00, 16u * wbase, 16u * n0)
-                RESID_ADD(a01, 16u * wbase, 16u * (n0 + 1u))
-                RESID_ADD(a10, 16u * (wbase + 1u), 16u * n0)
-                RESID_ADD(a11, 16u * (wbase + 1u), 16u * (n0 + 1u))
+                break;
             }
         }
         cur = wo + 32u * C;
@@ -661,28 +708,62 @@ void main() {
         // -> into the residual.
         {
         uint m0 = 32u * (tid >> 5u);
-        for (uint n0 = 0u; n0 < NTC; n0 += 2u) {
+        for (uint n0 = 0u; n0 < NTC; n0 += 4u) {
+            if (n0 + 3u < NTC) {
+                // register warptile [R3]: four N tiles = 16 v_wmma per iteration with the four
+                // A fragments reused from registers across all N tiles (llama.cpp mul_mm style).
+                NR_FRAG_ACC f00 = NR_ACC_ZERO, f01 = NR_ACC_ZERO, f02 = NR_ACC_ZERO, f03 = NR_ACC_ZERO;
+                NR_FRAG_ACC f10 = NR_ACC_ZERO, f11 = NR_ACC_ZERO, f12 = NR_ACC_ZERO, f13 = NR_ACC_ZERO;
+                NR_FRAG_A a0, a1, c0, c1;
+                NR_LOAD_A(a0, sH, 32u * m0 + 0u, 32u);
+                NR_LOAD_A(a1, sH, 32u * (m0 + 16u) + 0u, 32u);
+                NR_LOAD_A(c0, sH, 32u * m0 + 16u, 32u);
+                NR_LOAD_A(c1, sH, 32u * (m0 + 16u) + 16u, 32u);
+                NR_FRAG_B b0, b1, e0, e1, g0, g1, h0, h1;
+                NR_LOAD_B(b0, wrep, fc2 + 16u * n0 * 32u + 0u, 32u);
+                NR_LOAD_B(b1, wrep, fc2 + 16u * n0 * 32u + 16u, 32u);
+                NR_LOAD_B(e0, wrep, fc2 + 16u * (n0 + 1u) * 32u + 0u, 32u);
+                NR_LOAD_B(e1, wrep, fc2 + 16u * (n0 + 1u) * 32u + 16u, 32u);
+                NR_LOAD_B(g0, wrep, fc2 + 16u * (n0 + 2u) * 32u + 0u, 32u);
+                NR_LOAD_B(g1, wrep, fc2 + 16u * (n0 + 2u) * 32u + 16u, 32u);
+                NR_LOAD_B(h0, wrep, fc2 + 16u * (n0 + 3u) * 32u + 0u, 32u);
+                NR_LOAD_B(h1, wrep, fc2 + 16u * (n0 + 3u) * 32u + 16u, 32u);
+                NR_MMA(f00, a0, b0); NR_MMA(f01, a0, e0); NR_MMA(f02, a0, g0); NR_MMA(f03, a0, h0);
+                NR_MMA(f10, a1, b0); NR_MMA(f11, a1, e0); NR_MMA(f12, a1, g0); NR_MMA(f13, a1, h0);
+                NR_MMA(f00, c0, b1); NR_MMA(f01, c0, e1); NR_MMA(f02, c0, g1); NR_MMA(f03, c0, h1);
+                NR_MMA(f10, c1, b1); NR_MMA(f11, c1, e1); NR_MMA(f12, c1, g1); NR_MMA(f13, c1, h1);
+                RESID_ADD(f00, m0, 16u * n0)
+                RESID_ADD(f01, m0, 16u * (n0 + 1u))
+                RESID_ADD(f02, m0, 16u * (n0 + 2u))
+                RESID_ADD(f03, m0, 16u * (n0 + 3u))
+                RESID_ADD(f10, m0 + 16u, 16u * n0)
+                RESID_ADD(f11, m0 + 16u, 16u * (n0 + 1u))
+                RESID_ADD(f12, m0 + 16u, 16u * (n0 + 2u))
+                RESID_ADD(f13, m0 + 16u, 16u * (n0 + 3u))
+                continue;
+            }
+            {   // tail (C=96: NTC=6 -> tiles n0, n0+1 after the warptile); last chunk
                 NR_FRAG_ACC m00 = NR_ACC_ZERO, m01 = NR_ACC_ZERO, m10 = NR_ACC_ZERO, m11 = NR_ACC_ZERO;
-                {   // K = 32 in one shot: 8 loads in flight, 8 v_wmma, no loop overhead
-                    NR_FRAG_A a0, a1, c0, c1;
-                    NR_LOAD_A(a0, sH, 32u * m0 + 0u, 32u);
-                    NR_LOAD_A(a1, sH, 32u * (m0 + 16u) + 0u, 32u);
-                    NR_LOAD_A(c0, sH, 32u * m0 + 16u, 32u);
-                    NR_LOAD_A(c1, sH, 32u * (m0 + 16u) + 16u, 32u);
-                    NR_FRAG_B b0, b1, e0, e1;
-                    NR_LOAD_B(b0, wrep, fc2 + 16u * n0 * 32u + 0u, 32u);
-                    NR_LOAD_B(b1, wrep, fc2 + 16u * (n0 + 1u) * 32u + 0u, 32u);
-                    NR_LOAD_B(e0, wrep, fc2 + 16u * n0 * 32u + 16u, 32u);
-                    NR_LOAD_B(e1, wrep, fc2 + 16u * (n0 + 1u) * 32u + 16u, 32u);
-                    NR_MMA(m00, a0, b0); NR_MMA(m01, a0, b1);
-                    NR_MMA(m10, a1, b0); NR_MMA(m11, a1, b1);
-                    NR_MMA(m00, c0, e0); NR_MMA(m01, c0, e1);
-                    NR_MMA(m10, c1, e0); NR_MMA(m11, c1, e1);
-                }
+                NR_FRAG_A a0, a1, c0, c1;
+                NR_LOAD_A(a0, sH, 32u * m0 + 0u, 32u);
+                NR_LOAD_A(a1, sH, 32u * (m0 + 16u) + 0u, 32u);
+                NR_LOAD_A(c0, sH, 32u * m0 + 16u, 32u);
+                NR_LOAD_A(c1, sH, 32u * (m0 + 16u) + 16u, 32u);
+                NR_FRAG_B b0, b1, e0, e1;
+                NR_LOAD_B(b0, wrep, fc2 + 16u * n0 * 32u + 0u, 32u);
+                NR_LOAD_B(b1, wrep, fc2 + 16u * (n0 + 1u) * 32u + 0u, 32u);
+                NR_LOAD_B(e0, wrep, fc2 + 16u * n0 * 32u + 16u, 32u);
+                NR_LOAD_B(e1, wrep, fc2 + 16u * (n0 + 1u) * 32u + 16u, 32u);
+                NR_MMA(m00, a0, b0); NR_MMA(m01, a0, b1);
+                NR_MMA(m10, a1, b0); NR_MMA(m11, a1, b1);
+                NR_MMA(m00, c0, e0); NR_MMA(m01, c0, e1);
+                NR_MMA(m10, c1, e0); NR_MMA(m11, c1, e1);
                 RESID_ADD(m00, m0, 16u * n0)
                 RESID_ADD(m01, m0, 16u * (n0 + 1u))
                 RESID_ADD(m10, m0 + 16u, 16u * n0)
                 RESID_ADD(m11, m0 + 16u, 16u * (n0 + 1u))
+            }
+            break;      // the tail was the last chunk
             }
         }
     }

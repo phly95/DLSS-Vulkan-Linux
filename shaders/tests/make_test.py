@@ -356,22 +356,27 @@ def make_test(name, out_dir):
                 {"binding": 3, "file": "wrep.bin"}
             ]
         }
-    elif name == "sr_stage":
+    elif name in ("sr_stage", "sr_stage_c64m0", "sr_stage_c96m0", "sr_stage_c96m2", "sr_stage_c64m2"):
         # Mode 0 (wbuf_lo = 0, st0): C = 64, 2 heads, 8 MLP blocks, 2x2 patch merge, on a 16x16
         # level. The stage reads five buffers: the f16 vector blob (0), the token bytes (1), the
         # mode-2 skip tensor (4; never read in mode 0, but statically used, so the launcher must
         # bind it) and the row-major matrix copy (5). Sizes cover every access the shader makes
         # here: the f16 blob up to ~72 KB, the matrix copy up to ~68 K elements (~135 KB when the
         # operand-probe build reads the same buffer as halfs).
+        # The _c64/_c96/_m0/_m2 names are the specialized builds of the same source (C and mode
+        # compile-time constants, see NR_SR_* in sr_stage.comp); they still take wbuf_lo = 0 for
+        # this fixture - the constants replace the push-derived dispatch, the addresses stay low,
+        # and the C = 96 variants just need larger buffers (3 channel planes, 12 MLP blocks).
+        big = "_c96" in name
         open(os.path.join(out_dir, "in_act.bin"), "wb").write(
-            np.tile(np.linspace(1, 250, 4096, dtype=np.uint8), 4).tobytes())   # [C/32][16][16][32]
+            np.tile(np.linspace(1, 250, 8192, dtype=np.uint8), 4).tobytes())   # [C/32][16][16][32]
         # Non-zero synthetic data so no code path collapses to a constant output: the f16 vector
         # blob is halfs in [0.5, 2], the matrix copy halfs in [0.05, 0.5] - finite both as halfs
         # and as the (low, high) byte pairs the fp8 build reads.
         open(os.path.join(out_dir, "wbuf.bin"), "wb").write(
-            np.linspace(0.5, 2.0, 65536, dtype=np.float16).tobytes())          # 128 KiB
+            np.tile(np.linspace(0.5, 2.0, 65536, dtype=np.float16).tobytes(), 4 if big else 1))
         open(os.path.join(out_dir, "wrep.bin"), "wb").write(
-            np.tile(np.linspace(0.05, 0.5, 16384, dtype=np.float16).tobytes(), 8))  # 256 KiB
+            np.tile(np.linspace(0.05, 0.5, 16384, dtype=np.float16).tobytes(), 16 if big else 8))
         push = bytearray(56)
         struct.pack_into("<4i", push, 40, 16, 16, 0, 0)
         cfg = {
@@ -380,8 +385,13 @@ def make_test(name, out_dir):
             "bindings": [
                 {"binding": 0, "file": "wbuf.bin"},
                 {"binding": 1, "file": "in_act.bin"},
-                {"binding": 2, "bytes": 16384, "output": "out_act", "type": "u8"},
-                {"binding": 3, "bytes": 8192, "output": "out_act2", "type": "u8"},
+                {"binding": 2, "bytes": 32768 if big else 16384, "output": "out_act", "type": "u8"},
+                # mode 2 never writes out_act2 (the patch-merge operand is mode 0 only), so the
+                # _m2 fixtures bind it without "output": an unbound buffer the shader declares
+                # would crash, but a constant all-zero output file fails O7's const check.
+                *([{"binding": 3, "bytes": 16384, "output": "out_act2", "type": "u8"}]
+                  if not name.endswith("m2") else
+                  [{"binding": 3, "bytes": 16384}]),
                 {"binding": 4, "file": "in_act.bin"},
                 {"binding": 5, "file": "wrep.bin"}
             ]

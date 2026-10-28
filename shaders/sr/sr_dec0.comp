@@ -212,6 +212,9 @@ void main() {
             s_t8[pix * 64u + gp * 32u + perm_P(st)] = NR_OPERAND(e4m3_to_f32(by));
         }
     }
+    // s_t8 is written by one lane and read by others through the A-fragment loads: without a
+    // barrier the order is not guaranteed (lavapipe's O7 runs differed run to run).
+    barrier();
 
     // ---- projection as four dense f16 WMMAs: for a fixed sub-pixel parity q the workgroup's 16
     // t8 parents are one [16 x 64] x [64 x 32] product (every parent contributes exactly one
@@ -247,6 +250,7 @@ void main() {
         NR_STORE_ACC(h0, s_p, qq * 32u + 0u, 128u);
         NR_STORE_ACC(h1, s_p, qq * 32u + 16u, 128u);
     }
+    barrier();   // s_p: fragment stores above, per-lane reads below
 
     for (uint i = 0u; i < 2u; ++i) {
         uint pix = tid + i * 32u;
