@@ -84,11 +84,15 @@ float e4m3_to_f32(uint b) {
     return ((b & 0x80u) != 0u) ? -v : v;
 }
 
-// f32 -> E4M3, RNE, saturating at 448 (the model's to_e4m3), bit for bit.
+// f32 -> E4M3, RNE with ties-to-even in the SUBNORMAL path (the model's to_e4m3,
+// diffdump's tested f32_to_e4m3_rne), saturating at 448, bit for bit.
 uint f32_to_e4m3_rne(float x) {
     uint sign = (x < 0.0) ? 0x80u : 0u;
     float a = min(abs(x), 448.0);
-    uint sub = uint(floor(a * 512.0 + 0.5));
+    float s = a * 512.0;                 // exact: the subnormal grid is 2^-9
+    float n = floor(s);
+    float d = s - n;
+    uint sub = uint(((d > 0.5) || (d == 0.5 && ((uint(n) & 1u) != 0u))) ? (n + 1.0) : n);
     uint bits = floatBitsToUint(a);
     uint norm = (bits + 0x407ffffu + ((bits >> 20u) & 1u)) >> 20u;
     return sign | ((a < 0.015625) ? sub : (norm & 0x7fu));
