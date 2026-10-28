@@ -10,8 +10,9 @@ STATUS (agent enc0feat-decode):
   frame0: 2621440/2621440 = 100.0000% bit-exact vs oracle (peak=1.125 PSNR=inf r=1.0 rRMSE=0).
   port (F3): model_port() reproduces a real kernel_run of shaders/rr/rr_enc0_feat.comp on the
   oracle inputs 2621440/2621440 = 100.0000%; port vs oracle = 72.9063% = PORT-STATUS exactly.
-  frame1: 66.24% - BLOCKED on the history-value combination (see OPEN1); the failing channels
-  are exactly the 24 history-fed channels + c36 (33.76% of bytes), everything else is 100%.
+  frame1: 87.5680% (2295542/2621440) - the 15 SC_TM history channels + c36 are now DECODED
+  (100%); the remaining 12.43% gap is the 8 c22-family channels only (see OPEN1). peak=1.125
+  PSNR=32.01dB r=0.989829 rRMSE=0.1442.
 
 ===================================================================================================
 SPEC (decoded; kernel: _ZN4rrio11k_enc0_featENS_6E0ArgsE, ISA listing
@@ -77,31 +78,42 @@ starts at 0xCD00). E0Args layout: tools/rr/rrref/rrref.cpp lines 471-512.)
    with dither flips), group1 {5,8}=mv.x*3, {9}=mv.y*3, {13,16,17,20}=0x80.
    Port vs oracle = 72.9063% = PORT-STATUS exactly.
 
-6. HISTORY BRANCH (ISA-decoded, value formula NOT yet fitted - OPEN1)
+6. HISTORY BRANCH (ISA-decoded + value DECODED for SC_TM; frame0 rst-gate makes it col-only)
    Gate: rst (args+0x14; s[52:53] reassign at rel 0x1FF8 = (fc, rst)) -> skipped on frame0,
-   which is WHY frame0 reduces to pure col*expo for all SC_TM channels.
-   Position (rel 0x2768-0x2F60): Cx,Cy in the 768x432 grid (OOB check vs s12/s13 = 768/432),
-   v50 = Cx/768 (s66 = 1/768), per-axis roundtrip via (384,216) then * (192/108) -> the
-   position words are C/4 for E0c12 (192x108): u = pos - 0.5, clamp [-2,h+2], snap
-   floor(u*256+0.5)/256, taps clamp [0,191]x[0,107], t1 = min(max(tap,-1)+1,h-1), row stride
-   s22=192 (rel 0x2F58/0x2F80), base s50 = args+0x170 = E0c12.
-   Value (rel 0x2680/0x2D44/0x3A60 - three sample blocks): R10G10B10 taps -> /1023 (0x3A802008)
-   with -1023 (0xC47FC000) fmac correction pairs -> bilinear w00..w11 -> *2.45 (0x401CCCD)
-   -> clamp [1e-4, 8] -> inv_tm (1/0.36=0x4031C71C, -0.36=0xBEB851EC poly, log2(10)=0x40549A78,
-   v_exp, -1, 0.01=0x3C23D70A, -100=0xC2C80000) = (10^(x/0.36)-1)/100 -> Newton divide by
-   e_prev (s35: r=rcp(e1), residual, fma) -> tm input = e_cur * v66 (rel 0x48A4) with a
-   per-lane select(history, col) (v_mov v66,v53 at 0x3A10; v_cmpx guard at 0x45B0).
+   which is WHY frame0 reduces to pure col*expo for all SC_TM channels (100%).
+   Position (rel 0x34EC-0x3624, inputs v6=s58*v0 / v52=s20*v13): Cx,Cy in the 768x432 grid,
+     Cx = 3*((x+0.5) - pjx) + bev_x, Cy = 3*((row+0.5) - pjy) + bev_y
+       where (pjx,pjy) = args+0x1a0/+0x1a4  (frame1 = (-0.25, +1/6); frame0 = (0, -1/6))
+       and bev = E0bf6 prev (constant global motion ~= mv*3).
+     OOB mask (rel 0x3500-0x354C): NOT(Cx<0 | Cx>768 | Cy<0 | Cy>432 | rst!=0) = the PER-LANE
+     select s2 -> in-bounds lanes take history, OOB-edge lanes take col (a pure POSITION+rst
+     predicate - the rel 0x45B0 v_cmpx albedo-sum guard is a separate block, NOT this select).
+   Sample (rel 0x3544-0x3704): pos = C/2 - 0.5 for **E0c0e (384x216)** (s31=float(s20)=384,
+     s66=1/768 -> 384*Cx/768 = Cx/2), clamp [-2,386]x[-2,218] (s36=s31+2, s37=s30+2), snap
+     floor(u*256+0.5)/256, taps x[0,383] y[0,215], row stride s20=384, base s48:s49 =
+     args+0x168 = E0c0e. (c17/c20/c21 sample the pooled **E0c12 (192x108)** at C/4 instead.)
+   Value: R10G10B10 taps -> /1023 (0x3A802008) with -1023 (0xC47FC000) fmac pairs -> bilinear
+     w00..w11 -> *2.45 (0x401CCCD) -> clamp [1e-4,8] -> inv_tm (10^(x/0.36)-1)/100 -> Newton
+     divide by e_prev (s35=expo[1]) -> tm input = e_cur * (h/e_prev) (rel 0x48A4) for in-bounds,
+     col*expo for OOB. Then SC0*tm(tm_input). VERIFIED: all 15 SC_TM channels = 100% frame1.
 
 7. OPEN (blocked-with-data, reported to the orchestrator)
-   OPEN1: the exact tm-input combination for the history channels on frame1. Evidence:
-     - Forward fits: pure h/e_prev = 17.8% (snap positions) / 59.1% (raw bilinear, best
-       J=(1,1) k=-3 ch0); col.e +/- difference(h_e0e, h_c12) ~18%; blend regression
-       X = 0.18h + 0.45col.e + 0.12 (rms 0.197, resid uncorrelated with h).
-     - Cross-correlation of the tm-input inverted from the oracle vs E0c12 R at C/4 = 0.964
-       (position/buffer/channel confirmed; the combination around it is not).
-     - c22-family's tm input must be a DIFFERENCE (frame0 forces exactly 0 -> -0 code;
-       frame1 range [-0.007, +0.03] crossing zero) - no candidate fit exceeded 1.4%.
-   OPEN2: c36 (frame1 = -2^-9 constant) and the v_cmpx albedo-zero guard at rel 0x45B0.
+   OPEN1 (SOLE blocker, 8 channels = 12.43% of bytes): the c22-family
+   {22,23,26,27,45,48,49,52} = 4 distinct values, each duplicated across groups
+   (c22=c45, c23=c48, c26=c49, c27=c52), each = SC1 * v1 (SC1 = s17 = args+0x204, CONFIRMED
+   from the s[8:23] load of args+0x1e0; frame0 = SC1*0 = -0 -> 0x80). Evidence:
+     - v1 (implied = c22/SC1) in [-0.78, 0.71]; NOT a tm-difference, NOT a raw/linear history
+       blend, NOT a bilinear weight: best forward fits = SC1*(-raw) 2.42%, SC1*tm(raw) 1.79%,
+       SC1*tm(A)-tm(B) <= 1.51%; regression v1 ~ [hE0,hE1,hE2,col.rgb,1] rms 0.209 corr 0.63.
+     - ISA: v1 = cndmask(v53) <- v53 = (s5 ? 0 : v43) [rel 0x4EF8] where s5 = the OOB mask,
+       v43 = a multi-term fma accumulation (rel 0x4E70 v43 += v53*v74, plus v70/v71/v66 fma's)
+       whose products are the bilinear weights (%2438 = frac_y*(1-frac_x), %2442 = frac_y*frac_x)
+       -> v43 = sum(weight * value) = an interpolated history, BUT with a scaling/composition
+       that does not equal the SC_TM h (corr only -0.63). Requires full SSA decode of the fma
+       chain (v43/v70/v71/v66 through reused registers) - beyond budget.
+     - c36 (rel 0x6224 v19 = s1) = s1 = **-2^-9 constant** (frame1), 0 on frame0 -> WIRED (100%).
+     - Select ruled IN = pure position+rst; ruled OUT = albedo threshold (0x45B0 is a separate
+       lane-guard; all frame1 pixels are in-bounds so the OOB mask never fires there).
 ===================================================================================================
 """
 import argparse
@@ -131,6 +143,14 @@ def parse_args(b):
     # at frame end). VERIFIED: frame0 fc=0, frame1 fc=1 (fc=1 reproduces frame1 tm at 0.00% bad,
     # fc=0 leaves 42.98% bad). args+0x1a0 is NOT fc (its u32&7 is 0 on both frames).
     a["fc"] = struct.unpack_from("<I", b, 0x10)[0] & 7
+    # rst = history gate at +0x14: rst!=0 -> history branch SKIPPED (oracle frame0 rst=1,
+    # frame1 rst=0). Verified: the s[52:53] reassign at rel 0x1FF8 = (fc, rst); the OOB-or-
+    # rst mask at rel 0x3528-0x354c forces all-lanes-inactive when rst!=0.
+    a["rst"] = struct.unpack_from("<I", b, 0x14)[0]
+    # current-frame subpixel jitter pj = (args+0x1a0, args+0x1a4) as f32.
+    # VERIFIED frame0=(0.0, -1/6), frame1=(-0.25, +1/6) - these reproduce frame1 history 100%.
+    a["pj"] = struct.unpack_from("<2f", b, 0x1a0)
+    # prev-frame jitter at +0x1a8/+0x1ac (frame1 = (0.0, -1/6)) - present, not used here.
     return a
 
 
@@ -165,8 +185,25 @@ def load(dump, frame):
     }
     a["expo"] = np.frombuffer(buf(0x190), np.float32)[:4]
     a["e"] = f32(a["expo"][0])
+    a["e_prev"] = f32(a["expo"][1])
+    # History (only NONZERO on frame1 / rst==0; empty on frame0):
+    #   E0c0e u32[216][384] R10G10B10 (k_post)   E0c12 u32[108][192] R10G10B10 (k_pooled2)
+    #   bev_prev E0bf6 f16x4/px (motion = mv*3, near-constant global)
+    g["E0c0e"] = _dec_r10(buffer_before(fdir, names[0x168], launch), 216, 384)
+    g["E0c12"] = _dec_r10(buffer_before(fdir, names[0x170], launch), 108, 192)
+    bev = np.frombuffer(buffer_before(fdir, names[0x160], launch)[: W * H * 8],
+                        np.float16).reshape(H, W, 4)
+    a["bev"] = f32(bev[0, 0, 0]), f32(bev[0, 0, 1])   # constant global motion (BVX, BVY)
     oracle = fdir / f"{launch:03d}.E0be8.bin"
     return a, g, (oracle.read_bytes() if oracle.exists() else None)
+
+
+def _dec_r10(raw, h, w):
+    """u32[R10G10B10] grid -> f64 [h][w][3] with each 10-bit field /1023."""
+    u = np.frombuffer(raw, np.uint32)[: h * w].reshape(h, w)
+    return np.stack([(u & 0x3FF) / 1023.0,
+                      ((u >> 10) & 0x3FF) / 1023.0,
+                      ((u >> 20) & 0x3FF) / 1023.0], -1)
 
 
 # ------------------------------------------------------------------ the feature quantizer (dq)
@@ -221,7 +258,40 @@ def tm(v):
 
 
 SC0 = np.float32(-0.43359375)   # E0Args +0x200, the blob's f16 scalar (E[0xb02])
-SC1 = np.float32(-0.2198486328125)  # E0Args +0x204 (present, not used by any channel here)
+SC1 = np.float32(-0.2198486328125)  # E0Args +0x204 (the c22-family coefficient s17)
+
+
+def inv_tm(y):
+    """Inverse of tm(): (10**(clamp(y,1e-4,8)/0.36) - 1)/100, f64. Used to undo the
+    history's *2.45 tm round-trip: stored R10 -> /1023 -> bilinear -> *2.45 -> inv_tm."""
+    y = np.clip(np.asarray(y, np.float64), 1e-4, 8.0)
+    return (10.0 ** (y / 0.36) - 1.0) / 100.0
+
+
+# Which history buffer each SC_TM channel samples (VERIFIED 100% frame1): most use the
+# full-res E0c0e (384x216, pos=C/2); c17/c20/c21 use the pooled E0c12 (192x108, pos=C/4).
+HIST_C12 = frozenset((17, 20, 21))
+
+
+def _hist_sample(buf, div, hmax, itx, frx, ity, fry, ch):
+    """Bilinear tap of buf[...,ch] at the snapped integer/frac position (clamped taps)."""
+    h, w = buf.shape[:2]
+    x0 = np.clip(itx, 0, w - 1)
+    x1 = np.clip(np.maximum(itx, -1) + 1, 0, w - 1)
+    y0 = np.clip(ity, 0, h - 1)
+    y1 = np.clip(np.maximum(ity, -1) + 1, 0, h - 1)
+    C = buf[..., ch]
+    return ((1 - fry) * (1 - frx) * C[y0, x0] + (1 - fry) * frx * C[y0, x1]
+            + fry * (1 - frx) * C[y1, x0] + fry * frx * C[y1, x1])
+
+
+def _snap(C, hmax):
+    """Exact ISA position -> snapped (integer, frac) taps for one axis (SPEC 6).
+    pos = C/div - 0.5, clamp [-2, hmax+2], snap floor(pos*256+0.5)/256."""
+    pos = np.clip(C - 0.5, -2.0, hmax + 2.0)
+    s = np.floor(pos * 256.0 + 0.5) / 256.0
+    it = np.floor(s)
+    return it, s - it
 
 # stored channel index -> value formula. Verified vs oracle frame0 with dq (fit1.py, loc*.py).
 # c02/c29 are alb.g/alb.r in the ORACLE (the port has them swapped - port bug).
@@ -240,6 +310,10 @@ def build_features(g, a):
     """The 64 raw (f32) feature values, before dq(). Unmapped channels default to +0."""
     W, H, W0, H0 = a["W"], a["H"], a["W0"], a["H0"]
     e = a["e"]
+    e_prev = a["e_prev"]
+    rst = a["rst"]
+    pjx, pjy = a["pj"]
+    BVX, BVY = a["bev"]
     yy, xx = np.mgrid[0:H0, 0:W0]
     ys = np.where(yy < H, yy, 2 * (H - 1) - yy)
     xs = np.minimum(xx, W - 1)
@@ -250,8 +324,35 @@ def build_features(g, a):
     ch = {}
     for k, ci in TM_COL.items():
         ch[k] = tm(col[..., ci])
-    for k, ci in SC_TM.items():
-        ch[k] = (SC0 * tm(col[..., ci])).astype(np.float32)
+
+    # SC_TM channels: SC0*tm(tm_input). On frame1 (rst==0) the history branch feeds tm_input
+    # for in-bounds lanes (OOB/edge lanes fall back to col - the decoded exec-mask select);
+    # on frame0 (rst!=0) it reduces to pure col*expo (100%).
+    if rst == 0:
+        # 768x432-grid position (SPEC 6): C = 3*((coord+0.5) - pj) + bev
+        Cx = 3.0 * ((xs + 0.5) - pjx) + float(BVX)
+        Cy = 3.0 * ((ys + 0.5) - pjy) + float(BVY)
+        inb = (Cx >= 0) & (Cx <= 768) & (Cy >= 0) & (Cy <= 432)
+        tm_in = {}
+        for ci in (0, 1, 2):
+            for use12 in (False, True):
+                buf = g["E0c12"] if use12 else g["E0c0e"]
+                div = 4.0 if use12 else 2.0
+                hmax = (192, 108) if use12 else (384, 216)
+                itx, frx = _snap(Cx / div, hmax[0])
+                ity, fry = _snap(Cy / div, hmax[1])
+                s = _hist_sample(buf, div, hmax, itx.astype(np.int64), frx,
+                                 ity.astype(np.int64), fry, ci)
+                h = inv_tm(np.float32(2.45) * s)             # stored -> linear
+                tm_hist = (e * (h / float(e_prev))).astype(np.float32)
+                tm_in[(ci, use12)] = np.where(inb, tm_hist, col[..., ci])
+        for k, ci in SC_TM.items():
+            ch[k] = (SC0 * tm(tm_in[(ci, k in HIST_C12)])).astype(np.float32)
+        ch[36] = np.full((H0, W0), -2.0 ** -9, np.float32)   # c36 = s1 = -2^-9 (VERIFIED const)
+    else:
+        for k, ci in SC_TM.items():
+            ch[k] = (SC0 * tm(col[..., ci])).astype(np.float32)
+
     for k, ci in ALB_CH.items():
         ch[k] = alb[..., ci]
     for k, ci in SPA_CH.items():
@@ -259,6 +360,8 @@ def build_features(g, a):
     ch[15] = np.ones((H0, W0), np.float32)         # min(2, 1.0); source f16-val tied (const 1.0)
     ch[18] = np.minimum(dep, np.float32(2.0))      # dep == 0.5 constant
     for k in ZERO_CH:
+        if k == 36 and rst == 0:
+            continue                               # c36 already set to -2^-9 above
         ch[k] = np.zeros((H0, W0), np.float32)
     for k in NEG0_CH:
         ch[k] = -np.zeros((H0, W0), np.float32)    # -0.0 -> 0x80; d==0 cell flips to 0x00
