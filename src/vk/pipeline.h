@@ -182,7 +182,7 @@ private:
     Buffer ihist[2];
     Buffer t_act[9];
     Buffer ae_next, ae_exp;   // rr_ae_final's bindings 2/3 (writeonly, never read back)
-    Buffer out, wbuf, w_enc0, w_dec0;
+    Buffer out, wbuf, w_enc0, w_dec0, w_dec0rep;
     // SR only: the row-major fp8 copy of the stage matrices (same offsets as wbuf), for KHR coopMatLoad.
     Buffer wrep;
 

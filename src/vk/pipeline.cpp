@@ -275,6 +275,39 @@ bool sr_repack_stage(const uint8_t* wbuf, uint8_t* wrep, size_t woff, size_t blo
     if (s.mode == 0) { mat(cur, Cn, 4 * C); cur += size_t(4) * C * Cn + 2 * Cn; }   // dn_W, dn_b
     return cur == blob_size;
 }
+
+// sr_dec0's weights, repacked for the kernel (PERF 2026-10-28). dec0.bin = frag(128 x 64) fp8 at
+// sr_frag_off positions + 128 P-permuted f16 biases at byte 8192; the shader walked frag_off() and
+// converted an fp8 byte per weight - 1152 indexed byte loads AND 1152 fp8->f32 conversions per
+// render pixel, ~16k VALU instructions of the kernel's 22k per wave. The repack turns it into
+//   dst[0 .. 16383]  = [q][n][k] f16 weights, q = output sub-pixel 0..3, n = channel 0..31, k = 0..63
+//   dst[16384 ..]    = [q][n] f16 biases (the same 128 biases, de-P-permuted)
+// every fp8 value is exactly representable in f16, so this is a layout change only, and the shader
+// then loads f16vec2 (two k at a time) with a linear index: half the loads, no conversion.
+bool sr_repack_dec0(const uint8_t* src, uint8_t* dst, size_t blob_size) {
+    if (blob_size < 8192 + 256) return false;
+    for (uint32_t q = 0; q < 4; ++q)
+        for (uint32_t n = 0; n < 32; ++n) {
+            uint16_t* row = reinterpret_cast<uint16_t*>(dst) + (size_t(q) * 32 + n) * 64;
+            for (uint32_t k = 0; k < 64; ++k) {
+                uint32_t j = q * 32 + n;
+                // e4m3 -> f32: the model's LUT (tools/sr/sr_dec0_model.py e4m3_to_f32)
+                uint8_t b = src[sr_frag_off(j, k, 64)];
+                uint32_t e = (b >> 3) & 15u;
+                uint32_t bits = (e == 0u) ? 0u : ((e + 120u) << 23u) | ((b & 7u) << 20u);
+                float v; std::memcpy(&v, &bits, 4);
+                if (e == 0u) v = float(b & 7u) * 0.001953125f;
+                if (b & 0x80u) v = -v;
+                row[k] = f32_to_f16_rne(v);
+            }
+            // bias of output channel j = q*32 + n: byte 8192 + 2*((j & ~31) | perm_invP(n))
+            uint32_t invP = (((n >> 1) & 7u) << 2) | (n & 1u) | (((n >> 4) & 1u) << 1);
+            size_t bo = 8192 + 2u * ((q * 32u) | invP);
+            uint16_t* bias = reinterpret_cast<uint16_t*>(dst) + 8192 + (size_t(q) * 32 + n);
+            *bias = uint16_t(src[bo]) | (uint16_t(src[bo + 1]) << 8);
+        }
+    return true;
+}
 } // namespace
 
 FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
@@ -487,6 +520,8 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
     c->w_enc0 = create_buffer(dev, phys, 65536, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     if (mode == "sr") c->wrep = create_buffer(dev, phys, 16 * 1024 * 1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->w_dec0 = create_buffer(dev, phys, 65536, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    // sr_dec0's own repacked weights (see sr_repack_dec0): [4][32][64] f16 + 4x32 f16 biases = 16640 B.
+    c->w_dec0rep = create_buffer(dev, phys, 65536, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
     // Preset L's two level-0 tensors (oracle sr_L dump: l0_in 1419264 B = 264x168x32 at 256x144
     // input = (W0+8)*(H0+8)*32, l0_skip 1310720 B = W0*H0*32).  k_sr_enc0L_in writes l0_in (its
@@ -568,6 +603,10 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
             }
             if (!blob[11].empty() && blob[11].size() <= c->w_dec0.size) {
                 std::memcpy(c->w_dec0.mapped, blob[11].data(), blob[11].size());
+                // sr_dec0's own repacked weights (binding 7 of sr_dec0 only; sr_l0, preset L, keeps
+                // reading the original blob out of w_dec0)
+                if (!sr_repack_dec0(blob[11].data(), static_cast<uint8_t*>(c->w_dec0rep.mapped), blob[11].size()))
+                    std::fprintf(stderr, "SR dec0: blob size %zu is smaller than its 8192+256 layout\n", blob[11].size());
             }
             auto pj_raw = slurp(wdir + "/params.json");
             if (!pj_raw.empty()) {
@@ -1211,7 +1250,9 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             const float F28xW = jpx * iW, F28yH = jpy * iH;  // +0x94, +0x98 (frame 1 has F28y/H != 0)
             std::memcpy(push + 148, &F28xW, 4);
             std::memcpy(push + 152, &F28yH, 4);
-            dispatch(cmd, "sr_dec0", {&t_act[8], &prev_mvec[p ^ 1], &hidden[p], &gates, &factors, &aniso, &hidden[p ^ 1], &w_dec0}, push, 160, W0 / 8, H0 / 8, 1);
+            // binding 7 = w_dec0rep, sr_repack_dec0's [q][n][k] f16 weights + f16 biases (the
+            // original dec0.bin stays in w_dec0 for preset L's sr_l0)
+            dispatch(cmd, "sr_dec0", {&t_act[8], &prev_mvec[p ^ 1], &hidden[p], &gates, &factors, &aniso, &hidden[p ^ 1], &w_dec0rep}, push, 160, W0 / 8, H0 / 8, 1);
             inject_after(cmd, "dec0", sr_l[12]);
             }
         }
@@ -1219,7 +1260,12 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
         // 6. Post: NeuralHub's k_sr_post<false,12,16,false,false> (SR M, oracle launch 14) or
         //    <true,12,16,false,false> (SR L, oracle sr_L launch 15): one shader, two template
         //    instances selected by the push's isL at +0xd0 (see shaders/sr/sr_post.comp; the models are
-        //    tools/sr/sr_post_model.py / sr_postL_model.py). The 256-byte push is PostArgs at the
+        //    tools/sr/sr_post_model.py / sr_postL_model.py). PERF (2026-10-28): the group is 32 output
+        //    columns x 16 row PAIRS, not 16x16 - each thread owns a 2x2 output block, so its four
+        //    stores (and its history taps) sit in contiguous memory instead of two rows W15 elements
+        //    apart, and the dhist 2x2 block falls inside one thread (no LDS reduction, no barrier).
+        //    Measured 12.87 -> 8.5-9.8 ms at 1080p->4K together with the source-tile LDS staging.
+        //    The 256-byte push is PostArgs at the
         //    oracle's own offsets (tools/sr/srref/srref.cpp, "post (FUN_180117ee0)"), so an oracle args
         //    hex passes verbatim except the port-only +0xd0 flag (the oracle dumps carry 0 there; both
         //    oracle instances read +0xd0 only as a ==0 test that masks four guards the port does not
@@ -1262,7 +1308,7 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                 if (FILE* f = std::fopen(dump, "ab")) { std::fwrite(push, 1, 256, f); std::fclose(f); }
             }
             dispatch(cmd, "sr_post", {&g_col, &expo, &gates, &factors, &aniso, &ihist[p], &prev_mvec[p ^ 1], &mv_ero, &mv_nondil,
-                                 &ihist[p ^ 1], &full15, &dhist}, push, 256, (W15 + 15) / 16, (hH15 + 15) / 16, 1);
+                                 &ihist[p ^ 1], &full15, &dhist}, push, 256, (W15 + 31) / 32, (hH15 + 15) / 16, 1);
             inject_after(cmd, "post", sr_l[13]);
         }
 

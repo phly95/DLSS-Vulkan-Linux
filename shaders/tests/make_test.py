@@ -215,11 +215,24 @@ def make_test(name, out_dir):
         mvs = ((mix(n_pix * 2) & 0xFF).astype(np.float64) / 32.0 - 4.0).astype(np.float16)
         open(os.path.join(out_dir, "prev_mv.bin"), "wb").write(mvs.tobytes())
         open(os.path.join(out_dir, "hidden.bin"), "wb").write((mix(n_pix * 4) & 0xFF).astype(np.uint8).tobytes())
-        # dec0_w: weights 0..8191 in the moderate fp8 range 0x50..0x6f (|v| 0.031..0.234, so the
-        # 64-term dot lands near 0 and every head stays in its varying regime), 128 f16 biases.
-        wts = (0x50 + (mix(8192) & 0x1F)).astype(np.uint8).tobytes()
-        bias = np.linspace(-1.0, 1.0, 128, dtype=np.float16).tobytes()
-        open(os.path.join(out_dir, "wbuf.bin"), "wb").write(wts + bias)
+        # dec0_w: binding 7 is sr_dec0's OWN repacked layout (pipeline.cpp sr_repack_dec0), not
+        # dec0.bin: [q][n][k] f16 weights (16384 B) then [q][n] f16 biases (256 B). The fixture
+        # builds it from the same fp8 blob shape dec0.bin has, so the packing is still exercised.
+        wts = (0x50 + (mix(8192) & 0x1F)).astype(np.uint16)     # fp8 matrix, sr_frag_off order
+        bias = np.linspace(-1.0, 1.0, 128, dtype=np.float16)
+        def _frag_off(r, c, cols=64):
+            u1 = ((r & 0x7FFFFFE1) | ((r >> 3) & 2)) + (r & 0xE) * 2
+            u5 = 2 * c
+            low = (u5 & 4) | (c & 1) | ((c >> 3) & 2)
+            high = ((u5 & 0x10) << 4) + ((16 * c) & 0xFFFFFE00) + (cols << 4) * (u1 >> 4)
+            return (low | high) + ((u1 & 0xF) + (u5 & 8) * 2) * 8
+        _invP = lambda c: (((c >> 1) & 7) << 2) | (c & 1) | (((c >> 4) & 1) << 1)
+        src = wts[[_frag_off(j, k) for j in range(128) for k in range(64)]].reshape(128, 64)
+        ee, mm = (src >> 3) & 15, src & 7
+        vv = np.where(ee == 0, mm / 512.0, (1.0 + mm / 8.0) * np.exp2(ee.astype(np.int32) - 7))
+        vv = np.where(src & 0x80, -vv, vv).astype(np.float16)    # e4m3 -> f16 is exact
+        rbias = np.array([bias[(j & ~31) | _invP(j & 31)] for j in range(128)], dtype=np.float16)
+        open(os.path.join(out_dir, "wbuf.bin"), "wb").write(vv.tobytes() + rbias.tobytes())
         push = bytearray(160)
         struct.pack_into("<8i", push, 64, w, h, w, h, w0, h0, w15, h15)
         struct.pack_into("<f", push, 96, 2.0)                    # dec0_s0
@@ -252,23 +265,31 @@ def make_test(name, out_dir):
         open(os.path.join(out_dir, "gates.bin"), "wb").write(mv)
         open(os.path.join(out_dir, "factors.bin"), "wb").write(mv)
         open(os.path.join(out_dir, "aniso.bin"), "wb").write(col)
-        open(os.path.join(out_dir, "ihist.bin"), "wb").write(col)
+        # The kernel's tile is sized for a real 2x upscale (the SR chain's W15/W = 2), so the fixture
+        # renders w x h and outputs 2w x 2h; the old 1x fixture (W15 = W) asked for a 34-pixel tile
+        # and only worked because the tile clamp silently clamped it.
+        ow, oh = 2 * w, 2 * h
+        hw, hh = ow // 2, oh // 2
+        # in_ihist is [H15][W15] f16vec4 = the OUTPUT size, not the render size
+        open(os.path.join(out_dir, "ihist.bin"), "wb").write(
+            np.linspace(0.1, 1.0, ow * oh * 4, dtype=np.float16).tobytes())
         open(os.path.join(out_dir, "prev_mv.bin"), "wb").write(mv)
         open(os.path.join(out_dir, "mv_ero.bin"), "wb").write(mv)
         open(os.path.join(out_dir, "mv_nondil.bin"), "wb").write(mv)
         push = bytearray(220)
         struct.pack_into("<I", push, 16, 0)              # parity
         struct.pack_into("<2i", push, 136, w, h)         # W, H
-        struct.pack_into("<2i", push, 152, w, h)         # W15, H15 (this fixture renders at the output size)
-        struct.pack_into("<2i", push, 160, w, h)         # hW15, hH15
+        struct.pack_into("<2i", push, 152, ow, oh)       # W15, H15
+        struct.pack_into("<2i", push, 160, hw, hh)       # hW15, hH15
         # PostArgs +0xa8..+0xcc as pipeline.cpp now fills them (5981a2e): without dec0_f1, scaleX/Y
         # and log2_10 the rewritten sr_post computes zeros on every output and O7 sees a constant.
         struct.pack_into("<f", push, 168, 2.7530112)     # dec0_f1, the oracle's gate0 confidence scale
-        struct.pack_into("<2f", push, 172, 1.0, 1.0)     # scaleX = W/W15, scaleY = H/H15
+        struct.pack_into("<2f", push, 172, 0.5, 0.5)     # scaleX = W/W15, scaleY = H/H15
         struct.pack_into("<2f", push, 180, 0.0, 0.0)     # jitterX, jitterY
         struct.pack_into("<I", push, 204, 0x40549A78)    # log2_10
         cfg = {
-            "groups": [(w + 15) // 16, (h + 15) // 16, 1],
+            # sr_post's group is 32 output columns x 16 row pairs (a 2x2 output block per thread)
+            "groups": [(ow + 31) // 32, (oh + 15) // 16, 1],
             "push": push.hex(),
             "bindings": [
                 {"binding": 0, "file": "g_col.bin"},
@@ -280,9 +301,9 @@ def make_test(name, out_dir):
                 {"binding": 6, "file": "prev_mv.bin"},
                 {"binding": 7, "file": "mv_ero.bin"},
                 {"binding": 8, "file": "mv_nondil.bin"},
-                {"binding": 9, "bytes": n_pix * 8, "output": "out_ihist", "type": "f16"},
-                {"binding": 10, "bytes": n_pix * 4, "output": "full15", "type": "u32"},
-                {"binding": 11, "bytes": n_pix * 4, "output": "dhist", "type": "u32"}
+                {"binding": 9, "bytes": ow * oh * 8, "output": "out_ihist", "type": "f16"},
+                {"binding": 10, "bytes": ow * oh * 4, "output": "full15", "type": "u32"},
+                {"binding": 11, "bytes": hw * hh * 4, "output": "dhist", "type": "u32"}
             ]
         }
     elif name == "sr_tube_split":

@@ -6,11 +6,21 @@
 #extension GL_EXT_shader_16bit_storage : enable
 #extension GL_EXT_shader_8bit_storage : enable
 
+// sr_gather (k_sr_gather): decode the incoming frame's colour / motion vector / depth into the
+// port's g_col (f16x4), g_mv (f16x2), g_dep (f32) buffers.
+//
+// PERF (2026-10-28, optimisation phase): the three inputs are bound as byte arrays and were read
+// with one `buffer_load_ubyte` per byte - 19 memory instructions per pixel for data that is
+// dword-aligned by construction (the host pushes pitch_col = W*8, pitch_mv = pitch_dep = W*4 and
+// every format multiplies x by 4, 8 or 16). The buffers are now declared as `uint` arrays and the
+// whole 32-bit word is loaded once, then unpacked with shifts: 3 loads + 3 stores per pixel.
+// Nothing about the decoded values changes - the byte order is the same little-endian word.
+
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-layout(set = 0, binding = 0) readonly buffer InCol { uint8_t in_col_bytes[]; };
-layout(set = 0, binding = 1) readonly buffer InMv  { uint8_t in_mv_bytes[]; };
-layout(set = 0, binding = 2) readonly buffer InDep { uint8_t in_dep_bytes[]; };
+layout(set = 0, binding = 0) readonly buffer InCol { uint in_col[]; };
+layout(set = 0, binding = 1) readonly buffer InMv  { uint in_mv[]; };
+layout(set = 0, binding = 2) readonly buffer InDep { uint in_dep[]; };
 
 layout(set = 0, binding = 3) writeonly buffer OutCol { f16vec4 g_col[]; };
 layout(set = 0, binding = 4) writeonly buffer OutMv  { f16vec2 g_mv[]; };
@@ -29,41 +39,10 @@ layout(push_constant) uniform GatherArgs {
     int pad;
 };
 
-uint read_u32_col(uint off) {
-    uint b0 = uint(in_col_bytes[off]);
-    uint b1 = uint(in_col_bytes[off + 1]);
-    uint b2 = uint(in_col_bytes[off + 2]);
-    uint b3 = uint(in_col_bytes[off + 3]);
-    return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
-}
-
-uint16_t read_u16_col(uint off) {
-    uint b0 = uint(in_col_bytes[off]);
-    uint b1 = uint(in_col_bytes[off + 1]);
-    return uint16_t(b0 | (b1 << 8));
-}
-
-uint read_u32_mv(uint off) {
-    uint b0 = uint(in_mv_bytes[off]);
-    uint b1 = uint(in_mv_bytes[off + 1]);
-    uint b2 = uint(in_mv_bytes[off + 2]);
-    uint b3 = uint(in_mv_bytes[off + 3]);
-    return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
-}
-
-uint16_t read_u16_mv(uint off) {
-    uint b0 = uint(in_mv_bytes[off]);
-    uint b1 = uint(in_mv_bytes[off + 1]);
-    return uint16_t(b0 | (b1 << 8));
-}
-
-uint read_u32_dep(uint off) {
-    uint b0 = uint(in_dep_bytes[off]);
-    uint b1 = uint(in_dep_bytes[off + 1]);
-    uint b2 = uint(in_dep_bytes[off + 2]);
-    uint b3 = uint(in_dep_bytes[off + 3]);
-    return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
-}
+uint b32(uint off) { return in_col[off >> 2]; }
+uint16_t b16(uint off) { return uint16_t((in_col[off >> 2] >> ((off & 2u) * 8u)) & 0xffffu); }
+uint b32_mv(uint off) { return in_mv[off >> 2]; }
+uint16_t b16_mv(uint off) { return uint16_t((in_mv[off >> 2] >> ((off & 2u) * 8u)) & 0xffffu); }
 
 void main() {
     int x = int(gl_GlobalInvocationID.x);
@@ -76,56 +55,48 @@ void main() {
     f16vec4 c = f16vec4(0.0);
     if (fmt_col == 0) {
         uint off = y * pitch_col + x * 8;
-        uint16_t r = read_u16_col(off);
-        uint16_t g = read_u16_col(off + 2);
-        uint16_t b = read_u16_col(off + 4);
-        uint16_t a = read_u16_col(off + 6);
+        uint16_t r = b16(off);
+        uint16_t g = b16(off + 2);
+        uint16_t b = b16(off + 4);
+        uint16_t a = b16(off + 6);
         c = f16vec4(uint16BitsToFloat16(r), uint16BitsToFloat16(g), uint16BitsToFloat16(b), uint16BitsToFloat16(a));
     } else if (fmt_col == 1) {
-        uint off = y * pitch_col + x * 4;
-        float16_t r = float16_t(in_col_bytes[off]) / float16_t(255.0);
-        float16_t g = float16_t(in_col_bytes[off + 1]) / float16_t(255.0);
-        float16_t b = float16_t(in_col_bytes[off + 2]) / float16_t(255.0);
-        float16_t a = float16_t(in_col_bytes[off + 3]) / float16_t(255.0);
-        c = f16vec4(r, g, b, a);
+        uint u = b32(y * pitch_col + x * 4);
+        c = f16vec4(float16_t(u & 0xffu) / float16_t(255.0),
+                    float16_t((u >> 8) & 0xffu) / float16_t(255.0),
+                    float16_t((u >> 16) & 0xffu) / float16_t(255.0),
+                    float16_t(u >> 24) / float16_t(255.0));
     } else if (fmt_col == 2) {
-        uint off = y * pitch_col + x * 4;
-        float r = float(in_col_bytes[off]) / 255.0;
-        float g = float(in_col_bytes[off + 1]) / 255.0;
-        float b = float(in_col_bytes[off + 2]) / 255.0;
-        float a = float(in_col_bytes[off + 3]) / 255.0;
+        uint u = b32(y * pitch_col + x * 4);
+        float r = float(u & 0xffu) / 255.0;
+        float g = float((u >> 8) & 0xffu) / 255.0;
+        float b = float((u >> 16) & 0xffu) / 255.0;
+        float a = float(u >> 24) / 255.0;
         r = (r <= 0.04045) ? (r / 12.92) : pow((r + 0.055) / 1.055, 2.4);
         g = (g <= 0.04045) ? (g / 12.92) : pow((g + 0.055) / 1.055, 2.4);
         b = (b <= 0.04045) ? (b / 12.92) : pow((b + 0.055) / 1.055, 2.4);
         c = f16vec4(float16_t(r), float16_t(g), float16_t(b), float16_t(a));
     } else if (fmt_col == 3) {
-        uint off = y * pitch_col + x * 4;
-        uint u = read_u32_col(off);
+        uint u = b32(y * pitch_col + x * 4);
         float r = float(u & 0x3ffu) / 1023.0;
         float g = float((u >> 10) & 0x3ffu) / 1023.0;
         float b = float((u >> 20) & 0x3ffu) / 1023.0;
-        float a = float((u >> 30) & 0x3u) / 3.0;
+        float a = float(u >> 30) / 3.0;
         c = f16vec4(float16_t(r), float16_t(g), float16_t(b), float16_t(a));
     } else if (fmt_col == 4) {
-        uint off = y * pitch_col + x * 4;
-        uint u = read_u32_col(off);
+        uint u = b32(y * pitch_col + x * 4);
         uint16_t r = uint16_t((u << 4) & 0x7ff0u);
         uint16_t g = uint16_t((u >> 7) & 0x7ff0u);
         uint16_t b = uint16_t((u >> 17) & 0x7fe0u);
         c = f16vec4(uint16BitsToFloat16(r), uint16BitsToFloat16(g), uint16BitsToFloat16(b), float16_t(1.0));
     } else if (fmt_col == 5) {
-        uint off = y * pitch_col + x * 16;
-        uint u0 = read_u32_col(off);
-        uint u1 = read_u32_col(off + 4);
-        uint u2 = read_u32_col(off + 8);
-        uint u3 = read_u32_col(off + 12);
-        c = f16vec4(float16_t(uintBitsToFloat(u0)),
-                    float16_t(uintBitsToFloat(u1)),
-                    float16_t(uintBitsToFloat(u2)),
-                    float16_t(uintBitsToFloat(u3)));
+        uint off = (y * pitch_col + x * 16) >> 2;
+        c = f16vec4(float16_t(uintBitsToFloat(in_col[off])),
+                    float16_t(uintBitsToFloat(in_col[off + 1])),
+                    float16_t(uintBitsToFloat(in_col[off + 2])),
+                    float16_t(uintBitsToFloat(in_col[off + 3])));
     } else { // fmt_col == 6
-        uint off = y * pitch_col + x * 4;
-        uint u = read_u32_col(off);
+        uint u = b32(y * pitch_col + x * 4);
         int exp_val = int((u >> 27) & 0x1fu) - 24;
         float scale = ldexp(1.0, exp_val);
         float r = float(u & 0x1ffu) * scale;
@@ -138,31 +109,22 @@ void main() {
     // Decode motion vector
     if (mvhi == 0) {
         if (fmt_mv == 0) {
-            uint off_mv = y * pitch_mv + x * 4;
-            uint16_t mx = read_u16_mv(off_mv);
-            uint16_t my = read_u16_mv(off_mv + 2);
-            g_mv[out_idx] = f16vec2(uint16BitsToFloat16(mx), uint16BitsToFloat16(my));
+            uint off = y * pitch_mv + x * 4;
+            g_mv[out_idx] = f16vec2(uint16BitsToFloat16(b16_mv(off)), uint16BitsToFloat16(b16_mv(off + 2)));
         } else if (fmt_mv == 1) {
-            uint off_mv = y * pitch_mv + x * 8;
-            uint mx = read_u32_mv(off_mv);
-            uint my = read_u32_mv(off_mv + 4);
-            g_mv[out_idx] = f16vec2(float16_t(uintBitsToFloat(mx)), float16_t(uintBitsToFloat(my)));
+            uint off = (y * pitch_mv + x * 8) >> 2;
+            g_mv[out_idx] = f16vec2(float16_t(uintBitsToFloat(in_mv[off])), float16_t(uintBitsToFloat(in_mv[off + 1])));
         } else {
-            uint off_mv = y * pitch_mv + x * 8;
-            uint16_t mx = read_u16_mv(off_mv);
-            uint16_t my = read_u16_mv(off_mv + 2);
-            g_mv[out_idx] = f16vec2(uint16BitsToFloat16(mx), uint16BitsToFloat16(my));
+            uint off = y * pitch_mv + x * 8;
+            g_mv[out_idx] = f16vec2(uint16BitsToFloat16(b16_mv(off)), uint16BitsToFloat16(b16_mv(off + 2)));
         }
     }
 
     // Decode depth
+    uint du = in_dep[(y * pitch_dep + x * 4) >> 2];
     if (fmt_dep == 0) {
-        uint off_dep = y * pitch_dep + x * 4;
-        uint du = read_u32_dep(off_dep);
         g_dep[out_idx] = uintBitsToFloat(du);
     } else {
-        uint off_dep = y * pitch_dep + x * 4;
-        uint du = read_u32_dep(off_dep);
         g_dep[out_idx] = float(du & 0xffffffu) / 16777215.0;
     }
 }

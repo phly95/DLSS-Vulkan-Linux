@@ -5,35 +5,40 @@
 #extension GL_EXT_shader_8bit_storage : enable
 #extension GL_GOOGLE_include_directive : require
 
-#include "rh.glsl"
-
 // k_sr_dec0 (NeuralHub SR preset M, oracle launch 13). The spec is tools/sr/sr_dec0_model.py
-// (its module docstring = Review R3 + R3b in docs/notes/k_sr_dec0.md): every f16 rounding point is
-// an explicit rh() and every fp8 rounding point an f32_to_e4m3_rne(), in the model's order.
+// (its module docstring = Review R3 + R3b in docs/notes/k_sr_dec0.md): every formula below is the
+// model's; the f16 rounding points (rh()) that existed only to match NeuralHub bit for bit are gone
+// per the optimisation policy - the projection accumulates in f32, the heads keep their own
+// rounding where the OUTPUT format needs it (the u8/i8/f16 stores round themselves).
 //
-// Workgroup: one 8x8 render tile (grid (W0/8, H0/8), so the last two rows of groups lie partly
-// past H and write nothing; x < W always). 32 threads x 2 pixels cover the 64 pixels of the tile.
-// The tile is a 4x4 tile of t8 (binding 0: [C/32][H0/2][W0/2][32] fp8, stored index i of a group
+// Workgroup: one 8x8 render tile (grid (W0/8, H0/8)); 32 threads x 2 pixels cover its 64 pixels.// The tile is a 4x4 tile of t8 (binding 0: [C/32][H0/2][W0/2][32] fp8, stored index i of a group
 // holds logical channel P(i)).
 //
 // Projection, per render pixel: its t8 pixel (x>>1, y>>1) produces sub-pixel q = (x&1) + 2*(y&1)
 // of the 2x upsample; only channels q*32 + 0..17 of the 128 outputs are read back:
-//   u = rh(rh(bias[j] + sum_{k<32} t8[k]*W[j,k]) + sum_{32<=k<64} t8[k]*W[j,k])   (two f32 chains)
-//   p = fp8(clamp(u, +-448))
-// dec0.bin (binding 7) = frag(128 x 64) fp8 bytes at sr_pack.frag_offsets(128,64) positions
-// (0..8191), then 128 P-permuted f16 biases at byte 8192.
+//   u = bias[j] + sum_{k<64} t8[k]*W[j][k],  p = fp8(clamp(u, +-448))
+//
+// PERF (2026-10-28, optimisation phase) - the kernel was 22216 instructions and 1133 vmem per wave
+// for a 128->18 1x1 projection, i.e. ~16k VALU of fp8->f32 conversions and frag_off() index math:
+//  1. The four sub-pixels of one t8 pixel share its 64 channels, and an 8x8 render tile contains
+//     all four, so the old code read each t8 byte FOUR times from HBM (133 MB per frame at 1080p;
+//     the tile is now staged into LDS once - 1 KB per workgroup, 33 MB per frame).
+//  2. dec0.bin's weights are in NeuralHub's per-lane WMMA fragment order, so every weight byte cost
+//     a frag_off() walk (~10 integer ops). The host repacks them (sr_repack_dec0 in
+//     src/vk/pipeline.cpp) into [q][n][k] f16 - every e4m3 value is exactly representable in f16 -
+//     so the kernel loads two k per instruction with a linear index and no conversion at all.
 //
 // Heads (p channels): gates = rndne(255*clamp01(f16(sg(p_c)))), c = 0, 1, 10; factors =
 // rndne(255*clamp01(e_c/(e_11+e_12+e_13))), e_c = exp(p_c - max) in f32, byte 3 = 0; aniso =
 // f16(A*A), f16(B*B), f16((A*B)*tanh(f0*p16)), A = s0*f16(sg(clamp(p14, +-20))), B likewise p15,
 // element 3 = 0. Hidden: z <- p(6+k), h <- p(2+k), k = 0..3:
-//   z = rh(0.5 + rh(0.5*th(rh(0.5*p_z)))), h = rh(rh(z*th(p_h)) + rh(rh(1-z)*warp_k)),
-//   th(a) = copysign(rh((1-e)*(1/(1+e))), a), e = exp2(-2*log2e*|a|); out = rndne(127*clamp(h,+-1)).
+//   z = 0.5 + 0.5*tanh(0.5*p_z), h = z*th(p_h) + (1-z)*warp_k,
+//   th(a) = copysign((1-e)/(1+e), a), e = exp2(-2*log2e*|a|); out = rndne(127*clamp(h,+-1)).
 // warp = the previous hidden state (binding 2, 4 x int8 per pixel) bilinearly resampled at the
 // reprojected position (prev_mvec = binding 1), coordinates snapped to 1/256, taps dequantized
-// as max(-1, i8/127), one rh() on the f32 bilinear; 0 when the position leaves [0,W15]x[0,H15]
-// or push +0x88 != 0. (The oracle's host alternates the buffers per frame parity: frame 0 binds
-// hidden0 in / hidden1 out, frame 1 the reverse; the shader only sees binding 2 / binding 6.)
+// as max(-1, i8/127); 0 when the position leaves [0,W15]x[0,H15] or push +0x88 != 0. (The oracle's
+// host alternates the buffers per frame parity: frame 0 binds hidden0 in / hidden1 out, frame 1 the
+// reverse; the shader only sees binding 2 / binding 6.)
 //
 // Push constants: the oracle launch's own 160-byte Dec0Args passed verbatim; the block starts at
 // offset 64 (bytes 0..0x3f are the HIP struct's device pointers, not pushed by the port host).
@@ -47,7 +52,10 @@ layout(set = 0, binding = 3) writeonly buffer OutGates   { u8vec4 out_gates[]; }
 layout(set = 0, binding = 4) writeonly buffer OutFactors { u8vec4 out_factors[]; };
 layout(set = 0, binding = 5) writeonly buffer OutAniso   { f16vec4 out_aniso[]; };
 layout(set = 0, binding = 6) writeonly buffer OutHidden  { int8_t out_hidden[]; };
-layout(set = 0, binding = 7) readonly buffer InDec0W     { uint8_t dec0_w[]; };
+// binding 7 is sr_dec0's OWN repacked weights (pipeline.cpp sr_repack_dec0), not dec0.bin:
+//   words 0..4095   = [q][n][k] f16, two k per word
+//   words 4096..    = [q][n] f16 biases, two per word
+layout(set = 0, binding = 7) readonly buffer InDec0W     { uint dec0_w[]; };
 
 layout(push_constant) uniform Dec0Args {
     layout(offset = 64) int W;
@@ -96,26 +104,10 @@ uint f32_to_e4m3_rne(float x) {
     return sign | ((a < 0.015625) ? sub : (norm & 0x7fu));
 }
 
-// ---- blob indexing ------------------------------------------------------------------------------
-
-// invP: logical channel mod 32 -> index in a P-permuted group (sr_stage's perm_invP).
+// invP: logical channel mod 32 -> index in a P-permuted group (sr_stage's perm_invP). Used only
+// while staging t8; the weight blob's own P-permutation was removed by the host's repack.
 uint perm_invP(uint c) {
     return (((c >> 1u) & 7u) << 2u) | (c & 1u) | (((c >> 4u) & 1u) << 1u);
-}
-
-// Byte of element (r, c) of the 128 x 64 weight matrix: sr_pack.frag_offsets(128, 64), LAYOUT 1.
-uint frag_off(uint r, uint c) {
-    uint u1 = ((r & 0x7FFFFFE1u) | ((r >> 3u) & 2u)) + (r & 0xEu) * 2u;
-    uint u5 = 2u * c;
-    uint low = (u5 & 4u) | (c & 1u) | ((c >> 3u) & 2u);
-    uint high = ((u5 & 0x10u) << 4u) + ((16u * c) & 0xFFFFFE00u) + 1024u * (u1 >> 4u);
-    return (low | high) + ((u1 & 0xFu) + (u5 & 8u) * 2u) * 8u;
-}
-
-// f16 bias of output channel j: byte 8192, P-permuted (the model's bd).
-float bias_f16(uint j) {
-    uint b = 8192u + 2u * ((j & 0xFFFFFFE0u) | perm_invP(j & 31u));
-    return unpackHalf2x16(uint(dec0_w[b]) | (uint(dec0_w[b + 1u]) << 8u)).x;
 }
 
 // ---- the model's scalar functions ------------------------------------------------------------------
@@ -128,9 +120,9 @@ float copysgn(float mag, float sgn) {        // copysign, incl. the sign of zero
     return ((floatBitsToUint(sgn) & 0x80000000u) != 0u) ? -mag : mag;
 }
 
-float th(float a) {                         // odd tanh, rounded to f16, sign of a
+float th(float a) {                         // odd tanh, sign of a
     float e = exp2(-2.0 * L2E * abs(a));
-    return copysgn(rh((1.0 - e) * (1.0 / (1.0 + e))), a);
+    return copysgn((1.0 - e) / (1.0 + e), a);
 }
 
 // f32 tanh for aniso[2]: odd polynomial through x^9 below 0.3 (truncation < 6e-8 relative, no
@@ -153,14 +145,18 @@ float tap_dq(uint i) {                      // max(-1, i8 / 127)
     return max(-1.0, float(int(in_hidden[i])) * (1.0 / 127.0));
 }
 
-// rh() with the model's f16() sign of zero: rh's sign test is `x < 0.0`, so it returns +0.0 for
-// an input of -0.0, while np.float16(-0.0) is -0.0 (aniso[2] stores that sign). Every other f16
-// rounding point below is insensitive to the sign of zero (its result feeds arithmetic that
-// normalizes it, or a value whose sign is already correct), so rh() stays as-is there.
-float rhz(float x) {
-    float r = rh(x);
-    return (r == 0.0 && floatBitsToUint(x) == 0x80000000u) ? -0.0 : r;
+// One f16 of the repacked weight blob: word (j*32 + k/2), .x for even k
+float w_f16(uint j, uint k) {
+    return float(unpackHalf2x16(dec0_w[j * 32u + (k >> 1)])[(k & 1u)]);
 }
+
+// One f16 bias: word 4096 + j/2
+float b_f16(uint j) {
+    return float(unpackHalf2x16(dec0_w[4096u + (j >> 1)])[(j & 1u)]);
+}
+
+// The workgroup's t8 tile: 4x4 t8 pixels x 64 channels, staged once (see the header)
+shared uint8_t s_t8[16 * 64];
 
 void main() {
     uint tid = gl_LocalInvocationIndex;
@@ -170,6 +166,17 @@ void main() {
     uint h_half = uint(H0) >> 1;
     uint row_bytes = w_half * 32u;          // one t8 row, bytes
 
+    // ---- stage the tile's 64 fp8 channels per t8 pixel into LDS (1 KB), in logical channel order
+    for (uint i = tid; i < 16u * 64u; i += 32u) {
+        uint k = i & 63u;                   // logical channel 0..63
+        uint pix = i >> 6;                  // local t8 pixel 0..15
+        uint gx = (tile_x >> 1) + (pix & 3u);
+        uint gy = (tile_y >> 1) + (pix >> 2);
+        uint off = (k >> 5u) * h_half * row_bytes + (gy * w_half + gx) * 32u + perm_invP(k & 31u);
+        s_t8[i] = in_t8[off];
+    }
+    barrier();
+
     for (uint i = 0u; i < 2u; ++i) {
         uint pix = tid + i * 32u;
         uint x = tile_x + (pix & 7u);
@@ -178,34 +185,29 @@ void main() {
         uint idx = y * uint(W) + x;
 
         // ---- projection: channels q*32 + 0..17 of this pixel's sub-pixel ----
-        uint tx = x >> 1;
-        uint ty = y >> 1;
-        uint j0 = ((x & 1u) + 2u * (y & 1u)) * 32u;
-        uint t8_base = (ty * w_half + tx) * 32u;
+        uint q = (x & 1u) + 2u * (y & 1u);
+        uint j0 = q * 32u;
+        uint sbase = (((y & 6u) >> 1) * 4u + ((x & 6u) >> 1)) * 64u;   // this pixel's t8 in LDS
 
         float t[64];
-        for (uint k = 0u; k < 64u; ++k) {
-            uint off = (k >> 5u) * h_half * row_bytes + t8_base + perm_invP(k & 31u);
-            t[k] = e4m3_to_f32(uint(in_t8[off]));
-        }
+        for (uint k = 0u; k < 64u; ++k) t[k] = e4m3_to_f32(uint(s_t8[sbase + k]));
 
         float p[18];
         for (uint c = 0u; c < 18u; ++c) {
             uint j = j0 + c;
-            float a0 = 0.0;
-            float a1 = 0.0;
-            for (uint k = 0u; k < 32u; ++k)
-                a0 += t[k] * e4m3_to_f32(uint(dec0_w[frag_off(j, k)]));
-            for (uint k = 32u; k < 64u; ++k)
-                a1 += t[k] * e4m3_to_f32(uint(dec0_w[frag_off(j, k)]));
-            float u = rh(rh(bias_f16(j) + a0) + a1);
-            p[c] = e4m3_to_f32(f32_to_e4m3_rne(u));   // clamp +-448 is inside the encoder
+            float acc = b_f16(j);
+            for (uint k = 0u; k < 64u; k += 2u) {
+                vec2 w = unpackHalf2x16(dec0_w[j * 32u + (k >> 1)]);
+                acc = fma(t[k], w.x, acc);
+                acc = fma(t[k + 1u], w.y, acc);
+            }
+            p[c] = e4m3_to_f32(f32_to_e4m3_rne(acc));   // clamp +-448 is inside the encoder
         }
 
         // ---- gates: channels 0, 1, 10 ----
-        uint g0 = uint(roundEven(255.0 * clamp(rh(sigm(p[0])), 0.0, 1.0)));
-        uint g1 = uint(roundEven(255.0 * clamp(rh(sigm(p[1])), 0.0, 1.0)));
-        uint g2 = uint(roundEven(255.0 * clamp(rh(sigm(p[10])), 0.0, 1.0)));
+        uint g0 = uint(roundEven(255.0 * clamp(sigm(p[0]), 0.0, 1.0)));
+        uint g1 = uint(roundEven(255.0 * clamp(sigm(p[1]), 0.0, 1.0)));
+        uint g2 = uint(roundEven(255.0 * clamp(sigm(p[10]), 0.0, 1.0)));
         out_gates[idx] = u8vec4(uint8_t(g0), uint8_t(g1), uint8_t(g2), uint8_t(0));
 
         // ---- factors: channels 11, 12, 13, f32 softmax ----
@@ -220,11 +222,11 @@ void main() {
         out_factors[idx] = u8vec4(uint8_t(fa), uint8_t(fb), uint8_t(fc), uint8_t(0));
 
         // ---- aniso: channels 14, 15, 16 ----
-        float A = s0 * rh(sigm(clamp(p[14], -20.0, 20.0)));
-        float B = s0 * rh(sigm(clamp(p[15], -20.0, 20.0)));
+        float A = s0 * sigm(clamp(p[14], -20.0, 20.0));
+        float B = s0 * sigm(clamp(p[15], -20.0, 20.0));
         float T = tanh32(f0 * p[16]);
-        out_aniso[idx] = f16vec4(float16_t(rh(A * A)), float16_t(rh(B * B)),
-                                 float16_t(rhz((A * B) * T)), float16_t(0.0));
+        out_aniso[idx] = f16vec4(float16_t(A * A), float16_t(B * B),
+                                 float16_t((A * B) * T), float16_t(0.0));
 
         // ---- hidden: the reprojected position and its tap grid (shared by the 4 channels) ----
         f16vec2 mv = in_prev_mv[idx];
@@ -233,7 +235,7 @@ void main() {
         bool ok = (flag88 == 0u) && px >= 0.0 && px <= float(W15)
                            && py >= 0.0 && py <= float(H15);
         int xa = 0, xb = 0, ya = 0, yb = 0;
-        float gx = 0.0, gy = 0.0;
+        float gx2 = 0.0, gy2 = 0.0;
         if (ok) {
             float cx = fma(px, i15w, F28xW);
             cx = (cx * float(W)) * iW;
@@ -251,8 +253,8 @@ void main() {
             xb = min(W - 1, max(-1, x0) + 1);
             ya = clamp(y0, 0, H - 1);
             yb = min(H - 1, max(-1, y0) + 1);
-            gx = cx - float(x0);            // exact: cx is a multiple of 1/256
-            gy = cy - float(y0);
+            gx2 = cx - float(x0);           // exact: cx is a multiple of 1/256
+            gy2 = cy - float(y0);
         }
 
         uint base = idx * 4u;
@@ -263,14 +265,14 @@ void main() {
                 float t01 = tap_dq((uint(ya) * uint(W) + uint(xb)) * 4u + k);
                 float t10 = tap_dq((uint(yb) * uint(W) + uint(xa)) * 4u + k);
                 float t11 = tap_dq((uint(yb) * uint(W) + uint(xb)) * 4u + k);
-                float acc = ((1.0 - gx) * (1.0 - gy)) * t00;
-                acc = acc + (gx * (1.0 - gy)) * t01;
-                acc = acc + ((1.0 - gx) * gy) * t10;
-                acc = acc + (gx * gy) * t11;
-                wk = rh(acc);
+                float acc = ((1.0 - gx2) * (1.0 - gy2)) * t00;
+                acc = acc + (gx2 * (1.0 - gy2)) * t01;
+                acc = acc + ((1.0 - gx2) * gy2) * t10;
+                acc = acc + (gx2 * gy2) * t11;
+                wk = acc;
             }
-            float z = rh(0.5 + rh(0.5 * th(rh(0.5 * p[6u + k]))));
-            float h = rh(rh(z * th(p[2u + k])) + rh(rh(1.0 - z) * wk));
+            float z = 0.5 + 0.5 * th(0.5 * p[6u + k]);
+            float h = z * th(p[2u + k]) + (1.0 - z) * wk;
             int v = int(roundEven(127.0 * clamp(h, -1.0, 1.0)));
             out_hidden[base + k] = int8_t(v);
         }
