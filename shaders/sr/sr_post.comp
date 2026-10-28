@@ -45,9 +45,16 @@
 // PostArgs: the push block is NeuralHub's 256-byte PostArgs at its own offsets, so an oracle
 // launch's args hex can be passed verbatim (the fixtures patch ONLY 0xd0). Read here: 0x10 (parity),
 // 0x88..0xa4 (W, H, W15, H15, hW15, hH15), 0xa8 (dec0_f1), 0xac/0xb0 (scale), 0xb4/0xb8 (F20
-// jitter), 0xcc (log2 10). Not read: the pointers (0x00..0x87), ldr (0xd4) and mvhi (0xd8): both
-// oracle instances load the same scalars (proved from the ISA: neither reads past +0xd3), and the
-// model applies no mvoff (0xf8 is 0 in the oracle).
+// jitter), 0xcc (log2 10), 0xd4 (ldr: the ldr = true template flag). Not read: the pointers
+// (0x00..0x87) and mvhi (0xd8): both oracle instances load the same scalars (proved from the
+// ISA: neither reads past +0xd3 except the LDR instance, which also reads its 0xd0 word),
+// and the model applies no mvoff (0xf8 is 0 in the oracle).
+// LDR (ldr != 0, the k_sr_post<...,1,...> instantiation): the chain is linear throughout -
+// records are min(g_col, 32752) (the instance never loads expo, no tonemap), the history
+// holds linear values, A is the linear history (no e factor), and the encodes pack the linear
+// blends (full15: trunc(2047*x+0.5) with no K factor; dhist: rndne(1023*clamp(xm))). The
+// linear fixed-point history shares the tm image (linear*24000 instead of tm*24000 - the CR
+// arithmetic is domain-agnostic).
 // isL (0xd0): the PORT's instance selector, not an oracle field. Both oracle instances leave +0xd0
 // at 0 (depth_inverted) and neither reads it; the host writes 1 there iff preset L, whose oracle
 // args hex the fixture patches at 0xd0 only. Every field the kernel reads stays byte-equal to the
@@ -102,6 +109,9 @@ layout(push_constant) uniform PostArgs {
     layout(offset = 0xcc) float log2_10;   // f32 bits 0x40549a78
     layout(offset = 0xd0) uint isL;        // PORT-ONLY instance flag (see the header): 0 = M's 3x3 taps
                                            // (the oracle dumps carry 0 here), 1 = L's 4x4 taps
+    layout(offset = 0xd4) uint ldr;        // PostArgs +0xd4: LDR colour (the ldr = true
+                                           // template instantiation): the whole chain is
+                                           // linear - records, history and encodes (below)
 };
 
 // f32 constants of the spec, as their bit patterns (macros: glslang rejects uintBitsToFloat in a global const)
@@ -137,14 +147,18 @@ float tm_rec(float c, float e) {
 }
 
 // SPEC 6: the tonemap of the linear value, tm = (log2(y) * log10(2)) * 0.36 with y = max(fma(100,x,1), 1e-4)
+// LDR: identity - the chain is linear throughout, no tonemap (k_sr_post<...,1,...> has no log)
 vec3 tm_lin(vec3 x) {
+    if (ldr != 0u) return x;
     vec3 y = max(fma(vec3(100.0), x, vec3(1.0)), vec3(C_FLOOR));
     vec3 lg = log2(y) * C_TM_LOG10_2;
     return lg * C_TM_SCALE;
 }
 
 // SPEC 6: decode(h) = 0.01 * (exp2(clamp(h, 1e-4, 3) * (1/0.36) * log2(10)) - 1)
+// LDR: identity - the spatial average is already linear
 vec3 decode_lin(vec3 h, float l210) {
+    if (ldr != 0u) return h;
     vec3 hc = clamp(h, vec3(C_FLOOR), vec3(3.0));
     return C_PT01 * (exp2((hc * C_I036) * l210) - 1.0);
 }
@@ -167,21 +181,26 @@ vec3 decode_lin(vec3 h, float l210) {
 #define HIST_SCALE 24000.0f                  // 2.706 * 24000 = 64944 < 65535
 #define HIST_INV_SCALE (1.0f / 24000.0f)
 
-// the stored value: tm(L) quantised to u16
+// the stored value: tm(L) quantised to u16 (HDR); LDR: the linear value quantised
+// (the LDR instance stores linear f16; the image holds linear*24000 - same CR math)
 uint hist_write(float x) {
+    if (ldr != 0u) return uint(clamp(round(x * HIST_SCALE), 0.0, 65535.0));
     float t = (log2(fma(100.0, x, 1.0)) * C_TM_LOG10_2) * C_TM_SCALE;   // tm_lin, scalar
     return uint(clamp(round(t * HIST_SCALE), 0.0, 65535.0));
 }
 uvec3 hist_write(vec3 x) {
+    if (ldr != 0u) return uvec3(clamp(round(x * HIST_SCALE), vec3(0.0), vec3(65535.0)));
     vec3 t = (log2(fma(vec3(100.0), x, vec3(1.0))) * C_TM_LOG10_2) * C_TM_SCALE;
     return uvec3(clamp(round(t * HIST_SCALE), vec3(0.0), vec3(65535.0)));
 }
-// back to the linear domain: the gathered value is tm * 24000
+// back to the linear domain: the gathered value is tm * 24000 (HDR) or linear * 24000 (LDR)
 float hist_read(float h) {
+    if (ldr != 0u) return h * HIST_INV_SCALE;
     float t = clamp(h * HIST_INV_SCALE, 0.0, 3.0);      // the old decode's [0, 3] tm clamp
     return 0.01 * (exp2(t * C_I036 * log2_10) - 1.0);
 }
 vec3 hist_read(vec3 h) {
+    if (ldr != 0u) return h * HIST_INV_SCALE;
     vec3 t = clamp(h * HIST_INV_SCALE, vec3(0.0), vec3(3.0));
     return C_PT01 * (exp2(t * C_I036 * log2_10) - vec3(1.0));
 }
@@ -275,18 +294,21 @@ vec3 cr_sample(float posx, float posy) {
     return num / wcr;
 }
 
-// SPEC 7: R11 | G11 << 11 | B10 << 22 of the t2-blend tm
+// SPEC 7: R11 | G11 << 11 | B10 << 22 of the t2-blend tm (HDR) or linear value (LDR:
+// no K factor - the LDR instance packs trunc(2047*x+0.5) directly)
 uint enc_full15(vec3 tm) {
-    vec3 t = K_ENC * tm;
+    vec3 t = (ldr != 0u) ? tm : K_ENC * tm;
     uint qr = uint(clamp(trunc(fma(2047.0, t.r, 0.5)), 0.0, 2047.0));
     uint qg = uint(clamp(trunc(fma(2047.0, t.g, 0.5)), 0.0, 2047.0));
     uint qb = uint(clamp(trunc(fma(1023.0, t.b, 0.5)), 0.0, 1023.0));
     return qr | (qg << 11) | (qb << 22);
 }
 
-// SPEC 7: R10 | G10 << 10 | B10 << 20 of rndne(1023 * clamp(k * tm, 0, 1))
+// SPEC 7: R10 | G10 << 10 | B10 << 20 of rndne(1023 * clamp(k * tm, 0, 1)) (HDR);
+// LDR: rndne(1023 * clamp(linear, 0, 1)), no K factor
 uint enc_dhist(vec3 tm) {
-    vec3 q = roundEven(1023.0 * clamp(K_ENC * tm, vec3(0.0), vec3(1.0)));
+    vec3 q = (ldr != 0u) ? roundEven(1023.0 * clamp(tm, vec3(0.0), vec3(1.0)))
+                         : roundEven(1023.0 * clamp(K_ENC * tm, vec3(0.0), vec3(1.0)));
     return uint(q.r) | (uint(q.g) << 10) | (uint(q.b) << 20);
 }
 
@@ -333,9 +355,17 @@ void main() {
             const f16vec4 cg = g_col[si];
             const u8vec4 gg = gates[si];
             const f16vec4 an = aniso[si];
-            // 16-bit stores round, so the f16 fields are the spec's rh() points for free
-            sA[di] = f16vec4(tm_rec(float(cg.x), e), tm_rec(float(cg.y), e), tm_rec(float(cg.z), e),
-                             float16_t(float(gg.x) * (1.0 / 255.0)));
+            // 16-bit stores round, so the f16 fields are the spec's rh() points for free.
+            // LDR: linear records min(g_col, 32752), no expo multiply, no tonemap.
+            if (ldr != 0u) {
+                sA[di] = f16vec4(float16_t(min(float(cg.x), 32752.0)),
+                                 float16_t(min(float(cg.y), 32752.0)),
+                                 float16_t(min(float(cg.z), 32752.0)),
+                                 float16_t(float(gg.x) * (1.0 / 255.0)));
+            } else {
+                sA[di] = f16vec4(tm_rec(float(cg.x), e), tm_rec(float(cg.y), e), tm_rec(float(cg.z), e),
+                                 float16_t(float(gg.x) * (1.0 / 255.0)));
+            }
             sB[di] = f16vec4(float16_t(float(gg.y) * (1.0 / 255.0)),
                              float16_t(float(gg.z) * (1.0 / 255.0)),
                              float16_t(C_ANISO1 * float(an.x)),
@@ -443,6 +473,7 @@ void main() {
 
         // Off-screen (never fires on the oracle frames; the model has no off-screen path): the
         // tonemap of e_prev * g_col at the clamped nearest source pixel (SPEC 6, decoded, unverified).
+        // LDR: the linear g_col (the instance never loads expo).
         vec3 hE, hO;
         if (posxE >= 0.0 && posxE <= float(W15) && posyE >= 0.0 && posyE <= float(H15)) {
             hE = cr_sample(posxE, posyE);
@@ -450,9 +481,12 @@ void main() {
             int sx = clamp(int(floor(posxE * scaleX)), 0, W - 1);
             int sy = clamp(int(floor(posyE * scaleY)), 0, H - 1);
             f16vec4 cg = g_col[uint(sy * W + sx)];
-            vec3 prev = vec3(hist_write(min(float(cg.x) * e_prev, 32752.0)),
-                             hist_write(min(float(cg.y) * e_prev, 32752.0)),
-                             hist_write(min(float(cg.z) * e_prev, 32752.0)));
+            vec3 prev = (ldr != 0u) ? vec3(hist_write(min(float(cg.x), 32752.0)),
+                                             hist_write(min(float(cg.y), 32752.0)),
+                                             hist_write(min(float(cg.z), 32752.0)))
+                                    : vec3(hist_write(min(float(cg.x) * e_prev, 32752.0)),
+                                             hist_write(min(float(cg.y) * e_prev, 32752.0)),
+                                             hist_write(min(float(cg.z) * e_prev, 32752.0)));
             hE = prev;
         }
         if (posxO >= 0.0 && posxO <= float(W15) && posyO >= 0.0 && posyO <= float(H15)) {
@@ -461,16 +495,20 @@ void main() {
             int sx = clamp(int(floor(posxO * scaleX)), 0, W - 1);
             int sy = clamp(int(floor(posyO * scaleY)), 0, H - 1);
             f16vec4 cg = g_col[uint(sy * W + sx)];
-            vec3 prev = vec3(hist_write(min(float(cg.x) * e_prev, 32752.0)),
-                             hist_write(min(float(cg.y) * e_prev, 32752.0)),
-                             hist_write(min(float(cg.z) * e_prev, 32752.0)));
+            vec3 prev = (ldr != 0u) ? vec3(hist_write(min(float(cg.x), 32752.0)),
+                                             hist_write(min(float(cg.y), 32752.0)),
+                                             hist_write(min(float(cg.z), 32752.0)))
+                                    : vec3(hist_write(min(float(cg.x) * e_prev, 32752.0)),
+                                             hist_write(min(float(cg.y) * e_prev, 32752.0)),
+                                             hist_write(min(float(cg.z) * e_prev, 32752.0)));
             hO = prev;
         }
 
         // SPEC 6: A = e0 * decode(h); x = fma(t, B - A, A) for the t1 blend (ihist1, dhist) and the
         // t2 blend (full15). On frame 0 the history is zero, so h = 0 and A = e * decode(0).
-        AE[c] = e * hist_read(hE);
-        AO[c] = e * hist_read(hO);
+        // LDR: A is the linear history, no e factor (the instance never loads expo).
+        AE[c] = (ldr != 0u) ? hist_read(hE) : e * hist_read(hE);
+        AO[c] = (ldr != 0u) ? hist_read(hO) : e * hist_read(hO);
         x1E[c] = fma(vec3(t1E), BE[c] - AE[c], AE[c]);
         x1O[c] = fma(vec3(t1O), BO[c] - AO[c], AO[c]);
         x2E[c] = fma(vec3(t2E), BE[c] - AE[c], AE[c]);

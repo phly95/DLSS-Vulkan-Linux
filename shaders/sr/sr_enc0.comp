@@ -38,7 +38,8 @@
 //
 // Features 0..19 (model features()/dq), one dq() (dithered E4M3 quantizer, dither =
 // enc0_w[0:4096] as 2048 u16, fc from push +0xdc) per logical feature:
-//   0..2  tm(e*rgb) of the mirrored g_col row, e = expo[parity] (1.0 when the word is 0),
+//   0..2  tm(e*rgb) of the mirrored g_col row, e = expo[parity] (1.0 when the word is 0)
+//         (LDR: lin_feat linear, no expo multiply, no tonemap),
 //   3..14 four bilinear dhist samples (xR, then G, B) at the reprojected positions built from
 //         the min/centre/max MV reads (+ F20) and the A read (no -F20 term) for sample 3,
 //   15    reset: 0.22356846928596497 * ln(1 + sqrt(S)) of the MV-vs-prev_mvec difference,
@@ -100,7 +101,9 @@ layout(push_constant) uniform Enc0Args {
     uint fc;                                    // +0xdc dither frame counter
     layout(offset = 224) uint depinv;            // +0xe0 read by Enc0Args, unused by the maths
     uint mvpitch;                               // +0xe4 (the buffers are packed: mvpitch == W)
-    layout(offset = 252) uint ldr;               // +0xfc host-filled for args parity, unused here
+    layout(offset = 252) uint ldr;               // +0xfc LDR colour: linear colour
+                                               // features (no expo/tm) and dhist
+                                               // samples without *2.45 (below)
 };
 
 // ---------------------------------------------------------------- helpers
@@ -324,9 +327,11 @@ vec3 dhsamp3(vec2 C) {
         float t01 = float((w01 >> sh) & 0x3FFu) * INV1023;
         float t10 = float((w10 >> sh) & 0x3FFu) * INV1023;
         float t11 = float((w11 >> sh) & 0x3FFu) * INV1023;
-        v[ch] = (((b00 * t00 + b01 * t01) + b10 * t10) + b11 * t11) * C245;
+        v[ch] = ((b00 * t00 + b01 * t01) + b10 * t10) + b11 * t11;
     }
-    return v;
+    // LDR (ldr != 0): dhist holds linear values, so the HDR tm-domain *2.45 (1/K) is
+    // skipped (the kernel's ldr path branches around all twelve sites).
+    return (ldr != 0u) ? v : v * C245;
 }
 
 // One axis of the prev_mvec interpolation (model reset_feature axis): clamp to [0,1] first,
@@ -401,6 +406,15 @@ vec2 axis_hid(float C, int n, float inv15, float off) {
 
 float tap_hid(int r, int c, int k) {          // max(-1, i8/127)
     return max(-1.0, float(int(in_hidden[uint((r * W + c) * 4 + k)])) * (1.0 / 127.0));
+}
+
+// LDR colour feature (ldr != 0): the linear g_col value, no exposure multiply, no
+// tonemap: NaN -> 0, f16 values above 0x77ff (32752) -> 32736.0 (0x46FFE000), else the
+// value itself (the kernel's three ldr-masked colour sites).
+float lin_feat(float c) {
+    if (c != c) return 0.0;
+    if (float16_t(c) > float16_t(32752.0)) return 32736.0;
+    return c;
 }
 
 // dq() (model feature quantizer): x16 = rh(min(x, 1024)), dither into the exponent, two rh()
@@ -489,12 +503,19 @@ void main() {
         uint dw = (uint(enc0_w[2u * didx]) | (uint(enc0_w[2u * didx + 1u]) << 8u)) >> 9u;
         uint ab = cell * 128u + q * 32u;
 
-        // 0..2: tm(e * rgb) of the mirrored g_col texel
+        // 0..2: tm(e * rgb) of the mirrored g_col texel; LDR: the linear value
+        // (lin_feat: no expo multiply, no tonemap)
         uint ci = uint(clamp(x, 0, W - 1)) + uint(row) * uint(W);
         f16vec4 gc = g_col[ci];
-        STFEAT(0u, tm(float(gc.x) * e));
-        STFEAT(1u, tm(float(gc.y) * e));
-        STFEAT(2u, tm(float(gc.z) * e));
+        if (ldr != 0u) {
+            STFEAT(0u, lin_feat(float(gc.x)));
+            STFEAT(1u, lin_feat(float(gc.y)));
+            STFEAT(2u, lin_feat(float(gc.z)));
+        } else {
+            STFEAT(0u, tm(float(gc.x) * e));
+            STFEAT(1u, tm(float(gc.y) * e));
+            STFEAT(2u, tm(float(gc.z) * e));
+        }
 
         // 3..14: four dhist samples x R,G,B. Samples 0..2 ride the min/centre/max MV reads with the
         // 3*((p+0.5) - F20) base; sample 3 has no -F20 term.

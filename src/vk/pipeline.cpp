@@ -1396,9 +1396,12 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
         float exp_data[4] = { exposure_val, pre_val, 1.0f / std::max(exposure_val, 1e-4f), 0.0f };
         std::memcpy(expo.mapped, exp_data, 16);
     } else {
-        uint16_t* expo_ptr = static_cast<uint16_t*>(expo.mapped);
-        uint16_t h_exp = f32_to_f16_rne(exposure_val * pre_val);
-        expo_ptr[p] = h_exp;
+        // LDR keeps expo's last value (no exposure launch, HOST-RE FUN_180116c90).
+        if (!ldr) {
+            uint16_t* expo_ptr = static_cast<uint16_t*>(expo.mapped);
+            uint16_t h_exp = f32_to_f16_rne(exposure_val * pre_val);
+            expo_ptr[p] = h_exp;
+        }
     }
 
     // The caller has begun cmd; every descriptor set below is freshly allocated.
@@ -1424,7 +1427,18 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
         // 1. Gather
         {
             uint8_t push[88] = {0};
-            uint32_t pcol = W * 8, pmv = W * 4, pdep = W * 4;
+            // Row pitches are the tightly-packed texel sizes (srref: W*col_bpp etc.;
+            // HOST-RE GatherArgs +0x18/+0x1c/+0x20). The old fixed W*8/W*4/W*4 was right
+            // only for the canonical fmt_col 0, so every other colour format read the
+            // wrong rows (sr_M_col4/6 ~18.4 dB, col5 ~16.0 dB, ldr1-3 ~18.7 dB).
+            auto sr_col_bpp = [](int c) {
+                static const int t[] = {8, 4, 4, 4, 4, 16, 4};
+                return (c >= 0 && c < 7) ? t[c] : 4;
+            };
+            auto sr_mv_bpp = [](int c) { return (c == 0) ? 4 : 8; };
+            uint32_t pcol = uint32_t(W) * uint32_t(sr_col_bpp(fmt_col));
+            uint32_t pmv = uint32_t(W) * uint32_t(sr_mv_bpp(fmt_mv));
+            uint32_t pdep = uint32_t(W) * 4u;
             std::memcpy(push + 24, &pcol, 4);
             std::memcpy(push + 28, &pmv, 4);
             std::memcpy(push + 32, &pdep, 4);
@@ -1440,7 +1454,7 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
 
         if (mvhi) {
             uint8_t push[32] = {0};
-            uint32_t pmv = oW * 4;
+            uint32_t pmv = uint32_t(oW) * uint32_t((fmt_mv == 0) ? 4 : 8);
             std::memcpy(push + 8, &pmv, 4);
             std::memcpy(push + 12, &fmt_mv, 4);
             std::memcpy(push + 24, &oW, 4);
@@ -1448,8 +1462,10 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             dispatch(cmd, "sr_gather_mv", {&in_mv_, &g_mvhi}, push, 32, (oW + 15) / 16, (oH + 15) / 16, 1);
         }
 
-        // 2. Exposure
-        {
+        // 2. Exposure (skipped for LDR colour: the host launches nothing and expo
+        // keeps its last value, HOST-RE FUN_180116c90; with exposure 1 the value is
+        // identical, but the skip keeps history exact when exposure varies)
+        if (!ldr) {
             uint8_t push[32] = {0};
             std::memcpy(push + 8, &exposure_val, 4);
             std::memcpy(push + 12, &pre_val, 4);
