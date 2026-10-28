@@ -1,5 +1,6 @@
 #version 460
 #extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
 #extension GL_EXT_shader_8bit_storage : enable
@@ -181,7 +182,10 @@ void main() {
         NR_FRAG_ACC kf[2];
         qf[0] = NR_ACC_ZERO; qf[1] = NR_ACC_ZERO;
         kf[0] = NR_ACC_ZERO; kf[1] = NR_ACC_ZERO;
-        for (uint kk = 0u; kk < 8u; ++kk) {
+        // unrolled: in a dynamic loop ACO cannot hoist iteration kk+1's fragment loads ahead of
+        // iteration kk's MMAs, and the measurement says loads (0.48) and the MMA pipe (0.35) sit
+        // fully serial (0.91 total). Straight-line code lets the scheduler interleave them.
+        [[unroll]] for (uint kk = 0u; kk < 8u; ++kk) {
             NR_FRAG_A fa;
             NR_LOAD_A(fa, sN, 16u * kk, 128u);
             NR_FRAG_B bq0;
@@ -206,7 +210,7 @@ void main() {
 
         // 3b. logits = Q Q^T + relpos (the logit product's B operand comes from the same tile)
         NR_FRAG_ACC lg = NR_ACC_ZERO;
-        for (uint kk = 0u; kk < 2u; ++kk) {
+        [[unroll]] for (uint kk = 0u; kk < 2u; ++kk) {
             NR_FRAG_A la;
             NR_LOAD_A(la, sQ, 16u * kk, 32u);
             NR_FRAG_B lb;
@@ -250,15 +254,18 @@ void main() {
         sync_lds();
 
         // 3e. Wo: state = f16(state + ctx . Wo_h)
+        // A = sC's two K slices are the SAME for all eight nt (only B varies): load them once.
+        // The A-fragment loads measured 0.592 ms of this kernel's 0.912 (noA probe) and this loop
+        // was reloading 8x2 of them a head for identical data.
+        NR_FRAG_A wa0, wa1;
+        NR_LOAD_A(wa0, sC, 0u, 32u);
+        NR_LOAD_A(wa1, sC, 16u, 32u);
         for (uint nt = 0u; nt < 8u; ++nt) {
             NR_FRAG_ACC a = NR_ACC_ZERO;
-            for (uint d0 = 0u; d0 < 2u; ++d0) {
-                NR_FRAG_A fa;
-                NR_LOAD_A(fa, sC, 16u * d0, 32u);
-                NR_FRAG_B fb;
-                NR_LOAD_B(fb, wrep, wo + 16u * nt * 32u + 16u * d0, 32u);
-                NR_MMA(a, fa, fb);
-            }
+            { NR_FRAG_B fb0; NR_LOAD_B(fb0, wrep, wo + 16u * nt * 32u, 32u);
+              NR_MMA(a, wa0, fb0); }
+            { NR_FRAG_B fb1; NR_LOAD_B(fb1, wrep, wo + 16u * nt * 32u + 16u, 32u);
+              NR_MMA(a, wa1, fb1); }
             for (uint i = 0u; i < 8u; ++i) st[nt][i] = float16_t(st[nt][i] + a[i]);
         }
     }
@@ -293,6 +300,13 @@ void main() {
             for (uint i = 0u; i < 8u; ++i) st[t][i] = float16_t(float(st[t][i]) + b);
         }
 
+        // A = sN's eight K slices are FIXED for all 16 MLP blocks: load them ONCE here instead
+        // of 8 loads x16 blocks (128 -> 8; fragments are registers, +~8 VGPR while live).
+        NR_FRAG_A na0, na1, na2, na3, na4, na5, na6, na7;
+        NR_LOAD_A(na0, sN,   0u, 128u); NR_LOAD_A(na1, sN,  16u, 128u);
+        NR_LOAD_A(na2, sN,  32u, 128u); NR_LOAD_A(na3, sN,  48u, 128u);
+        NR_LOAD_A(na4, sN,  64u, 128u); NR_LOAD_A(na5, sN,  80u, 128u);
+        NR_LOAD_A(na6, sN,  96u, 128u); NR_LOAD_A(na7, sN, 112u, 128u);
         for (uint j = 0u; j < 16u; ++j) {
             uint base = ffn + j * 8256u + ((j == 0u) ? 0u : 256u);
             uint fc1 = base;
@@ -303,16 +317,31 @@ void main() {
             // fc1: z = sN . W1^T + b1
             NR_FRAG_ACC zf[2];
             zf[0] = NR_ACC_ZERO; zf[1] = NR_ACC_ZERO;
-            for (uint kk = 0u; kk < 8u; ++kk) {
-                NR_FRAG_A fa;
-                NR_LOAD_A(fa, sN, 16u * kk, 128u);
-                NR_FRAG_B fb0;
-                NR_LOAD_B(fb0, wrep, fc1 + 16u * kk, 128u);
-                NR_FRAG_B fb1;
-                NR_LOAD_B(fb1, wrep, fc1 + 2048u + 16u * kk, 128u);
-                NR_MMA(zf[0], fa, fb0);
-                NR_MMA(zf[1], fa, fb1);
-            }
+            { NR_FRAG_B f0, f1; NR_LOAD_B(f0, wrep, fc1 + 16u * 0, 128u);
+              NR_LOAD_B(f1, wrep, fc1 + 2048u + 16u * 0, 128u);
+              NR_MMA(zf[0], na0, f0); NR_MMA(zf[1], na0, f1); }
+            { NR_FRAG_B f0, f1; NR_LOAD_B(f0, wrep, fc1 + 16u * 1, 128u);
+              NR_LOAD_B(f1, wrep, fc1 + 2048u + 16u * 1, 128u);
+              NR_MMA(zf[0], na1, f0); NR_MMA(zf[1], na1, f1); }
+            { NR_FRAG_B f0, f1; NR_LOAD_B(f0, wrep, fc1 + 16u * 2, 128u);
+              NR_LOAD_B(f1, wrep, fc1 + 2048u + 16u * 2, 128u);
+              NR_MMA(zf[0], na2, f0); NR_MMA(zf[1], na2, f1); }
+            { NR_FRAG_B f0, f1; NR_LOAD_B(f0, wrep, fc1 + 16u * 3, 128u);
+              NR_LOAD_B(f1, wrep, fc1 + 2048u + 16u * 3, 128u);
+              NR_MMA(zf[0], na3, f0); NR_MMA(zf[1], na3, f1); }
+            { NR_FRAG_B f0, f1; NR_LOAD_B(f0, wrep, fc1 + 16u * 4, 128u);
+              NR_LOAD_B(f1, wrep, fc1 + 2048u + 16u * 4, 128u);
+              NR_MMA(zf[0], na4, f0); NR_MMA(zf[1], na4, f1); }
+            { NR_FRAG_B f0, f1; NR_LOAD_B(f0, wrep, fc1 + 16u * 5, 128u);
+              NR_LOAD_B(f1, wrep, fc1 + 2048u + 16u * 5, 128u);
+              NR_MMA(zf[0], na5, f0); NR_MMA(zf[1], na5, f1); }
+            { NR_FRAG_B f0, f1; NR_LOAD_B(f0, wrep, fc1 + 16u * 6, 128u);
+              NR_LOAD_B(f1, wrep, fc1 + 2048u + 16u * 6, 128u);
+              NR_MMA(zf[0], na6, f0); NR_MMA(zf[1], na6, f1); }
+            { NR_FRAG_B f0, f1; NR_LOAD_B(f0, wrep, fc1 + 16u * 7, 128u);
+              NR_LOAD_B(f1, wrep, fc1 + 2048u + 16u * 7, 128u);
+              NR_MMA(zf[0], na7, f0); NR_MMA(zf[1], na7, f1); }
+
             for (uint t = 0u; t < 2u; ++t) {
                 float b = float(sB1[16u * t + col]);
                 for (uint i = 0u; i < 8u; ++i)
@@ -320,15 +349,17 @@ void main() {
             }
 
             // fc2: state = f16(state + hidden . W2^T)
+            // A = sH's two K slices are the SAME for all eight nt: load them once (was 16 loads
+            // a block x16 blocks = 256 for two fragments).
+            NR_FRAG_A ha0, ha1;
+            NR_LOAD_A(ha0, sH, 0u, 32u);
+            NR_LOAD_A(ha1, sH, 16u, 32u);
             for (uint nt = 0u; nt < 8u; ++nt) {
                 NR_FRAG_ACC a = NR_ACC_ZERO;
-                for (uint h0 = 0u; h0 < 2u; ++h0) {
-                    NR_FRAG_A fa;
-                    NR_LOAD_A(fa, sH, 16u * h0, 32u);
-                    NR_FRAG_B fb;
-                    NR_LOAD_B(fb, wrep, fc2 + 16u * nt * 32u + 16u * h0, 32u);
-                    NR_MMA(a, fa, fb);
-                }
+                { NR_FRAG_B f0; NR_LOAD_B(f0, wrep, fc2 + 16u * nt * 32u, 32u);
+                  NR_MMA(a, ha0, f0); }
+                { NR_FRAG_B f1; NR_LOAD_B(f1, wrep, fc2 + 16u * nt * 32u + 16u, 32u);
+                  NR_MMA(a, ha1, f1); }
                 for (uint i = 0u; i < 8u; ++i) st[nt][i] = float16_t(st[nt][i] + a[i]);
             }
         }
