@@ -357,10 +357,14 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         // device the NGX host hands over.  The push range has to cover the shader's block, which
         // starts at offset 24 (scale) and ends at 31 (reset) - 8 bytes left both reading garbage.
         add_pipe("rr_ae_final", 4, 32);
-        // rr_enc0_feat: 14 bindings (13 = wbuf, the dq() dither table at blob0's meta[20] offset),
-        // push 32 B = the oracle's E0Args words 0x00..0x1c this kernel reads (W0/H0/W/H, fc =
-        // E[0x19]&7 dither row, rst, the dither table's byte offset in binding 13, SC0).
-        add_pipe("rr_enc0_feat", 14, 32);
+        // rr_enc0_feat: 16 bindings (13 = wbuf, the dq() dither table at blob0's meta[20] offset;
+        // 14 = E0c0e history, 15 = E0c12 history), push 56 B = the oracle's E0Args words
+        // 0x00..0x1c this kernel reads (W0/H0/W/H, fc = E[0x19]&7 dither row, rst, the dither
+        // table's byte offset in binding 13, SC0) plus the history branch's words: +0x20/+0x24
+        // pj = E0Args +0x1a0/+0x1a4 (this frame's jitter), +0x28/+0x2c bev = the previous
+        // frame's mv-record [0,0] (the oracle's +0x160 E0bf2 = E0bf6 parity slot), +0x30/+0x34
+        // the W15xH15 history C-grid (768x432 at the oracle's 512x288 output).
+        add_pipe("rr_enc0_feat", 16, 56);
         add_pipe("rr_level", 14, 80);
         add_pipe("rr_post_prep", 4, 40);
         add_pipe("rr_post", 12, 184);
@@ -1341,13 +1345,24 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
         }
         // 3. Enc0 feat (launch 3 + roff)
         {
-            uint8_t push[32] = {0};
+            // Diagnostic (DLSS5_AMD_FEAT_DUMP=<file>, my agent's own tool): t_act[0] still holds
+            // the PREVIOUS frame's E0be8 at record time (the runner vkQueueWaitIdle()s per
+            // frame, host-coherent) -> append it so the chain's own feature tensor can be
+            // scored against the oracle multidump.  Chunk 0 = the zero buffer before frame 0,
+            // chunks 1..8 = frames 0..7.  No effect unless the env var is set.
+            if (const char* fd = std::getenv("DLSS5_AMD_FEAT_DUMP")) {
+                if (FILE* f = std::fopen(fd, "ab")) {
+                    std::fwrite(t_act[0].mapped, 1, size_t(W0) * H0 * 64, f);
+                    std::fclose(f);
+                }
+            }
+            uint8_t push[56] = {0};
             std::memcpy(push + 0, &W0, 4); std::memcpy(push + 4, &H0, 4);
             std::memcpy(push + 8, &W, 4); std::memcpy(push + 12, &H, 4);
             // E0Args +0x10 fc = E[0x19] & 7 (the dq() dither row; this->fc is the same 8-frame
-            // ring), +0x14 rst (the history gate; the port has no history branch yet - OPEN1),
-            // +0x198's table offset inside binding 13 (blob0's meta[20] = 37984, rr_tab slot 20),
-            // +0x200 SC0 (params.json enc0_s2598 f16[0], stashed at rr_tab slot 27).
+            // ring), +0x14 rst (the history gate), +0x198's table offset inside binding 13
+            // (blob0's meta[20] = 37984, rr_tab slot 20), +0x200 SC0 (params.json enc0_s2598
+            // f16[0], stashed at rr_tab slot 27).
             const uint32_t fc7 = uint32_t(fc) & 7u, rst32 = uint32_t(reset);
             const uint32_t* tab = static_cast<const uint32_t*>(rr_tab.mapped);
             const uint32_t dith_off = uint32_t(rr_blob_off[0]) + (tab ? tab[20] : 0u);
@@ -1356,9 +1371,26 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             std::memcpy(push + 20, &rst32, 4);
             std::memcpy(push + 24, &dith_off, 4);
             std::memcpy(push + 28, &sc0, 4);
+            // History branch words (model SPEC 6): pj = E0Args +0x1a0/+0x1a4 = this frame's
+            // jitter (the runner's jx/jy, VERIFIED == the oracle args on both dumped frames);
+            // bev = the previous frame's mv-record [0,0].xy (the oracle's +0x160 E0bf2/E0bf6
+            // parity slot; the port's single bf6 buffer still holds last frame's enc0_feat
+            // write here - the runner vkQueueWaitIdle()s per frame and the memory is host
+            // coherent, so reading it while recording is race-free; first frame = zeros and
+            // rst skips the branch); W15/H15 = the C-grid (oracle E: 768x432).
+            const float pjx_ = jx, pjy_ = jy;
+            const uint16_t* b6 = static_cast<const uint16_t*>(bf6.mapped);
+            const float bev_x = b6 ? f16_bits_to_f32(b6[0]) : 0.0f;
+            const float bev_y = b6 ? f16_bits_to_f32(b6[1]) : 0.0f;
+            std::memcpy(push + 32, &pjx_, 4);
+            std::memcpy(push + 36, &pjy_, 4);
+            std::memcpy(push + 40, &bev_x, 4);
+            std::memcpy(push + 44, &bev_y, 4);
+            std::memcpy(push + 48, &W15, 4);
+            std::memcpy(push + 52, &H15, 4);
             trace_label = "launch " + std::to_string(3 + roff) + " k_enc0_feat";
             dispatch(cmd, "rr_enc0_feat", {&g_col, &g_mv, &g_dep, &out_norm, &out_alb, &out_spa, &out_rough_, &expo,
-                                     &t_act[0], &bec, &bf6, &bfa, &bfe, &wbuf}, push, 32,
+                                     &t_act[0], &bec, &bf6, &bfa, &bfe, &wbuf, &c0e, &ue.at("E0c12")}, push, 56,
                      (W0 + 15) / 16, (H0 + 15) / 16, 1);
             inject_after(cmd, "enc0_feat", 3 + roff);
         }

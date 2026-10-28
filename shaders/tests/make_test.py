@@ -567,7 +567,8 @@ def make_test(name, out_dir):
         alb = np.linspace(0.1, 1.0, n_pix * 4, dtype=np.float32).tobytes()
         spa = np.linspace(0.1, 1.0, n_pix * 4, dtype=np.float32).tobytes()
         rgh = np.linspace(0.1, 1.0, n_pix, dtype=np.float32).tobytes()
-        expo = np.array([1.0, 1.0, 1.0, 0.0], dtype=np.float32).tobytes()
+        # e_prev != e_cur so the history branch's e_cur*h/e_prev path is really exercised
+        expo = np.array([1.25, 0.8, 0.8, 0.0], dtype=np.float32).tobytes()
         open(os.path.join(out_dir, "in_col.bin"), "wb").write(col)
         open(os.path.join(out_dir, "in_mv.bin"), "wb").write(mv)
         open(os.path.join(out_dir, "in_dep.bin"), "wb").write(dep)
@@ -580,8 +581,25 @@ def make_test(name, out_dir):
         # here the same synthetic LCG table the SR enc0 fixtures use, so the dither path runs)
         dither = ((np.arange(2048, dtype=np.uint64) * 2654435761 + 1013904223) & 0xFFFF).astype(np.uint16)
         open(os.path.join(out_dir, "dither.bin"), "wb").write(dither.tobytes())
-        push = bytearray(32)
-        struct.pack_into("<4iIIIf", push, 0, w0, h0, w, h, 3, 0, 0, -0.43359375)
+        # bindings 14/15: the history grids, u32 R10G10B10 (the chain's c0e / E0c12 sizes:
+        # ((W15+1)/2)x((H15+1)/2) and one pooling level below, W15/H15 = 3x render)
+        w15, h15 = 3 * w, 3 * h
+        we, he = (w15 + 1) // 2, (h15 + 1) // 2
+        wp, hp = (we + 1) // 2, (he + 1) // 2
+        c0 = np.arange(we * he, dtype=np.uint32) & 1023
+        c1 = (c0 * 3 + 17) & 1023
+        c2 = (c0 * 7 + 31) & 1023
+        c0e = (c0 | (c1 << 10) | (c2 << 20) | 0xc0000000).astype(np.uint32).tobytes()
+        p0 = np.arange(wp * hp, dtype=np.uint32) & 1023
+        p1 = (p0 * 5 + 11) & 1023
+        p2 = (p0 * 13 + 3) & 1023
+        c12 = (p0 | (p1 << 10) | (p2 << 20) | 0xc0000000).astype(np.uint32).tobytes()
+        open(os.path.join(out_dir, "in_c0e.bin"), "wb").write(c0e)
+        open(os.path.join(out_dir, "in_c12.bin"), "wb").write(c12)
+        # 56-byte push; rst = 0 so the lavapipe run takes the HISTORY branch (O7 must see it)
+        push = bytearray(56)
+        struct.pack_into("<4iIIIf2f2f2i", push, 0, w0, h0, w, h, 3, 0, 0, -0.43359375,
+                         0.125, -0.2, 0.05, -0.03, w15, h15)
         cfg = {
             "groups": [(w0 + 15) // 16, (h0 + 15) // 16, 1],
             "push": push.hex(),
@@ -595,6 +613,8 @@ def make_test(name, out_dir):
                 {"binding": 6, "file": "in_rgh.bin"},
                 {"binding": 7, "file": "in_expo.bin"},
                 {"binding": 13, "file": "dither.bin"},
+                {"binding": 14, "file": "in_c0e.bin"},
+                {"binding": 15, "file": "in_c12.bin"},
                 {"binding": 8, "bytes": w0 * h0 * 64, "output": "out_be8", "type": "u8"},
                 {"binding": 9, "bytes": w0 * h0 * 8, "output": "out_bec", "type": "f16"},
                 {"binding": 10, "bytes": n_pix * 8, "output": "out_bf6", "type": "f16"},

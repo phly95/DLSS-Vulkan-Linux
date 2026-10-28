@@ -10,11 +10,21 @@
 //   * every stored channel goes through dq(), the dithered e4m3 quantizer (dither table =
 //     wbuf[0:4096] as u16[2048] = blob0's meta[20] region, binding 13; fc = E[0x19] & 7 ring),
 //   * c02 = alb.g / c29 = alb.r (the F3 port had them swapped),
-//   * the 12 SC_TM slots hold SC0*tm(col_c*expo) (the F3 port wrote mv*3 there),
+//   * the 15 SC_TM slots hold SC0*tm(col_c*expo) (the F3 port wrote mv*3 there),
 //   * zeros / -0 / 1.0 / dep / spa all through dq() (the dither flips {18,19}, {56,57}, {48,49}
 //     and the single d==0 cell of each dither row turns dq(-0.0) into 0x00).
-// The history branch (oracle args +0x14 rst = 0 frames) is not ported yet (OPEN1 in the model);
-// the 24 history-fed channels + c36 keep the reset-frame values on history frames.
+//   * HISTORY BRANCH (model SPEC 6, the frame1-verified half of OPEN1): gated by rst (+0x14);
+//     on history frames (rst == 0) the 15 SC_TM slots take SC0*tm(e_cur*h/e_prev) with
+//     h = inv_tm(2.45*sample) of the pooled history - E0c0e (384x216, binding 14) at C/2 for
+//     12 slots, E0c12 (192x108, binding 15) at C/4 for c17/c20/c21 - at the motion-compensated
+//     position C = (W15/W)*((coord+0.5) - pj) + bev with pj = the pushed jitter (E0Args
+//     +0x1a0/+0x1a4) and bev = the previous frame's mv-record [0,0] (pushed from bf6);
+//     OOB lanes fall back to col*expo; c36 = -2^-9 (VERIFIED on the oracle's frame1; on the
+//     other chain frames the oracle's c36 is a per-frame value this port cannot know -
+//     build/agents/e0be8-port-fix/progress.md Step 5 - reported, not invented).
+//     The c22-family {22,23,26,27,45,48,49,52} stays dq(-0.0) on history frames too: the model
+//     (OPEN1) has its = SC1*v1 value chain not yet decoded, so it is left at the model's
+//     current behavior rather than invented here.
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
@@ -34,6 +44,12 @@ layout(set = 0, binding = 11) writeonly buffer OutBfa { f16vec2 out_bfa[]; };
 layout(set = 0, binding = 12) writeonly buffer OutBfe { f16vec2 out_bfe[]; };
 // dq()'s dither table (oracle E0Args +0x198 wbuf = blob0 + meta[20] = blob0 + 37984; u16[2048]).
 layout(set = 0, binding = 13) readonly buffer InDither { uint8_t dith[]; };
+// History (model SPEC 6): the pooled tone-history grids, u32 R10G10B10 words.
+// binding 14 = E0c0e ((W15+1)/2 x (H15+1)/2, the chain's c0e written by k_post each frame),
+// binding 15 = E0c12 (one pooling level below, re-pooled from E0c0e by k_pooled2 each
+// non-reset frame).  At the enc0_feat dispatch both hold the PREVIOUS frame's state.
+layout(set = 0, binding = 14) readonly buffer InC0e { uint g_c0e[]; };
+layout(set = 0, binding = 15) readonly buffer InC12 { uint g_c12[]; };
 
 layout(push_constant) uniform RrE0Args {
     int W0;               // +0x00 (oracle E0Args +0x00: W0, H0)
@@ -41,9 +57,15 @@ layout(push_constant) uniform RrE0Args {
     int W;                // +0x08 (render W, H)
     int H;
     uint fc;              // +0x10 E0Args +0x10 = E[0x19] & 7: the dq() dither row
-    uint rst;             // +0x14 E0Args +0x14: history gate (unused here, see the header note)
+    uint rst;             // +0x14 E0Args +0x14: history gate (rst != 0 skips the history branch)
     uint dith_off;        // +0x18 byte offset of the dither table inside binding 13
     float SC0;            // +0x1c E0Args +0x200: the blob's f16 scalar (params.json enc0_s2598)
+    float pjx;            // +0x20 E0Args +0x1a0: this frame's subpixel jitter (history position)
+    float pjy;            // +0x24 E0Args +0x1a4
+    float bev_x;          // +0x28 E0Args +0x160 bev_prev: the PREVIOUS frame's mv-record [0,0].xy
+    float bev_y;          // +0x2c (the port's bf6 at dispatch time; constant global motion mv*3)
+    int W15;              // +0x30 the history C-grid (oracle E: 768x432 = 3x render); E0c0e is
+    int H15;              // +0x34 ((W15+1)/2) x ((H15+1)/2) words, E0c12 one level below
 };
 
 // ---------------------------------------------------------------- helpers
@@ -131,6 +153,50 @@ uint dq(float x, uint xi, uint yi) {
     return q8r(tc);
 }
 
+// tm(v) (model SPEC 4/6): 0.36*log10(max(1+100v, 1e-4)) in f32, NaN/inf/negative -> 0,
+// clamp <= 1024.  The col path's inline expression was bit-identical to this (same op order).
+float tm32(float v) {
+    float t = max(1.0 + 100.0 * v, 0.0001);
+    float r = 0.36 * (log2(t) * 0.3010299956639812);
+    if (!(r >= 0.0)) r = 0.0;                       // model: isfinite(r) & r >= 0 else 0
+    return min(r, 1024.0);
+}
+
+// inv_tm (model SPEC 6): undo the history's *2.45 tm round-trip: (10^(y/0.36) - 1)/100 with
+// y = clamp(2.45*s, 1e-4, 8).  Constants are the ISA's exact words: 0x4031c71c = 1/0.36,
+// 0x40549a78 = log2(10) (v_exp_f32 is 2^x), 0x3c23d70a = 0.01, 0x401ccccd = 2.45.
+float inv_tm(float s) {
+    float y = clamp(uintBitsToFloat(0x401ccccdu) * s, 1e-4, 8.0);
+    float u = y * uintBitsToFloat(0x4031c71cu);     // /0.36
+    u = u * uintBitsToFloat(0x40549a78u);           // *log2(10) -> 2^u
+    return (exp2(u) - 1.0) * uintBitsToFloat(0x3c23d70au);
+}
+
+// One 10-bit R10G10B10 field (ch = 0,1,2) of a packed history word, /1023.
+float r10(uint w, int ch) {
+    return float((w >> uint(10 * ch)) & 1023u) * (1.0 / 1023.0);
+}
+
+// One axis of the history sample position (model _snap): pos = C/div - 0.5 clamped
+// [-2, hmax+2], snapped floor(pos*256 + 0.5)/256 -> (integer tap, fraction).
+void snap_taps(float C, int div, int hmax, out int it, out float fr) {
+    float pos = clamp(C / float(div) - 0.5, -2.0, float(hmax) + 2.0);
+    float s = floor(pos * 256.0 + 0.5) / 256.0;
+    it = int(floor(s));
+    fr = s - float(it);
+}
+
+// Bilinear tap of a history grid (model _hist_sample): tap0 = clip(it, 0, h-1),
+// tap1 = clip(max(it, -1) + 1, 0, h-1); the four weight products summed in the model's order.
+float bilin_tap(uint t00, uint t01, uint t10, uint t11, int ci, float frx, float fry) {
+    float c00 = r10(t00, ci), c01 = r10(t01, ci);
+    float c10 = r10(t10, ci), c11 = r10(t11, ci);
+    return (1.0 - fry) * (1.0 - frx) * c00
+         + (1.0 - fry) * frx * c01
+         + fry * (1.0 - frx) * c10
+         + fry * frx * c11;
+}
+
 void main() {
     int x = int(gl_GlobalInvocationID.x);
     int y = int(gl_GlobalInvocationID.y);
@@ -138,6 +204,7 @@ void main() {
 
     int idx0 = y * W0 + x;
     float expo = in_expo[0].x;
+    float e_prev = in_expo[0].y;              // the history branch divides by the previous expo
 
     // Symmetric reflect border for rows >= H
     int y_src = (y < H) ? y : (2 * (H - 1) - y);
@@ -184,6 +251,60 @@ void main() {
     feat[18] = min(dep_val, 2.0);                     // min(2, dep)
     feat[22] = -0.0; feat[23] = -0.0; feat[26] = -0.0; feat[27] = -0.0;   // NEG0 -> dq(-0.0)
     feat[45] = -0.0; feat[48] = -0.0; feat[49] = -0.0; feat[52] = -0.0;
+
+    // History branch (model SPEC 6): gate = rst.  On history frames (rst == 0) the 15 SC_TM
+    // slots take SC0*tm(e_cur*h/e_prev) with h = inv_tm(2.45*sample) of the pooled history
+    // grids, and c36 = -2^-9 (the model's frame1-verified values; the c22-family stays above
+    // at dq(-0.0) - its SC1*v1 chain is still OPEN1 in the model and is not invented here).
+    if (rst == 0u) {
+        // Motion-compensated position in the W15xH15 C-grid (model SPEC 6): the render-to-C
+        // scale is W15/W (== the oracle's 3.0 at the verified 256x144 / 768x432 geometry).
+        int xs = min(x, W - 1);                       // model: xs = min(xx, W - 1)
+        float Cx = (float(W15) / float(W)) * ((float(xs) + 0.5) - pjx) + bev_x;
+        float Cy = (float(H15) / float(H)) * ((float(y_src) + 0.5) - pjy) + bev_y;
+        bool inb = Cx >= 0.0 && Cx <= float(W15) && Cy >= 0.0 && Cy <= float(H15);
+
+        int wE = (W15 + 1) / 2, hE = (H15 + 1) / 2;   // E0c0e grid (the chain's c0e)
+        int wP = (wE + 1) / 2, hP = (hE + 1) / 2;     // E0c12 grid (pooled2 of E0c0e)
+        // Both grids share the C position: E0c0e at C/2, E0c12 at C/4 (model _snap: pos =
+        // C/div - 0.5, clamp [-2, hmax+2], snap floor(pos*256+0.5)/256).
+        int itx0, ity0, itx1, ity1;
+        float frx0, fry0, frx1, fry1;
+        snap_taps(Cx, 2, wE, itx0, frx0);
+        snap_taps(Cy, 2, hE, ity0, fry0);
+        snap_taps(Cx, 4, wP, itx1, frx1);
+        snap_taps(Cy, 4, hP, ity1, fry1);
+        // model _hist_sample's clamped taps (tap1 = max(it, -1) + 1).
+        int ax0 = clamp(itx0, 0, wE - 1), ax1 = clamp(max(itx0, -1) + 1, 0, wE - 1);
+        int ay0 = clamp(ity0, 0, hE - 1), ay1 = clamp(max(ity0, -1) + 1, 0, hE - 1);
+        int bx0 = clamp(itx1, 0, wP - 1), bx1 = clamp(max(itx1, -1) + 1, 0, wP - 1);
+        int by0 = clamp(ity1, 0, hP - 1), by1 = clamp(max(ity1, -1) + 1, 0, hP - 1);
+        uint u00 = g_c0e[uint(ay0) * uint(wE) + uint(ax0)];
+        uint u01 = g_c0e[uint(ay0) * uint(wE) + uint(ax1)];
+        uint u10 = g_c0e[uint(ay1) * uint(wE) + uint(ax0)];
+        uint u11 = g_c0e[uint(ay1) * uint(wE) + uint(ax1)];
+        uint v00 = g_c12[uint(by0) * uint(wP) + uint(bx0)];
+        uint v01 = g_c12[uint(by0) * uint(wP) + uint(bx1)];
+        uint v10 = g_c12[uint(by1) * uint(wP) + uint(bx0)];
+        uint v11 = g_c12[uint(by1) * uint(wP) + uint(bx1)];
+
+        float colc[3] = float[3](col_r, col_g, col_b);   // the OOB fallback (col * expo)
+        float scE0[3], scE12[3];
+        for (int ci = 0; ci < 3; ++ci) {
+            float s0 = bilin_tap(u00, u01, u10, u11, ci, frx0, fry0);
+            float s1 = bilin_tap(v00, v01, v10, v11, ci, frx1, fry1);
+            scE0[ci]  = SC0 * tm32(inb ? expo * (inv_tm(s0) / e_prev) : colc[ci]);
+            scE12[ci] = SC0 * tm32(inb ? expo * (inv_tm(s1) / e_prev) : colc[ci]);
+        }
+        // The 15 SC_TM slots (model SC_TM map): 12 from E0c0e, c17/c20/c21 from E0c12.
+        feat[5] = scE0[0];  feat[12] = scE0[0];  feat[24] = scE0[0];  feat[37] = scE0[0];
+        feat[17] = scE12[0];
+        feat[8] = scE0[1];  feat[13] = scE0[1];  feat[25] = scE0[1];  feat[40] = scE0[1];
+        feat[20] = scE12[1];
+        feat[9] = scE0[2];  feat[16] = scE0[2];  feat[28] = scE0[2];  feat[41] = scE0[2];
+        feat[21] = scE12[2];
+        feat[36] = -0.001953125;               // c36 = s1 = -2^-9 (VERIFIED on oracle frame1)
+    }
 
     int N = W0 * H0;
     int base0 = idx0 * 32;
