@@ -102,7 +102,12 @@ def main() -> int:
                 cmd = ([a.runner, "--mode", "rr", "--weights", os.path.join(ROOT, "build", "ngx-weights", "rr")] if rr else
                        [a.runner, "--mode", "sr", "--preset", P, "--weights", os.path.join(ROOT, "build", "ngx-weights", P)]) + \
                       ["--in", inp, "--out", out]
-                if a.lock and os.path.exists(a.lock):
+                # correctness runs share the GPU through gpushare.sh (up to 3 at once; timing runs keep
+                # it exclusive); without the helper, fall back to the exclusive lock
+                share = os.path.join(os.path.dirname(a.lock or ""), "gpushare.sh")
+                if a.lock and os.path.exists(share):
+                    cmd = [share] + cmd
+                elif a.lock and os.path.exists(a.lock):
                     cmd = ["flock", a.lock] + cmd
                 with open(out + ".log", "w") as lf:
                     if subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT).returncode:
