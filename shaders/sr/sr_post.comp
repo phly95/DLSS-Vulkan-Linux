@@ -165,11 +165,38 @@ void cr_axis(float f0, out float wm1, out float w2, out float a, out float rq) {
 // SPEC 6: the 5-tap bilinear Catmull-Rom history sample at the reprojected position (posx, posy),
 // in output texels; returns h, the tm-domain history.
 //
-// PERF pass 4: the five bilinear fetches go through the sampler (binding 5: linear filter,
-// clamp-to-edge) - the classic form the 5-tap CR is designed for. One texture instruction replaces
-// the twelve buffer loads and the five manual blends of the pass-2 version, on the texture unit's
-// own cache path. cr_axis already quantises rx/ry to 1/256 precisely because hardware bilinear
-// weights are 8-bit, so the sampled values are the same the manual bilinear produced.
+// PERF pass 5: the fetches use textureGather, which returns the FOUR texels a bilinear sample
+// would use without applying the weights, so the blend runs here in f32. That is what wins the
+// quality margin back: a plain texture() blends in f16 (the image is rgba16f) and cost the guard
+// 0.17 dB on the static cells (sr_L_static G1 -0.189 against the -0.20 bar). Three gathers per
+// tap - one per colour component - against the pass-4 sampler's one texture() and the pass-2
+// manual path's twelve buffer loads, and the blend arithmetic below is now bit-identical to the
+// buffer path's (`h00*(1-rx) + h01*rx`, then the y mix), which measured G1 ~-0.02.
+//
+// One gather covers one 2x2 texel block; the CR's five taps sit on five such blocks, so this is
+// 15 gathers per output pixel instead of the 12 loads + 5 blends the manual version needed.
+vec3 cr_bil(vec2 uv, float rx, float ry) {
+    // The four texels of the bilinear footprint, ONE PER COMPONENT of the gather.
+    //
+    // ORDER MEASURED ON THIS DRIVER, not assumed: a gather at an exact texel centre (rx = ry = 0)
+    // with a seed image holding a unique value per texel returns
+    //   .x = (u, v+1)  .y = (u+1, v+1)  .z = (u+1, v)  .w = (u, v)
+    // i.e. bottom-left, bottom-right, top-right, top-left in this kernel's (x right, y down)
+    // addressing - the reverse of the order the GLSL examples assume, and the reason the first
+    // gather build scored -8 dB on the static cells (rx = ry = 0 there, so every tap took .x,
+    // one texel below the right one). See build/agents/tail/gathertest.comp, which pins it.
+    vec4 gr = textureGather(inHist, uv, 0);
+    vec4 gg = textureGather(inHist, uv, 1);
+    vec4 gb = textureGather(inHist, uv, 2);
+    vec3 h00 = vec3(gr.w, gg.w, gb.w);       // (u,   v  ) top-left
+    vec3 h01 = vec3(gr.z, gg.z, gb.z);       // (u+1, v  ) top-right
+    vec3 h10 = vec3(gr.x, gg.x, gb.x);       // (u,   v+1) bottom-left
+    vec3 h11 = vec3(gr.y, gg.y, gb.y);       // (u+1, v+1) bottom-right
+    vec3 top = h00 * (1.0 - rx) + h01 * rx;
+    vec3 bot = h10 * (1.0 - rx) + h11 * rx;
+    return top * (1.0 - ry) + bot * ry;
+}
+
 vec3 cr_sample(float posx, float posy) {
     int Ix = int(floor(posx - 0.5));
     int Iy = int(floor(posy - 0.5));
@@ -190,11 +217,11 @@ vec3 cr_sample(float posx, float posy) {
     float dx = 1.0 / float(W15);
     float dy = 1.0 / float(H15);
 
-    vec3 v1 = texture(inHist, vec2(ix - dx,        iy + ryq * dy)).rgb;   // bil(Ix-1, Iy,   0, ryq)
-    vec3 v2 = texture(inHist, vec2(ix + 2.0 * dx,  iy + ryq * dy)).rgb;   // bil(Ix+2, Iy,   0, ryq)
-    vec3 v3 = texture(inHist, vec2(ix + rxq * dx,  iy - dy)).rgb;         // bil(Ix,   Iy-1, rxq, 0)
-    vec3 v4 = texture(inHist, vec2(ix + rxq * dx,  iy + 2.0 * dy)).rgb;   // bil(Ix,   Iy+2, rxq, 0)
-    vec3 t5 = texture(inHist, vec2(ix + rxq * dx,  iy + ryq * dy)).rgb;   // bil(Ix,   Iy,  rxq, ryq)
+    vec3 v1 = cr_bil(vec2(ix - dx,       iy + ryq * dy), 0.0, ryq);   // bil(Ix-1, Iy,   0, ryq)
+    vec3 v2 = cr_bil(vec2(ix + 2.0 * dx, iy + ryq * dy), 0.0, ryq);   // bil(Ix+2, Iy,   0, ryq)
+    vec3 v3 = cr_bil(vec2(ix + rxq * dx, iy - dy),       rxq, 0.0);   // bil(Ix,   Iy-1, rxq, 0)
+    vec3 v4 = cr_bil(vec2(ix + rxq * dx, iy + 2.0 * dy), rxq, 0.0);   // bil(Ix,   Iy+2, rxq, 0)
+    vec3 t5 = cr_bil(vec2(ix + rxq * dx, iy + ryq * dy), rxq, ryq);   // bil(Ix,   Iy,  rxq, ryq)
 
     vec3 num = v1 * W1;
     num = fma(v3, vec3(W3), num);
