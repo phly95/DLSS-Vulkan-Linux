@@ -467,3 +467,30 @@ bounded next step, its leverage NOW re-measured at +40/+43). The hist row: f0 un
 start state was already zero-at-creation = the dump's), later frames +1..+10 - upstream temporal
 fidelity is the SECOND SR front after mode-2 closure. The pre-fix stage9 reading (106.75/77.96
 against a 33.76-min chain) is superseded by this table.
+
+### 2026-10-28: RR start-state comparison vs the oracle's `start.*.bin` (operator step 5) - NO carry/clear/seed difference
+
+Method (zero host changes): for N=1..8, the RR chain was run on a truncated input (`frame.json`
+frames=N) with `DLSS5_AMD_DUMP_BUF` writing all 65 oracle-named state buffers after frame N-1 -
+i.e. the port's state as frame N STARTS it - and diffed against the oracle multidump's
+`frame{N}/start.<name>.bin`. Artifact: `build/agents/orch/rrstart/`.
+
+Findings:
+1. **65 of the oracle's 113 start names are port chain buffers; all 65 match the oracle's
+   zero-structure at f1 and f4** (per-buffer zero fractions within ~0.5%; no buffer is
+   all-zero on one side and populated on the other, i.e. no missing carry, no spurious clear).
+   Byte differences are the accumulated in-flight value drift (the ULP class), not semantics.
+2. **The one structural flag is benign by design**: the oracle keeps the mv-record in TWO parity
+   halves (E0bf2/E0bf6) and shows E0bf2 all-zero at f1 (the unused half); the port aliases both
+   names to its single `bf6` - and that buffer is **byte-identical to the oracle's carried E0bf6
+   on all 8 frames** (full-file sha match, 294912 B). The RR enc0 mv-record carrier is EXACT.
+3. **The 48 oracle-only names are frame-invariant** (0.0% bytes differ f1 vs f4): the E001c-E0058
+   blob region, E0b94 + E0c86-E0cea (weights/tables), and the in_* frame inputs - none is
+   temporal state, so the port carries nothing less than rrref.
+4. Size note: E0c26/E0c2a/E0cee are allocated larger in the port (256/256/331776 B vs the
+   oracle's 2/2/8 B logical) - the port's known over-allocation, harmless.
+
+Conclusion: **RR's remaining 0.54 dB V4 gap is NOT a start-state semantics bug** - it is pure
+in-flight value fidelity (the upstream history/exposure ULP class, per the post_prep ceiling),
+exactly where the fresh leverage table points. The RR start-state question the reset-fix raised
+is CLOSED.
