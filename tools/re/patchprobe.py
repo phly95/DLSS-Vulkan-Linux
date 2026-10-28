@@ -7,6 +7,10 @@ only ever run by srref, and nothing they produce is committed.
     build/venv/bin/python -I tools/re/patchprobe.py --kernel SYMBOL --at OFFSET \
         --asm "INSTR; INSTR; ...; s_endpgm" --name RUN
 
+run(..., tolerant=True) returns {dump, rc, stdout, stderr} instead of raising on a nonzero
+exit - for fault experiments where the ROCm "Memory access fault ... on address 0x..." line
+is the measurement (fault_addr() extracts it). The default return value is unchanged.
+
 OFFSET is kernel-relative (the address column of tools/re/ssa.py). The bytes at OFFSET are
 overwritten with the assembled instructions (llvm-mc gfx1201 in the ROCm container). Nothing after
 them runs, so the patch must end with s_endpgm. The run's dump (srref --dump, frame 0, the 1-frame
@@ -77,7 +81,7 @@ def assemble(asm):
     return bytes(out)
 
 
-def run(kernel, at, asm, name, frames=None, weights=None, net="sr"):
+def run(kernel, at, asm, name, frames=None, weights=None, net="sr", tolerant=False):
     cfg = NETS[net]
     frames, weights = frames or cfg["frames"], weights or cfg["weights"]
     data = bytearray(cfg["co"].read_bytes())
@@ -95,10 +99,18 @@ def run(kernel, at, asm, name, frames=None, weights=None, net="sr"):
            f"cd /w && mkdir -p {rel(OUT / (name + '_dump'))} && {cfg['ref']} {rel(co)} {weights} {frames} "
            f"{rel(OUT / (name + '_out'))} --dump {rel(OUT / (name + '_dump'))}"]
     r = subprocess.run(cmd, capture_output=True, text=True)
-    if r.returncode:
+    if r.returncode and not tolerant:
         raise SystemExit(f"{cfg['ref']} failed:\n{r.stdout[-1500:]}\n{r.stderr[-1500:]}")
     print(f"patched {len(code)} bytes at {kernel}+{at:#x}; dump {OUT / (name + '_dump')}")
+    if tolerant:                       # fault experiments: caller parses rc/stderr itself
+        return dict(dump=OUT / f"{name}_dump", rc=r.returncode, stdout=r.stdout, stderr=r.stderr)
     return OUT / f"{name}_dump"
+
+
+def fault_addr(text):
+    """The GPU fault address ROCm prints ("... on address 0x..."), or None."""
+    m = re.search(r"on address (0x[0-9a-fA-F]+)", text)
+    return int(m.group(1), 16) if m else None
 
 
 def main():
