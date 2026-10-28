@@ -6,6 +6,10 @@
 #extension GL_EXT_shader_16bit_storage : enable
 #include "nh_mm.glsl"
 
+#ifndef SR_C
+#define SR_C -1           // -1 = derive C from w_off (the generic sr_swin_up entry)
+#endif
+
 // sr_swin_up: mode 2's up-projection + skip add, split out of the stage block as its own small
 // WMMA dispatch (optimisation phase split, 2026-10-28). Spec: tools/sr/sr_stage_model.py
 // upsample() + Review R9 addendum (upref=low): per render pixel, up = Wup(row = q*C + c) at its
@@ -79,6 +83,9 @@ void main() {
     uint tid = gl_LocalInvocationID.x;
     uint w_off = wbuf_lo & 0x1fffffu;
     uint C  = (w_off == 1505536u) ? 64u : 96u;      // stage 9 / stage 8 (mode 2 only)
+#if SR_C > 0
+    C = uint(SR_C);                          // per-(C) pipeline specialization (constant-fold)
+#endif
     uint Cn = (C == 64u) ? 96u : 128u;
     uint HW  = uint(dimH * dimW);
     int  W2 = dimW >> 1;
@@ -93,10 +100,11 @@ void main() {
     {
         uint Cg = Cn / 32u;
         uint par = tid & 15u;
+        uint h = tid >> 4u;            // cg-parity split across both lane halves
         int qx = reflect_coord(LX0 + int(par & 3u), W2);
         int qy = reflect_coord(LY0 + int(par >> 2u), H2);
         uint lpos = uint(qy * uint(W2) + qx);
-        for (uint cg = 0u; cg < Cg; ++cg) {
+        for (uint cg = h; cg < Cg; cg += 2u) {
             uint grp = (cg * HW2 + lpos) * 32u;
             uint dst = par * Cn + cg * 32u;
             uvec4 va = in_low4[grp >> 4u];
@@ -114,23 +122,32 @@ void main() {
 
     for (uint hf = 0u; hf < 2u; ++hf) {
         // ---- GEMM: M = 16 parents, K = Cn (unrolled by 2), N = this half's output tiles
-        for (uint n0 = hf * NH2; n0 < hf * NH2 + NH2; n0 += 2u) {
-            NR_FRAG_ACC p0 = NR_ACC_ZERO, p1 = NR_ACC_ZERO;
+        for (uint n0 = hf * NH2; n0 < hf * NH2 + NH2; n0 += 4u) {
+            // four N tiles = 8 v_wmma per K step (NH2 = C/8 = 8 or 12, both multiples of 4)
+            NR_FRAG_ACC p0 = NR_ACC_ZERO, p1 = NR_ACC_ZERO, p2 = NR_ACC_ZERO, p3 = NR_ACC_ZERO;
             for (uint k = 0u; k < Cn; k += 32u) {
                 NR_FRAG_A fa0, fa1;
                 NR_LOAD_A(fa0, sLow, k, Cn);
                 NR_LOAD_A(fa1, sLow, k + 16u, Cn);
-                NR_FRAG_B b0, b1, b2, b3;
+                NR_FRAG_B b0, b1, b2, b3, e0, e1, e2, e3;
                 NR_LOAD_B(b0, wrep, w_off + 16u * n0 * Cn + k, Cn);
                 NR_LOAD_B(b1, wrep, w_off + 16u * n0 * Cn + k + 16u, Cn);
                 NR_LOAD_B(b2, wrep, w_off + 16u * (n0 + 1u) * Cn + k, Cn);
                 NR_LOAD_B(b3, wrep, w_off + 16u * (n0 + 1u) * Cn + k + 16u, Cn);
+                NR_LOAD_B(e0, wrep, w_off + 16u * (n0 + 2u) * Cn + k, Cn);
+                NR_LOAD_B(e1, wrep, w_off + 16u * (n0 + 2u) * Cn + k + 16u, Cn);
+                NR_LOAD_B(e2, wrep, w_off + 16u * (n0 + 3u) * Cn + k, Cn);
+                NR_LOAD_B(e3, wrep, w_off + 16u * (n0 + 3u) * Cn + k + 16u, Cn);
                 NR_MMA(p0, fa0, b0); NR_MMA(p0, fa1, b1);
                 NR_MMA(p1, fa0, b2); NR_MMA(p1, fa1, b3);
+                NR_MMA(p2, fa0, e0); NR_MMA(p2, fa1, e1);
+                NR_MMA(p3, fa0, e2); NR_MMA(p3, fa1, e3);
             }
-            NR_FRAG_ACC16 e0 = NR_NARROW_ACC(p0), e1 = NR_NARROW_ACC(p1);
-            NR_STORE_ACC(e0, sUp, 16u * (n0 - hf * NH2), 2u * C);
-            NR_STORE_ACC(e1, sUp, 16u * (n0 - hf * NH2) + 16u, 2u * C);
+            uint bo = 16u * (n0 - hf * NH2);
+            NR_STORE_ACC(NR_NARROW_ACC(p0), sUp, bo, 2u * C);
+            NR_STORE_ACC(NR_NARROW_ACC(p1), sUp, bo + 16u, 2u * C);
+            NR_STORE_ACC(NR_NARROW_ACC(p2), sUp, bo + 32u, 2u * C);
+            NR_STORE_ACC(NR_NARROW_ACC(p3), sUp, bo + 48u, 2u * C);
         }
         memoryBarrierShared();
 

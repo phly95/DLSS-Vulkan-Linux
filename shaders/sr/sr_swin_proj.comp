@@ -6,6 +6,10 @@
 #extension GL_EXT_shader_16bit_storage : enable
 #include "nh_mm.glsl"
 
+#ifndef SR_C
+#define SR_C -1           // -1 = derive C from w_off (the generic sr_swin_proj entry)
+#endif
+
 // sr_swin_proj: mode 0's 2x2 patch-concat projection (4C -> Cn), split out of the stage block as
 // its own small WMMA dispatch (optimisation phase split, 2026-10-28). Spec:
 // tools/sr/sr_stage_model.py project(): y = f16(dn_b) + cat @ dn_W^T, clamp +-6.28125, E4M3 out,
@@ -68,6 +72,9 @@ void main() {
     uint tid = gl_LocalInvocationID.x;
     uint w_off = wbuf_lo & 0x1fffffu;
     uint C  = (w_off == 0u) ? 64u : 96u;
+#if SR_C > 0
+    C = uint(SR_C);                          // per-(C) pipeline specialization (constant-fold)
+#endif
     uint Cn = (C == 64u) ? 96u : 128u;
     uint K4 = 4u * C;
     uint HW = uint(dimH * dimW);
@@ -94,6 +101,8 @@ void main() {
     {
         uint Cg = C / 32u;
         uint r = tid & 15u;
+        uint h = tid >> 4u;            // lane half: cg-parity split (rows are covered by both
+                                        // halves together - one wave, ACO orders the writes)
         uint ly = r >> 2u, lx = r & 3u;
         int by_ = by + int(ly);
         for (uint quad = 0u; quad < 4u; ++quad) {
@@ -101,7 +110,7 @@ void main() {
             int X = 2 * (bx + int(lx)) + int(quad & 1u);
             bool ok = X >= 0 && X < dimW && Y >= 0 && Y < dimH;
             uint opos = ok ? uint(Y * uint(dimW) + X) : 0u;
-            for (uint cg = 0u; cg < Cg; ++cg) {
+            for (uint cg = h; cg < Cg; cg += 2u) {
                 uint grp = ((cg * HW + (ok ? opos : 0u)) * 32u);
                 uint dst = r * K4 + quad * C + cg * 32u;
                 uvec4 va = in_act4[grp >> 4u];
@@ -118,17 +127,27 @@ void main() {
         uint NTCN = Cn / 16u;
         for (uint n0 = 0u; n0 < NTCN; n0 += 2u) {
             NR_FRAG_ACC p0 = NR_ACC_ZERO, p1 = NR_ACC_ZERO;
-            for (uint k = 0u; k < K4; k += 32u) {
-                NR_FRAG_A fa0, fa1;
+            for (uint k = 0u; k < K4; k += 64u) {
+                // K doubled per step: 12 loads in flight with 8 v_wmma (was 6/4); K4 = 4C is a
+                // multiple of 64 for both C values.
+                NR_FRAG_A fa0, fa1, fc0, fc1;
                 NR_LOAD_A(fa0, sA, k, K4);
                 NR_LOAD_A(fa1, sA, k + 16u, K4);
-                NR_FRAG_B b0, b1, b2, b3;
+                NR_LOAD_A(fc0, sA, k + 32u, K4);
+                NR_LOAD_A(fc1, sA, k + 48u, K4);
+                NR_FRAG_B b0, b1, b2, b3, e0, e1, e2, e3;
                 NR_LOAD_B(b0, wrep, dnW + 16u * n0 * K4 + k, K4);
                 NR_LOAD_B(b1, wrep, dnW + 16u * n0 * K4 + k + 16u, K4);
                 NR_LOAD_B(b2, wrep, dnW + 16u * (n0 + 1u) * K4 + k, K4);
                 NR_LOAD_B(b3, wrep, dnW + 16u * (n0 + 1u) * K4 + k + 16u, K4);
+                NR_LOAD_B(e0, wrep, dnW + 16u * n0 * K4 + k + 32u, K4);
+                NR_LOAD_B(e1, wrep, dnW + 16u * n0 * K4 + k + 48u, K4);
+                NR_LOAD_B(e2, wrep, dnW + 16u * (n0 + 1u) * K4 + k + 32u, K4);
+                NR_LOAD_B(e3, wrep, dnW + 16u * (n0 + 1u) * K4 + k + 48u, K4);
                 NR_MMA(p0, fa0, b0); NR_MMA(p0, fa1, b1);
+                NR_MMA(p0, fc0, e0); NR_MMA(p0, fc1, e1);
                 NR_MMA(p1, fa0, b2); NR_MMA(p1, fa1, b3);
+                NR_MMA(p1, fc0, e2); NR_MMA(p1, fc1, e3);
             }
             NR_STORE_ACC(NR_NARROW_ACC(p0), sR, 16u * n0, Cn);
             NR_STORE_ACC(NR_NARROW_ACC(p1), sR, 16u * (n0 + 1u), Cn);
@@ -145,7 +164,7 @@ void main() {
         int Y = by + int(r >> 2u);
         if (X >= 0 && X < int(W2) && Y >= 0 && Y < int(H2)) {
             uint base = (uint(Y) * W2 + uint(X)) * 32u;
-            for (uint g = 0u; g < Cg; ++g) {
+            for (uint g = (tid >> 4u); g < Cg; g += 2u) {
                 for (uint i = 0u; i < 32u; ++i) {
                     uint co = g * 32u + i;
                     float y = clamp(float(sR[r * Cn + co]) + float(sBias[co]),

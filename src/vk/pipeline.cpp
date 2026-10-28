@@ -445,6 +445,11 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         add_pipe("sr_swin96", 4, 56);
         add_pipe("sr_swin_proj", 4, 56);
         add_pipe("sr_swin_up", 5, 56);
+        // per-(C) specializations of the same sources (SR_C define -> constant K/N loops)
+        add_pipe("sr_swin_proj64", 4, 56);
+        add_pipe("sr_swin_proj96", 4, 56);
+        add_pipe("sr_swin_up64", 5, 56);
+        add_pipe("sr_swin_up96", 5, 56);
         add_pipe("sr_tube_split", 4, 56);
         // sr_dec0 gained binding 8: t8 bound again as 16-byte vectors for the staging loop
         // (one vector load a half-pixel-plane instead of a byte load a channel).
@@ -1431,7 +1436,7 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                 } else {
                     dispatch(cmd, "sr_swin64", {&wbuf, &t_act[0], &t_act[1], &wrep}, push, 56,
                              (dimW + s0 + 3) / 4, (dimH + s1 + 3) / 4, 1);
-                    dispatch(cmd, "sr_swin_proj", {&wbuf, &t_act[1], &t_act[2], &wrep}, push, 56,
+                    dispatch(cmd, "sr_swin_proj64", {&wbuf, &t_act[1], &t_act[2], &wrep}, push, 56,
                              ((dimW >> 1) + 3) / 4, ((dimH >> 1) + 3) / 4, 1);
                 }
             } else if (st == 1) { dimW = L2w; dimH = L2h; s0 = pe; s1 = 2;
@@ -1442,7 +1447,7 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                 } else {
                     dispatch(cmd, "sr_swin96", {&wbuf, &t_act[2], &t_act[3], &wrep}, push, 56,
                              (dimW + s0 + 3) / 4, (dimH + s1 + 3) / 4, 1);
-                    dispatch(cmd, "sr_swin_proj", {&wbuf, &t_act[3], &t_act[4], &wrep}, push, 56,
+                    dispatch(cmd, "sr_swin_proj96", {&wbuf, &t_act[3], &t_act[4], &wrep}, push, 56,
                              ((dimW >> 1) + 3) / 4, ((dimH >> 1) + 3) / 4, 1);
                 }
             } else if (st <= 7) {
@@ -1468,7 +1473,7 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                     // 44.4 dB vs the model, so the shader itself is right). t2 (L2x96 = exactly
                     // this tensor's size) is dead here: written by stage 0's projection, last
                     // read by the tube chain (launch <= 10).
-                    dispatch(cmd, "sr_swin_up", {&wbuf, &t_act[6], &t_act[3], &t_act[2], &wrep}, push, 56,
+                    dispatch(cmd, "sr_swin_up96", {&wbuf, &t_act[6], &t_act[3], &t_act[2], &wrep}, push, 56,
                              (dimW + 7) / 8, (dimH + 7) / 8, 1);
                     dispatch(cmd, "sr_swin96", {&wbuf, &t_act[2], &t_act[7], &wrep}, push, 56,
                              (dimW + s0 + 3) / 4, (dimH + s1 + 3) / 4, 1);
@@ -1482,7 +1487,7 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                 } else {
                     // Same scratch rule as stage 8: t0 (>= L1x64, dead after stage 0 read it) holds
                     // the up's output; the block reads it into t8.
-                    dispatch(cmd, "sr_swin_up", {&wbuf, &t_act[7], &t_act[1], &t_act[0], &wrep}, push, 56,
+                    dispatch(cmd, "sr_swin_up64", {&wbuf, &t_act[7], &t_act[1], &t_act[0], &wrep}, push, 56,
                              (dimW + 7) / 8, (dimH + 7) / 8, 1);
                     dispatch(cmd, "sr_swin64", {&wbuf, &t_act[0], &t_act[8], &wrep}, push, 56,
                              (dimW + s0 + 3) / 4, (dimH + s1 + 3) / 4, 1);

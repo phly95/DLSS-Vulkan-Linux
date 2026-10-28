@@ -356,7 +356,7 @@ def make_test(name, out_dir):
                 {"binding": 3, "file": "wrep.bin"}
             ]
         }
-    elif name == "sr_swin_proj":
+    elif name in ("sr_swin_proj", "sr_swin_proj64", "sr_swin_proj96"):
         # mode-0 patch projection: wbuf16 (dn_b), in_act (the block's output, fp8), out_act2,
         # wrep (dn_W). Push is the same StageArgs; the grid covers the low-pixel tiles.
         open(os.path.join(out_dir, "in_act.bin"), "wb").write(
@@ -377,7 +377,7 @@ def make_test(name, out_dir):
                 {"binding": 3, "file": "wrep.bin"}
             ]
         }
-    elif name == "sr_swin_up":
+    elif name in ("sr_swin_up", "sr_swin_up64", "sr_swin_up96"):
         # mode-2 up + skip: wbuf16 (up_b), in_low, in_skip, out (the block's input), wrep.
         # wbuf_lo = 0 in this push, so the shader reads the C=96 / Cn=128 shape.
         open(os.path.join(out_dir, "wbuf.bin"), "wb").write(
