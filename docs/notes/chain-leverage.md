@@ -386,3 +386,11 @@ with the fresh-RR-leverage turn.
 PRE-reset history and is fixed; after f4's reset the limiter is upstream - the mode-2/stage X1
 f16 residue (`k_sr_stage.md`, mode-2 closure attempt 2) runs through L's stages with real
 features now. L's mean is +10.8 dB over its pre-real-feature state; V4 needs min >= 50.
+
+**Post-`1c6ba67` refresh (RR row note):** the fresh table's baseline row above is now the *before*
+state - the enc0_feat port fix took the no-mask RR F chain to **34.77/40.33** (per-frame
+54.31/38.15/35.52/36.33/54.61/38.39/35.54/35.36/34.77, every frame up, my re-run), with f0/f4
+landing exactly on the enc0_feat-injection row (reset frames skip the history branch). The
+residual to the oracle-perfect row on history frames is the port's MISSING history branch (F5
+spec: gate=rst, E0c0e@C/2 + E0c12@C/4, pj, SC0*tm, c36; c22-family pending) plus post's
+transcendental-ULP cap - the next RR task.
