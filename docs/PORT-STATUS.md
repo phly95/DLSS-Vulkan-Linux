@@ -64,6 +64,7 @@ referee cells (`sr_*_static/q15/col/ldr/mv/ae`, `rr_*_static/native/fmt`) need `
 generated inputs and are UNMEASURED here - this table is the three we can run cheaply, recomputed
 whenever a lever lands. Levers in flight: e0be8-history (RR), ctx-instrument (SR stage X1),
 SR L f4 attribution (queued), mode-2 M1 (blocked), enc0feat c22 (blocked).
+**QUEUED (orchestrator-only, after e0be8-history + ctx-instrument land): a full `tools/verify/run_all.sh` pass at a stable HEAD** to convert the 22 unmeasured cells to measured - the 3-cell scoreboard cannot see regressions elsewhere. Needs a long GPU window; children stay barred from run_all.sh (BRIEF-RULES).
 
 ## Referee Run Summary (`tools/verify/run_all.sh`)
 - **2026-10-27 (orchestrator, after the R9/R9b ports):** `tools/verify/offline_check.sh` -> **`OFFLINE RESULT: PASS 27 pipelines`** (log `build/agents/orch/offline_check_orch2.log`). The run before the sr_post fixture fix (`9eb91dd`) was **FAIL O7 sr_post**: the fixture push predated `5981a2e`'s PostArgs fields, so the shader produced constant zeros on RADV and lavapipe alike (HEAD's `sr_post.spv` byte-identical to the tree's - pre-existing, not from the R9 ports).
