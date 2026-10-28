@@ -256,11 +256,17 @@ pick scratch VGPRs >= the load destinations. First clean attention-boundary byte
 the mode-2 X1-residue fragment-map closure is now offline-bounded work - but its leverage MUST be
 re-measured on the reset-fixed chain first (old 33.76-era numbers superseded).
 
-Next, in order: (1) RR start-state comparison vs `start.*.bin` (operator's order, before more RR
-kernel work); (2) re-measure mode-2 leverage on the fixed chain; (3) full `run_all.sh` referee
-pass at the stable HEAD per `build/agents/orch/RUNBOOK-referee.md` (children's GPU steps done -
-both reported); (4) RR upstream history/exposure ULP front; (5) SR reset-frame floor (f0/f1
-53.82/54.49) is now SR's min.
+(1) ~~RR start-state comparison~~ DONE (`ce8e1d9`): no carry/clear/seed difference; the port's
+mv-record carrier is byte-identical to the oracle's on all frames; the remaining RR delta is
+in-flight ULP fidelity. (2) ~~mode-2 leverage re-measured on the fixed chain~~ DONE (`b11663b`):
+stage9 inject = +40.45 min / +43.58 mean - launch 12's segment IS the entire remaining SR M
+error. (3) ~~full `run_all.sh` referee~~ DONE (`56f6666`, 2026-10-28): V1/V2/V6/V7/V9/V10 PASS,
+**V4 5/25 cells** (full matrix + failure classes in docs/PORT-STATUS.md "Referee run 20261028").
+The pass revealed the largest named gap: **format-variant cells (col4-6, ldr1-3, rr fmt_a/b/c)
+are catastrophic at 4-19 dB** - the port misreads non-default input bindings/formats; these
+cells were never measured before. Then: (4) the format-variant class; (5) mode-2 X1 closure
+(SR temporal cells 36-45 dB); (6) RR upstream ULP; (7) ae temporal state (fails only GT-delta,
+by 0.001-0.109). V8 perf unchanged-fail (49-170x, OPEN.md).
 
 ## The real machine (where work happens now)
 

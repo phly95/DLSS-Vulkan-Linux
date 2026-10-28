@@ -67,12 +67,70 @@ f4 drain that used to hold SR's min; SR's worst frame is now f0/f1, i.e. the res
 own fidelity, and RR's remaining 0.54 sits in the upstream ULP class (chain-leverage's
 post_prep ceiling). Per-frame texture: SR's
 frames 0-3 (and L's f0-f3, RR's f0/f4) already sit at 53-57 - the gaps are concentrated in the
-history-driven frames (SR f4-8, RR f1-f3/f5-f8) and, for SR L, the single f4 drain. The other 22
-referee cells (`sr_*_static/q15/col/ldr/mv/ae`, `rr_*_static/native/fmt`) need `run_all.sh`'s
-generated inputs and are UNMEASURED here - this table is the three we can run cheaply, recomputed
-whenever a lever lands. Levers in flight: e0be8-history (RR), ctx-instrument (SR stage X1),
-SR L f4 attribution (queued), mode-2 M1 (blocked), enc0feat c22 (blocked).
-**QUEUED (orchestrator-only, after e0be8-history + ctx-instrument land): a full `tools/verify/run_all.sh` pass at a stable HEAD** to convert the 22 unmeasured cells to measured - the 3-cell scoreboard cannot see regressions elsewhere. Needs a long GPU window; children stay barred from run_all.sh (BRIEF-RULES).
+history-driven frames (SR f4-8, RR f1-f3/f5-f8) and, for SR L, the single f4 drain.
+**The full referee pass ran at `56f6666` (2026-10-28) and converted all 22 unmeasured cells to
+measured** - see "Referee run 20261028" below. The 25-cell V4 scoreboard there is the complete
+picture; this 3-cell table is the cheap re-measurable subset.
+
+## Referee run 20261028 (full `run_all.sh` at `56f6666`, orchestrator)
+
+First complete V1-V10 pass since the network landed. V10 needed a re-freeze (`56f6666`: the only
+tools/verify delta since `e4c9367` is the operator-authorized Proton probe `774fd8a`); V10/V7/V9/
+V6/V2/V1 all PASS. The run's V4 evaluation is fail-fast (died on sr_M_seq frame 0), so every
+gate was re-scored offline from the run's own artifacts (`build/verify/run_20261028_003547_1291489/`,
+eval_verify's own psnr/tone-map, identical math). Full 25-cell V4 matrix (bar: min >= 50.0,
+mean >= 55.0, every frame |PSNR(port,gt)-PSNR(ref,gt)| <= 0.1):
+
+| cell | min | mean | max GT-delta | verdict |
+|---|---:|---:|---:|---|
+| sr_M_static | 60.05 | 63.02 | 0.014 | **PASS** |
+| sr_L_static | 59.91 | 63.55 | 0.073 | **PASS** |
+| sr_M_mv1_dep1 | 60.05 | 63.02 | 0.014 | **PASS** |
+| sr_M_mv2 | 60.05 | 63.02 | 0.014 | **PASS** |
+| rr_F_static | 58.34 | 59.45 | 0.029 | **PASS** |
+| sr_M_ae | 51.69 | 56.78 | 0.209 | fail (gtd only) |
+| sr_M_ae_exact | 56.23 | 58.67 | 0.101 | fail (gtd only, by 0.001) |
+| rr_F_native | 44.54 | 47.89 | 2.840 | fail |
+| sr_M_mvhi0/1 | 42.61 | 44.99 | 7.330 | fail |
+| sr_M_seq | 41.74 | 42.90 | 4.037 | fail |
+| sr_L_seq | 42.02 | 42.81 | 3.923 | fail |
+| rr_F_seq | 42.26 | 44.43 | 2.712 | fail |
+| sr_M_q15 | 41.30 | 43.71 | 3.688 | fail |
+| sr_L_q15 / sr_L_q15_ae | 36.61 | 40.21 | 6.669 | fail |
+| sr_M_col4/6 | 18.40 | 18.43 | ~33 | fail (catastrophic) |
+| sr_M_col5 | 16.03 | 16.41 | 34.8 | fail (catastrophic) |
+| sr_M_ldr1/2/3 | 18.74 | 18.77 | ~33 | fail (catastrophic) |
+| rr_F_fmt_a | 7.98 | 9.53 | 3.487 | fail (catastrophic) |
+| rr_F_fmt_b | 7.15 | 7.61 | 38.7 | fail (catastrophic) |
+| rr_F_fmt_c | 4.61 | 4.66 | 41.7 | fail (catastrophic) |
+
+Reading (four distinct failure classes, not one):
+1. **Default-format single-image and static cells PASS 5/25** (incl. both Proton bridges: all
+   six v9_* cells re-score PASS vs the refs, GT-deltas 0.001-0.048). The networks are parity on
+   canonical inputs; 1080p/4K static is solved.
+2. **The temporal cells (seq/q15/native/mvhi) sit at 36-45 dB** - the same upstream-ULP /
+   mode-2-X1 fronts the 256x144 tables name, now visible at referee resolution with GT-deltas
+   2.7-7.3 (the port's error is structured, not noise). Mode-2 closure (stage9 = the ENTIRE
+   remaining SR M error at 256x144) is the #1 lever; RR's is upstream history fidelity.
+3. **Format-variant cells are CATASTROPHIC (4-19 dB, GT-deltas 33-42)**: every col{4,5,6},
+   ldr{1,2,3}, fmt_{a,b,c} cell - the port renders plausible but WRONG images from
+   non-default input bindings/formats. These cells were never measured before; they are now the
+   largest named gap in the project (RR fmt_b/fmt_c at 4-7 dB suggest the whole gather-input
+   path misreads nrm/normals-unorm/alb/spa layouts).
+4. **ae cells fail ONLY the GT-delta** (0.209 / 0.101-by-0.001) with min/mean well above bar -
+   auto-exposure's temporal state is the smallest named delta to parity.
+
+V5: 6/7 PASS (corrupted weights/reset/zero-mv all rejected). v5_sr_reset FAILS V5 on the static
+cell: with the reset-memset gone, reset=true on a 12-frame STATIC sequence no longer diverges
+enough to fail V4 - the degraded-copy probe lost sensitivity on static content precisely because
+reset no longer wipes state (the fix's own signature). V7 PASS (13 pipelines, 0 spills/scratch);
+V6 R2SCAN PASS (both scans). V8 FAIL everywhere, unchanged and known: the port is 49-170x the
+oracle (docs/OPEN.md).
+
+**Work order distilled from the full matrix:** (1) the format-variant class (new, catastrophic,
+bounded - the gather/host input-path decode); (2) mode-2 X1 closure for SR's temporal cells;
+(3) RR upstream history/exposure ULP; (4) ae temporal state (smallest delta). V8/perf is a
+separate axis (OPEN.md).
 
 ## Referee Run Summary (`tools/verify/run_all.sh`)
 - **2026-10-27 (orchestrator, after the R9/R9b ports):** `tools/verify/offline_check.sh` -> **`OFFLINE RESULT: PASS 27 pipelines`** (log `build/agents/orch/offline_check_orch2.log`). The run before the sr_post fixture fix (`9eb91dd`) was **FAIL O7 sr_post**: the fixture push predated `5981a2e`'s PostArgs fields, so the shader produced constant zeros on RADV and lavapipe alike (HEAD's `sr_post.spv` byte-identical to the tree's - pre-existing, not from the R9 ports).
