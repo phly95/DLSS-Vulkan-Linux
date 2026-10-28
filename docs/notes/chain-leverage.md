@@ -219,6 +219,15 @@ full-sequence min (SR M 33.76 at frames 4-8, RR F 32.26 at frame 8).
 
 ### 2026-10-27 17:00: frames 4-8 made measurable - a host bug found, and what the table says
 
+> **SUPERSEDED (2026-10-28, `9ff6ba9`): the f4-8 readings and the "compensating errors"/history-
+> carrier interpretation in this section and the 17:30 `hist` section below were the RESET-MEMSET
+> BUG showing through** - `FrameChain::record` cleared prev_mvec/hidden/ihist on EVERY reset frame
+> (f0 AND f4 in the oracle sequence) while NeuralHub/srref never do. A faithful reset frame cannot
+> depend on prior state, so the oracle-start-state lift (hist: f4 33.76 -> 62.83) and the
+> per-segment f4-8 collapses measured here are artifacts of that wipe, not properties of the
+> network. Post-fix numbers: SR M 53.82/55.64, SR L 54.16/57.09 (both V4 PASS); the injection
+> METHOD (inject_after keying, mask-ALL 120.00) remains valid and is what the fresh tables use.
+
 Host fix (the operator's host-fix purview, orchestrator): `inj_wanted`'s `fc >= 2` guard removed,
 AND a real bug fixed - `inject_after` keyed the dump dir on `fc`, which is the **8-frame history
 ring** (`(fc + 1) & 7`), so frame 8 injected under `/frame0/` (proven: injected `out_8` was
@@ -258,6 +267,10 @@ Readings:
    table shows are nearly fine: 53-55).
 
 ### 2026-10-27 17:30: the `hist` pseudo-point - frames 4-8 decomposed
+
+> **SUPERSEDED by the same bug (`9ff6ba9`):** the per-point f4-8 decomposition below attributed
+> the drain to the history carrier / post's history loop; it was the reset-frame wipe. Keep the
+> table only as instrument validation (hist = 54-62 where it lifted = the pre-wipe ceiling).
 
 New mask token **`hist`** (host, orchestrator): before a frame's first dispatch it copies the
 ORACLE temporal state (the dump's `start.<name>.bin`, the buffer as it stood before launch 0)
@@ -413,3 +426,24 @@ c22/c26/c27 unpinned); (2) the U-Net->post segment with oracle features (enc0_fe
 55-57, capped by post's own non-border residual per post_prep rows 70-76 on history frames = the
 transcendental-ULP class); (3) gather/ae/downsample exact - closed. The c22-family + upstream
 history fidelity (k_post/pooled2 ULP) are the two active fronts.
+
+### 2026-10-28: post-reset-fix state - fresh RR leverage and the remaining fronts
+
+At `9ff6ba9` (reset-memset fix; host-only, shaders unchanged): **SR M 53.82/55.64 PASS, SR L
+54.16/57.09 PASS** (f4 no longer drains; SR's min is now the reset frame f0/f1 itself), **RR F
+54.02/54.46** after the c22-family port `fb8e9a7` (every history frame +16.9..+21.0 dB vs
+`2d5342b`; mean misses the 55.0 bar by 0.54). Fresh RR leverage at `2d5342b` (pre-c22, kept for
+the lever ranking that produced the c22 session): enc0_feat-inject 55.57-57.30 on history frames
+vs chain 34-37, post_prep 70-102, post 117-118, gather exact.
+
+Remaining fronts (ranked):
+1. **RR upstream history/exposure fidelity (the ULP class)** - the c22 shader is spec-correct
+   (H1 100% with oracle history inputs) yet the chain sits at 54.02-55.16 vs the oracle-perfect
+   55.57-57.30: k_post/pooled2 transcendental ULP residue feeds the history/exposure channels.
+   Pre-requisite per the operator: compare the port's per-frame START STATE vs the oracle's
+   `start.*.bin` dumps (which state RR carries/clears/seeds differently from rrref) BEFORE more
+   RR kernel work.
+2. **SR's reset-frame floor (f0/f1 = 53.82/54.49)** - now SR's min; the mode-2 X1-residue
+   leverage must be RE-MEASURED on the fixed chain before any further X1 sessions (its old
+   33.76-baseline leverage numbers are superseded by this table).
+3. gather/ae/downsample/exposure exact - closed; c22-family/OPEN1 - closed (`fb8e9a7`).
