@@ -22,9 +22,11 @@
 //     OOB lanes fall back to col*expo; c36 = -2^-9 (VERIFIED on the oracle's frame1; on the
 //     other chain frames the oracle's c36 is a per-frame value this port cannot know -
 //     build/agents/e0be8-port-fix/progress.md Step 5 - reported, not invented).
-//     The c22-family {22,23,26,27,45,48,49,52} stays dq(-0.0) on history frames too: the model
-//     (OPEN1) has its = SC1*v1 value chain not yet decoded, so it is left at the model's
-//     current behavior rather than invented here.
+//   * c22-FAMILY (model SPEC 6b, decoded): on history frames {22,23,26,27,45,48,49,52} take
+//     SC1*bilinear(E0c02 ch / 127) at C/3 + pj_prev - 0.5, where E0c02 (binding 16, render-grid
+//     i8x4 k_level hidden) is sampled with the prior frame's jitter (pj_prev = pushed E0Args
+//     +0x1a8/+0x1ac).  c22=c45=ch0, c23=c48=ch1, c26=c49=ch2, c27=c52=ch3.  VERIFIED 100% on
+//     oracle frames 1,2,3,5,6,7,8 (model frame0+frame1 = 100.0000%).
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
@@ -50,6 +52,9 @@ layout(set = 0, binding = 13) readonly buffer InDither { uint8_t dith[]; };
 // non-reset frame).  At the enc0_feat dispatch both hold the PREVIOUS frame's state.
 layout(set = 0, binding = 14) readonly buffer InC0e { uint g_c0e[]; };
 layout(set = 0, binding = 15) readonly buffer InC12 { uint g_c12[]; };
+// binding 16 = E0c02 (i8x4 render-grid hidden from k_level; the c22-family bilinear source,
+// read as bytes; at the enc0_feat dispatch it holds the PREVIOUS frame's k_level output).
+layout(set = 0, binding = 16) readonly buffer InC02 { uint8_t g_c02[]; };
 
 layout(push_constant) uniform RrE0Args {
     int W0;               // +0x00 (oracle E0Args +0x00: W0, H0)
@@ -66,6 +71,9 @@ layout(push_constant) uniform RrE0Args {
     float bev_y;          // +0x2c (the port's bf6 at dispatch time; constant global motion mv*3)
     int W15;              // +0x30 the history C-grid (oracle E: 768x432 = 3x render); E0c0e is
     int H15;              // +0x34 ((W15+1)/2) x ((H15+1)/2) words, E0c12 one level below
+    float SC1;            // +0x38 E0Args +0x204: the c22-family coefficient (-0.2198486328125)
+    float pjpx;           // +0x3c E0Args +0x1a8: the PREVIOUS frame's jitter (E0c02 texel offset)
+    float pjpy;           // +0x40 E0Args +0x1ac
 };
 
 // ---------------------------------------------------------------- helpers
@@ -197,6 +205,12 @@ float bilin_tap(uint t00, uint t01, uint t10, uint t11, int ci, float frx, float
          + fry * frx * c11;
 }
 
+// i8 byte -> f32 /127 (the ISA's 0x3c010204=1/127 + 0xc2fe0000=-127 fmac division of E0c02).
+float i8dec(uint b) {
+    int i = int(b & 0xFFu);
+    return float(i >= 128 ? i - 256 : i) * (1.0 / 127.0);
+}
+
 void main() {
     int x = int(gl_GlobalInvocationID.x);
     int y = int(gl_GlobalInvocationID.y);
@@ -254,8 +268,7 @@ void main() {
 
     // History branch (model SPEC 6): gate = rst.  On history frames (rst == 0) the 15 SC_TM
     // slots take SC0*tm(e_cur*h/e_prev) with h = inv_tm(2.45*sample) of the pooled history
-    // grids, and c36 = -2^-9 (the model's frame1-verified values; the c22-family stays above
-    // at dq(-0.0) - its SC1*v1 chain is still OPEN1 in the model and is not invented here).
+    // grids, c36 = -2^-9, and the c22-family takes SC1*bilinear(E0c02/127) (SPEC 6b).
     if (rst == 0u) {
         // Motion-compensated position in the W15xH15 C-grid (model SPEC 6): the render-to-C
         // scale is W15/W (== the oracle's 3.0 at the verified 256x144 / 768x432 geometry).
@@ -304,6 +317,34 @@ void main() {
         feat[9] = scE0[2];  feat[16] = scE0[2];  feat[28] = scE0[2];  feat[41] = scE0[2];
         feat[21] = scE12[2];
         feat[36] = -0.001953125;               // c36 = s1 = -2^-9 (VERIFIED on oracle frame1)
+        // c22-family (model SPEC 6b): SC1 * bilinear(E0c02 ch / 127) at C/3 + pj_prev - 0.5.
+        // E0c02 (binding 16, render-grid i8x4) texel offset is the PREVIOUS frame's jitter.
+        {
+            int itxc, ityc; float frxc, fryc;
+            snap_taps(Cx / 3.0 + pjpx, 1, W, itxc, frxc);   // pos = C/3 + pj_prev_x - 0.5
+            snap_taps(Cy / 3.0 + pjpy, 1, H, ityc, fryc);
+            int cx0 = clamp(itxc, 0, W - 1), cx1 = clamp(max(itxc, -1) + 1, 0, W - 1);
+            int cy0 = clamp(ityc, 0, H - 1), cy1 = clamp(max(ityc, -1) + 1, 0, H - 1);
+            uint row0 = uint(cy0) * uint(W), row1 = uint(cy1) * uint(W);
+            float fam[4];
+            for (int ch4 = 0; ch4 < 4; ++ch4) {
+                uint b = uint(ch4);
+                float c00 = i8dec(g_c02[(row0 + uint(cx0)) * 4u + b]);
+                float c01 = i8dec(g_c02[(row0 + uint(cx1)) * 4u + b]);
+                float c10 = i8dec(g_c02[(row1 + uint(cx0)) * 4u + b]);
+                float c11 = i8dec(g_c02[(row1 + uint(cx1)) * 4u + b]);
+                float bil = (1.0 - fryc) * (1.0 - frxc) * c00
+                          + (1.0 - fryc) * frxc * c01
+                          + fryc * (1.0 - frxc) * c10
+                          + fryc * frxc * c11;
+                fam[ch4] = SC1 * (inb ? bil : 0.0);
+            }
+            // c22=c45=ch0, c23=c48=ch1, c26=c49=ch2, c27=c52=ch3 (model SC1_FAM map).
+            feat[22] = fam[0]; feat[45] = fam[0];
+            feat[23] = fam[1]; feat[48] = fam[1];
+            feat[26] = fam[2]; feat[49] = fam[2];
+            feat[27] = fam[3]; feat[52] = fam[3];
+        }
     }
 
     int N = W0 * H0;

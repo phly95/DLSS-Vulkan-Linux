@@ -357,14 +357,12 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         // device the NGX host hands over.  The push range has to cover the shader's block, which
         // starts at offset 24 (scale) and ends at 31 (reset) - 8 bytes left both reading garbage.
         add_pipe("rr_ae_final", 4, 32);
-        // rr_enc0_feat: 16 bindings (13 = wbuf, the dq() dither table at blob0's meta[20] offset;
-        // 14 = E0c0e history, 15 = E0c12 history), push 56 B = the oracle's E0Args words
-        // 0x00..0x1c this kernel reads (W0/H0/W/H, fc = E[0x19]&7 dither row, rst, the dither
-        // table's byte offset in binding 13, SC0) plus the history branch's words: +0x20/+0x24
-        // pj = E0Args +0x1a0/+0x1a4 (this frame's jitter), +0x28/+0x2c bev = the previous
-        // frame's mv-record [0,0] (the oracle's +0x160 E0bf2 = E0bf6 parity slot), +0x30/+0x34
-        // the W15xH15 history C-grid (768x432 at the oracle's 512x288 output).
-        add_pipe("rr_enc0_feat", 16, 56);
+        // rr_enc0_feat: 17 bindings (13 = wbuf, the dq() dither table at blob0's meta[20] offset;
+        // 14 = E0c0e history, 15 = E0c12 history, 16 = E0c02 k_level hidden for the c22-family),
+        // push 68 B = the oracle's E0Args words 0x00..0x1c (W0/H0/W/H, fc, rst, dither offset,
+        // SC0) plus the history words +0x20/+0x24 pj, +0x28/+0x2c bev, +0x30/+0x34 W15/H15,
+        // +0x38 SC1, +0x3c/+0x40 pj_prev (the c22-family E0c02 texel offset).
+        add_pipe("rr_enc0_feat", 17, 68);
         add_pipe("rr_level", 14, 80);
         add_pipe("rr_post_prep", 4, 40);
         add_pipe("rr_post", 12, 184);
@@ -597,11 +595,13 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
                 // rr_enc0_feat's SC0 (oracle E0Args +0x200): the blob's f16 scalar, the low half
                 // of params.json's enc0_s2598 word (rrref.cpp: E[0xb02] = enc0_s2598, SC0 =
                 // f16(E[0xb02] & 0xffff)).  Stashed in unit 0's rr_tab row at slot 27, past the
-                // 26 words rr_level reads (rr_level.comp: slots 0..26 only).
+                // 26 words rr_level reads (rr_level.comp: slots 0..26 only).  SC1 (E0Args
+                // +0x204, the c22-family coefficient) is the HIGH half (enc0_s2598 = 0xB309B6F0:
+                // low 0xB6F0 = SC0 -0.43359375, high 0xB309 = SC1 -0.2198486328125) -> slot 28.
                 auto sc = jget(pj, "enc0_s2598");
                 uint32_t* tab = static_cast<uint32_t*>(c->rr_tab.mapped);
-                if (!sc.empty()) tab[27] = uint32_t(sc[0]) & 0xFFFFu;
-                else std::fprintf(stderr, "rr_enc0_feat: params.json has no enc0_s2598 (SC0)\n");
+                if (!sc.empty()) { tab[27] = uint32_t(sc[0]) & 0xFFFFu; tab[28] = (uint32_t(sc[0]) >> 16) & 0xFFFFu; }
+                else std::fprintf(stderr, "rr_enc0_feat: params.json has no enc0_s2598 (SC0/SC1)\n");
             }
             auto bc = slurp(wdir + "/bicubic.bin");
             Buffer& e0d02 = c->ue["E0d02"];
@@ -1356,7 +1356,7 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                     std::fclose(f);
                 }
             }
-            uint8_t push[56] = {0};
+            uint8_t push[68] = {0};
             std::memcpy(push + 0, &W0, 4); std::memcpy(push + 4, &H0, 4);
             std::memcpy(push + 8, &W, 4); std::memcpy(push + 12, &H, 4);
             // E0Args +0x10 fc = E[0x19] & 7 (the dq() dither row; this->fc is the same 8-frame
@@ -1378,7 +1378,14 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             // write here - the runner vkQueueWaitIdle()s per frame and the memory is host
             // coherent, so reading it while recording is race-free; first frame = zeros and
             // rst skips the branch); W15/H15 = the C-grid (oracle E: 768x432).
+            // c22-family (SPEC 6b): SC1 = enc0_s2598 high half (rr_tab slot 28); pj_prev =
+            // the PREVIOUS frame's jitter (E0Args +0x1a8/0x1ac = the E0c02 texel offset).  The
+            // oracle RR params carry no jitter_prev, so the host remembers the last frame's
+            // jx/jy in a file static (updated below; frame0 = 0 and rst skips the branch).
+            static float s_prev_jx = 0.0f, s_prev_jy = 0.0f;
+            const float sc1 = f16_bits_to_f32(tab ? tab[28] : 0u);
             const float pjx_ = jx, pjy_ = jy;
+            const float pjpx_ = s_prev_jx, pjpy_ = s_prev_jy;
             const uint16_t* b6 = static_cast<const uint16_t*>(bf6.mapped);
             const float bev_x = b6 ? f16_bits_to_f32(b6[0]) : 0.0f;
             const float bev_y = b6 ? f16_bits_to_f32(b6[1]) : 0.0f;
@@ -1388,9 +1395,14 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             std::memcpy(push + 44, &bev_y, 4);
             std::memcpy(push + 48, &W15, 4);
             std::memcpy(push + 52, &H15, 4);
+            std::memcpy(push + 56, &sc1, 4);
+            std::memcpy(push + 60, &pjpx_, 4);
+            std::memcpy(push + 64, &pjpy_, 4);
+            s_prev_jx = jx; s_prev_jy = jy;          // remember for the next frame's pj_prev
             trace_label = "launch " + std::to_string(3 + roff) + " k_enc0_feat";
             dispatch(cmd, "rr_enc0_feat", {&g_col, &g_mv, &g_dep, &out_norm, &out_alb, &out_spa, &out_rough_, &expo,
-                                     &t_act[0], &bec, &bf6, &bfa, &bfe, &wbuf, &c0e, &ue.at("E0c12")}, push, 56,
+                                     &t_act[0], &bec, &bf6, &bfa, &bfe, &wbuf, &c0e, &ue.at("E0c12"),
+                                     &ue.at("E0c02")}, push, 68,
                      (W0 + 15) / 16, (H0 + 15) / 16, 1);
             inject_after(cmd, "enc0_feat", 3 + roff);
         }

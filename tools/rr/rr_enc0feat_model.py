@@ -6,13 +6,15 @@ of SR's t0; consumed by the level-0 enc0 unit, see tools/rr/rr_level_model.py).
     build/venv/bin/python -I tools/rr/rr_enc0feat_model.py [--frame F] [--oracle DIR] [--port FILE]
     build/venv/bin/python -I tools/rr/rr_enc0feat_model.py --self-check        # < 60 s (measured 0.4 s)
 
-STATUS (agent enc0feat-decode):
+STATUS (agent e0be8-history, c22-family closed):
   frame0: 2621440/2621440 = 100.0000% bit-exact vs oracle (peak=1.125 PSNR=inf r=1.0 rRMSE=0).
   port (F3): model_port() reproduces a real kernel_run of shaders/rr/rr_enc0_feat.comp on the
   oracle inputs 2621440/2621440 = 100.0000%; port vs oracle = 72.9063% = PORT-STATUS exactly.
-  frame1: 87.5680% (2295542/2621440) - the 15 SC_TM history channels + c36 are now DECODED
-  (100%); the remaining 12.43% gap is the 8 c22-family channels only (see OPEN1). peak=1.125
-  PSNR=32.01dB r=0.989829 rRMSE=0.1442.
+  frame1: 2621440/2621440 = 100.0000% bit-exact (the 15 SC_TM history channels + c36 + the
+  8 c22-family channels are ALL decoded).  F1 bar (f1 >= 99%, f0 stays 100%) PASSES.
+  (On the multidump frames 2-8 the model is ~98.44%: the c22-family + SC_TM are correct, the
+  residual is the per-frame c36 [1.56%] plus a SC_TM ch0-group numerical edge on some frames -
+  both pre-existing and out of the c22-family scope.)
 
 ===================================================================================================
 SPEC (decoded; kernel: _ZN4rrio11k_enc0_featENS_6E0ArgsE, ISA listing
@@ -97,23 +99,33 @@ starts at 0xCD00). E0Args layout: tools/rr/rrref/rrref.cpp lines 471-512.)
      divide by e_prev (s35=expo[1]) -> tm input = e_cur * (h/e_prev) (rel 0x48A4) for in-bounds,
      col*expo for OOB. Then SC0*tm(tm_input). VERIFIED: all 15 SC_TM channels = 100% frame1.
 
-7. OPEN (blocked-with-data, reported to the orchestrator)
-   OPEN1 (SOLE blocker, 8 channels = 12.43% of bytes): the c22-family
-   {22,23,26,27,45,48,49,52} = 4 distinct values, each duplicated across groups
-   (c22=c45, c23=c48, c26=c49, c27=c52), each = SC1 * v1 (SC1 = s17 = args+0x204, CONFIRMED
-   from the s[8:23] load of args+0x1e0; frame0 = SC1*0 = -0 -> 0x80). Evidence:
-     - v1 (implied = c22/SC1) in [-0.78, 0.71]; NOT a tm-difference, NOT a raw/linear history
-       blend, NOT a bilinear weight: best forward fits = SC1*(-raw) 2.42%, SC1*tm(raw) 1.79%,
-       SC1*tm(A)-tm(B) <= 1.51%; regression v1 ~ [hE0,hE1,hE2,col.rgb,1] rms 0.209 corr 0.63.
-     - ISA: v1 = cndmask(v53) <- v53 = (s5 ? 0 : v43) [rel 0x4EF8] where s5 = the OOB mask,
-       v43 = a multi-term fma accumulation (rel 0x4E70 v43 += v53*v74, plus v70/v71/v66 fma's)
-       whose products are the bilinear weights (%2438 = frac_y*(1-frac_x), %2442 = frac_y*frac_x)
-       -> v43 = sum(weight * value) = an interpolated history, BUT with a scaling/composition
-       that does not equal the SC_TM h (corr only -0.63). Requires full SSA decode of the fma
-       chain (v43/v70/v71/v66 through reused registers) - beyond budget.
-     - c36 (rel 0x6224 v19 = s1) = s1 = **-2^-9 constant** (frame1), 0 on frame0 -> WIRED (100%).
-     - Select ruled IN = pure position+rst; ruled OUT = albedo threshold (0x45B0 is a separate
-       lane-guard; all frame1 pixels are in-bounds so the OOB mask never fires there).
+6b. c22-FAMILY (DECODED by agent e0be8-history; 100% on frames 1,2,3,5,6,7,8)
+    On history frames (rst==0), each of {22,23,26,27} (group0) and {45,48,49,52} (group1,
+    the same value duplicated) = SC1 * bilinear(E0c02 ch / 127):
+      c22=c45 = SC1*bil(ch0)   c23=c48 = SC1*bil(ch1)
+      c26=c49 = SC1*bil(ch2)   c27=c52 = SC1*bil(ch3)
+    E0c02 (args+0x178) is the k_level i8x4 render-grid hidden buffer; each byte decodes as
+    i8/127 (the ISA's 0x3c010204=1/127 + 0xc2fe0000=-127 fmac division).  The bilinear uses
+    the SAME tap structure as the SC_TM sample (weights (1-frx)(1-fry)..frx*fry, taps it..it+1,
+    snap floor(pos*256+0.5)/256) but at the E0c02 position:
+      pos_x = Cx/3 + pj_prev_x - 0.5
+      pos_y = Cy/3 + pj_prev_y - 0.5
+    where C = 3*((coord+0.5)-pj)+bev (CURRENT jitter, the model's C) and pj_prev =
+    args+0x1a8/0x1ac (the PREVIOUS frame's jitter).  The extra pj_prev texel offset came from
+    the ISA position scalars (rel 0x4210 fma): s62=args[0x1c8]=1/768, s64=args[0x1d0],
+    s63=args[0x1cc]=1/432, s65=args[0x1d4]; 256*s64 = pj_prev_x and 144*s65 = pj_prev_y
+    (VERIFIED exact on all 8 dumped frames) - the E0c02 texel grid is offset by the PRIOR
+    jitter (it is a history buffer).  The result is gated by the OOB mask (C in [0,768]x[0,432],
+    else 0) then dq()'d.  On reset frames (rst!=0) the branch is skipped -> c22-family stays
+    dq(-0.0) (0x80).  VERIFIED: all 8 channels 100.0000% on frames 1,2,3,5,6,7,8.
+
+7. OPEN
+    OPEN1 (c22-family) is CLOSED (see 6b; frame1 = 100.0000%, F1 bar met).  c36 (rel 0x6224
+    v19 = s1) = -2^-9 constant on frame1 -> WIRED (100%); on frames 2-8 the oracle's c36 is a
+    per-frame value (f2 +2^-9, f3 0, f5 -0.0, ...) this model does not reproduce (1.56% of
+    bytes there) - a SEPARATE open, unchanged by the c22 work.  On the multidump frames 2-8 a
+    SC_TM ch0-group (c5/c12/c24/c37) numerical edge also appears (~1.5%); frame0/frame1 (the
+    F1 frames) are both 100%.
 ===================================================================================================
 """
 import argparse
@@ -150,7 +162,11 @@ def parse_args(b):
     # current-frame subpixel jitter pj = (args+0x1a0, args+0x1a4) as f32.
     # VERIFIED frame0=(0.0, -1/6), frame1=(-0.25, +1/6) - these reproduce frame1 history 100%.
     a["pj"] = struct.unpack_from("<2f", b, 0x1a0)
-    # prev-frame jitter at +0x1a8/+0x1ac (frame1 = (0.0, -1/6)) - present, not used here.
+    # PREV-frame jitter at +0x1a8/+0x1ac (frame1 = (0.0, -1/6)).  The c22-family E0c02 bilinear
+    # samples at C/3 + pj_prev - 0.5 (the E0c02 texel offset is the PRIOR frame's jitter; the
+    # ISA position scalars s64=args[0x1d0], s65=args[0x1d4] satisfy 256*s64=s65*144... i.e.
+    # 256*s64 = pj_prev_x, 144*s65 = pj_prev_y, VERIFIED exact on all 8 dumped frames).
+    a["pj_prev"] = struct.unpack_from("<2f", b, 0x1a8)
     return a
 
 
@@ -189,8 +205,11 @@ def load(dump, frame):
     # History (only NONZERO on frame1 / rst==0; empty on frame0):
     #   E0c0e u32[216][384] R10G10B10 (k_post)   E0c12 u32[108][192] R10G10B10 (k_pooled2)
     #   bev_prev E0bf6 f16x4/px (motion = mv*3, near-constant global)
+    #   E0c02 i8x4[W*H] render-grid hidden (k_level) - the c22-family bilinear source.
     g["E0c0e"] = _dec_r10(buffer_before(fdir, names[0x168], launch), 216, 384)
     g["E0c12"] = _dec_r10(buffer_before(fdir, names[0x170], launch), 108, 192)
+    g["E0c02"] = np.frombuffer(buffer_before(fdir, names[0x178], launch),
+                               np.int8)[: W * H * 4].reshape(H, W, 4)
     bev = np.frombuffer(buffer_before(fdir, names[0x160], launch)[: W * H * 8],
                         np.float16).reshape(H, W, 4)
     a["bev"] = f32(bev[0, 0, 0]), f32(bev[0, 0, 1])   # constant global motion (BVX, BVY)
@@ -304,6 +323,10 @@ SPA_CH = {6: 0, 7: 1, 10: 2}           # min(2, spa.c) -> 0.040008544921875
 ZERO_CH = (11, 14, 19, 30, 31, 32, 33, 34, 35, 36, 38, 39, 42, 43, 44,
            46, 47, 50, 51, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63)
 NEG0_CH = (22, 23, 26, 27, 45, 48, 49, 52)    # dq(-0.0): 0x80 except the d==0 cell
+# c22-family on HISTORY frames: stored ch -> E0c02 channel (bilinear at C/3 + pj_prev - 0.5,
+# x SC1).  VERIFIED 100% on frames 1,2,3,5,6,7,8: c22=c45=ch0, c23=c48=ch1, c26=c49=ch2,
+# c27=c52=ch3 (group-1 duplicates the same value).  On reset frames these stay dq(-0.0).
+SC1_FAM = {22: 0, 45: 0, 23: 1, 48: 1, 26: 2, 49: 2, 27: 3, 52: 3}
 
 
 def build_features(g, a):
@@ -349,6 +372,19 @@ def build_features(g, a):
         for k, ci in SC_TM.items():
             ch[k] = (SC0 * tm(tm_in[(ci, k in HIST_C12)])).astype(np.float32)
         ch[36] = np.full((H0, W0), -2.0 ** -9, np.float32)   # c36 = s1 = -2^-9 (VERIFIED const)
+        # c22-family (SPEC 6b): SC1 * bilinear(E0c02 ch / 127) at C/3 + pj_prev - 0.5.
+        # The E0c02 (render-grid i8x4 hidden) texel offset is the PREVIOUS frame's jitter.
+        pjx_p, pjy_p = a["pj_prev"]
+        c02 = g["E0c02"].astype(np.float32) / np.float32(127.0)
+        fam = {}
+        for c02c in range(4):
+            itx, frx = _snap(Cx / 3.0 + pjx_p, W)
+            ity, fry = _snap(Cy / 3.0 + pjy_p, H)
+            s = _hist_sample(c02[..., c02c, None], 3.0, (H, W), itx.astype(np.int64), frx,
+                             ity.astype(np.int64), fry, 0)
+            fam[c02c] = (SC1 * np.where(inb, s, np.float32(0.0))).astype(np.float32)
+        for k, c02c in SC1_FAM.items():
+            ch[k] = fam[c02c]
     else:
         for k, ci in SC_TM.items():
             ch[k] = (SC0 * tm(col[..., ci])).astype(np.float32)
@@ -364,6 +400,8 @@ def build_features(g, a):
             continue                               # c36 already set to -2^-9 above
         ch[k] = np.zeros((H0, W0), np.float32)
     for k in NEG0_CH:
+        if k in SC1_FAM and rst == 0:
+            continue                               # c22-family already set (SC1 bilinear) above
         ch[k] = -np.zeros((H0, W0), np.float32)    # -0.0 -> 0x80; d==0 cell flips to 0x00
     return ch
 
@@ -477,9 +515,10 @@ def main():
             port_out = (pdir / "E0be8.bin").read_bytes()
             results["port f0"] = report(model_port(args_, g), port_out, "self-check port f0")
         dt = time.time() - t0
-        ok = results.get("oracle f0", 0) >= 99 and results.get("port f0", 0) >= 99
-        print("self-check %.1f s (budget 60) -> %s (frame1 blocked: %.2f%%)" % (
-            dt, "PASS-frame0+port" if ok else "FAIL", results.get("oracle f1", 0)))
+        ok = (results.get("oracle f0", 0) >= 99 and results.get("oracle f1", 0) >= 99
+              and results.get("port f0", 0) >= 99)
+        print("self-check %.1f s (budget 60) -> %s (frame1: %.2f%%)" % (
+            dt, "PASS-frame0+frame1+port" if ok else "FAIL", results.get("oracle f1", 0)))
         return
     args_, g, ora = load(a.oracle, a.frame)
     if a.port:

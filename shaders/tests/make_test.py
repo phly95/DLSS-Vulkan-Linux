@@ -596,10 +596,15 @@ def make_test(name, out_dir):
         c12 = (p0 | (p1 << 10) | (p2 << 20) | 0xc0000000).astype(np.uint32).tobytes()
         open(os.path.join(out_dir, "in_c0e.bin"), "wb").write(c0e)
         open(os.path.join(out_dir, "in_c12.bin"), "wb").write(c12)
-        # 56-byte push; rst = 0 so the lavapipe run takes the HISTORY branch (O7 must see it)
-        push = bytearray(56)
-        struct.pack_into("<4iIIIf2f2f2i", push, 0, w0, h0, w, h, 3, 0, 0, -0.43359375,
-                         0.125, -0.2, 0.05, -0.03, w15, h15)
+        # binding 16: E0c02 (i8x4 render-grid hidden, the c22-family bilinear source)
+        c02 = np.clip(np.arange(w * h * 4, dtype=np.int64).reshape(-1, 4) % 200 - 100,
+                      -128, 127).astype(np.int8).tobytes()
+        open(os.path.join(out_dir, "in_c02.bin"), "wb").write(c02)
+        # 68-byte push; rst = 0 so the lavapipe run takes the HISTORY branch (O7 must see it).
+        # +0x38 SC1, +0x3c/+0x40 pj_prev (the E0c02 texel offset).
+        push = bytearray(68)
+        struct.pack_into("<4iIIIf2f2f2if2f", push, 0, w0, h0, w, h, 3, 0, 0, -0.43359375,
+                         0.125, -0.2, 0.05, -0.03, w15, h15, -0.2198486328125, 0.1, -0.15)
         cfg = {
             "groups": [(w0 + 15) // 16, (h0 + 15) // 16, 1],
             "push": push.hex(),
@@ -615,6 +620,7 @@ def make_test(name, out_dir):
                 {"binding": 13, "file": "dither.bin"},
                 {"binding": 14, "file": "in_c0e.bin"},
                 {"binding": 15, "file": "in_c12.bin"},
+                {"binding": 16, "file": "in_c02.bin"},
                 {"binding": 8, "bytes": w0 * h0 * 64, "output": "out_be8", "type": "u8"},
                 {"binding": 9, "bytes": w0 * h0 * 8, "output": "out_bec", "type": "f16"},
                 {"binding": 10, "bytes": n_pix * 8, "output": "out_bf6", "type": "f16"},
