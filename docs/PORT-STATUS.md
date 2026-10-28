@@ -45,6 +45,26 @@ Never mark CLOSE or EXACT without pasted diffdump numbers.
 | `installer` | EXACT | Passes install and uninstall byte-for-byte check (RESTORE BYTE-FOR-BYTE: PASS) | `build/package/install.sh` for OptiScaler / Proton |
 | `ngx_client` / Proton | **EXACT (RR) / APPROX (SR)** | 2026-10-26, Proton 10.0 on the RX 9070 XT, `ngx_client --api {vulkan,d3d12} --test-cycles`, 12 frames per cell, 0 GPUVM faults and 0 kernel page faults: **RR F 1920x1080 -> 3840x2160 byte-identical to `vk_runner` on the same frames for both APIs** (`sha256sum out_*.f32` list `4543e334dcad107c52071d5438cca17c` on both sides, 398131200/398131200 floats non-zero, referee `psnr()` vs `base/rr_gt` 27.4949/27.7435/27.8878 dB = the native chain's, gap 0.0000 dB); SR M 1920x1080 -> 3840x2160 Vulkan 398131200/398131200 non-zero vs `base/sr_gt` 28.0550/33.3818/36.0200 dB = native (gap 0.0000 dB), bridge vs native 79.2049/89.3209/97.4196 dB which is the SR chain's own run-to-run drift; SR M 1280x720 -> 1920x1080 D3D12 99532800/99532800 non-zero vs `base/sr_q15_gt` 31.2780/33.0436/34.6731 dB = native (gap 0.0002 dB). The `--expect-create-fail` cells still refuse (5 combinations, all exit 0, reason in `dlss5-amd-ngx.log`). The earlier run `20261025_202951_2576121` failed V9 at `v9_d3d12_sr_M_static` with 12 all-zero outputs because neither `EvaluateFeature` did any work. | Both `EvaluateFeature` exports now record the frame chain on the caller's resources (Vulkan directly, D3D12 through vkd3d-proton's interop), with the image/chain/image copies and layouts `ngx_client` requires. V9 launches with a Proton whose processes start: since `774fd8a` (2026-10-26, operator-authorized) `run_all.sh` probes candidates newest-first instead of `sort -V \| tail -1` - pasted selection run: `probe 1: rc=124 <- Proton - Experimental`, `probe 2: rc=124 <- Proton Hotfix`, `probe 3: rc=124 <- Proton 11.0`, `probe 4: rc=1 traceback=no <- Proton 10.0`, `SELECTED: .../Proton 10.0/proton` (3x20 s + ~2 s, no wineserver leaked); `PROTON=<path>` skips the probe. See `docs/OPEN.md` "Proton 11 process startup". Reproduce with the command in `docs/MEASUREMENT.md`. |
 
+## V4 status - explicit distance (2026-10-27 21:20, orchestrator)
+
+V4 bar (frozen `eval_verify.py`): per cell, min frame >= **50.0 dB** AND mean >= **55.0 dB**,
+finite. The three cells whose oracle refs exist on this machine (`build/breadth-baseline/*_ref`,
+the 256x144 9-frame sequences), measured at HEAD `1ee5c70`:
+
+| cell | min | mean | min gap | mean gap | best frame | worst frame |
+|---|---:|---:|---:|---:|---|---|
+| SR M | 33.76 | 45.79 | **-16.24** | **-9.21** | 55.33 (f3) | 33.76 (f4) |
+| SR L | 30.08 | 44.51 | **-19.92** | **-10.49** | 56.74 (f3) | 30.08 (f4) |
+| RR F | 34.77 | 40.33 | **-15.23** | **-14.67** | 54.61 (f4) | 34.77 (f8) |
+
+**0 of 3 measured cells pass; no cell is within 15 dB of the min bar.** Per-frame texture: SR's
+frames 0-3 (and L's f0-f3, RR's f0/f4) already sit at 53-57 - the gaps are concentrated in the
+history-driven frames (SR f4-8, RR f1-f3/f5-f8) and, for SR L, the single f4 drain. The other 22
+referee cells (`sr_*_static/q15/col/ldr/mv/ae`, `rr_*_static/native/fmt`) need `run_all.sh`'s
+generated inputs and are UNMEASURED here - this table is the three we can run cheaply, recomputed
+whenever a lever lands. Levers in flight: e0be8-history (RR), ctx-instrument (SR stage X1),
+SR L f4 attribution (queued), mode-2 M1 (blocked), enc0feat c22 (blocked).
+
 ## Referee Run Summary (`tools/verify/run_all.sh`)
 - **2026-10-27 (orchestrator, after the R9/R9b ports):** `tools/verify/offline_check.sh` -> **`OFFLINE RESULT: PASS 27 pipelines`** (log `build/agents/orch/offline_check_orch2.log`). The run before the sr_post fixture fix (`9eb91dd`) was **FAIL O7 sr_post**: the fixture push predated `5981a2e`'s PostArgs fields, so the shader produced constant zeros on RADV and lavapipe alike (HEAD's `sr_post.spv` byte-identical to the tree's - pre-existing, not from the R9 ports).
 - **Current-session offline result**: `tools/verify/offline_check.sh` — `OFFLINE RESULT: PASS 27 pipelines` (O1-O7, after the RR AE block and reset-path final updates). The tracked-file scan, all shader builds including lavapipe f16 variants, RADV offline spill/scratch checks, and lavapipe output checks passed. On GFX1201, `rr_ae_block.spv`: 24 VGPRs, 108 SGPRs, 0 spills, 0 scratch, 1,024 LDS; `rr_ae_final.spv`: 24 VGPRs, 108 SGPRs, 0 spills, 0 scratch, 0 LDS.
