@@ -926,14 +926,10 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
     const std::string& preset = this->preset;
     const std::string& mode = this->mode;
 
-    if (reset) {
-        std::memset(prev_mvec[0].mapped, 0, prev_mvec[0].size);
-        std::memset(prev_mvec[1].mapped, 0, prev_mvec[1].size);
-        std::memset(hidden[0].mapped, 0, hidden[0].size);
-        std::memset(hidden[1].mapped, 0, hidden[1].size);
-        std::memset(ihist[0].mapped, 0, ihist[0].size);
-        std::memset(ihist[1].mapped, 0, ihist[1].size);
-    }
+    // No host-side clear on reset. NeuralHub's launchers (FUN_180101f60, FUN_180116e70, FUN_180117ab0,
+    // FUN_180117ee0) never clear prev_mvec / hidden / ihist; reset only reaches the kernels as an argument
+    // (Enc0Args +0xd8), and srref zeroes these buffers once at allocation, as create_buffer does here.
+    // Clearing them on a later reset frame (frame 4 of the oracle sequence) cost SR M 33.76 -> 53.82 dB min.
 
     // "hist" pseudo-point (DLSS5_AMD_INJECT_MASK=hist[,points...]): before this frame's first
     // dispatch, copy the ORACLE's temporal state - the dump's start.<name>.bin, the buffer as it
