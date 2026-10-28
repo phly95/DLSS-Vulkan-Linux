@@ -11,12 +11,20 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+struct ImageSpec {
+    bool set = false;                 // the binding is an image, not a buffer
+    std::string format = "r16g16b16a16_sfloat";
+    uint32_t width = 0, height = 0;
+    bool sampled = false;             // sampled (linear filter) vs storage image
+};
+
 struct BindingSpec {
     uint32_t binding = 0;
     std::string file;
     size_t bytes = 0;
     std::string output;
     std::string type = "u8";
+    ImageSpec img;
 };
 
 struct LaunchConfig {
@@ -107,6 +115,42 @@ static LaunchConfig parse_launch_json(const std::string& json_str) {
                                     else if (bkey == "bytes") b.bytes = (size_t)parse_uint(json_str, i);
                                     else if (bkey == "output") b.output = parse_string(json_str, i);
                                     else if (bkey == "type") b.type = parse_string(json_str, i);
+                                    else if (bkey == "image") {
+                                        // {"format": "...", "width": W, "height": H, "file": "...",
+                                        //  "sampled": true|false, "output": "name"} - an image
+                                        // binding instead of a buffer one. "file" seeds it (upload)
+                                        // and "output" names the readback, both as raw texel bytes.
+                                        b.img.set = true;
+                                        if (json_str[i] == '{') {
+                                            i++;
+                                            while (i < json_str.size() && json_str[i] != '}') {
+                                                skip_ws(json_str, i);
+                                                if (json_str[i] == '"') {
+                                                    std::string ikey = parse_string(json_str, i);
+                                                    skip_ws(json_str, i);
+                                                    if (i < json_str.size() && json_str[i] == ':') i++;
+                                                    skip_ws(json_str, i);
+                                                    if (ikey == "format") b.img.format = parse_string(json_str, i);
+                                                    else if (ikey == "width") b.img.width = (uint32_t)parse_uint(json_str, i);
+                                                    else if (ikey == "height") b.img.height = (uint32_t)parse_uint(json_str, i);
+                                                    else if (ikey == "file") b.file = parse_string(json_str, i);
+                                                    else if (ikey == "output") b.output = parse_string(json_str, i);
+                                                    else if (ikey == "sampled") {
+                                                        if (json_str.compare(i, 4, "true") == 0) { b.img.sampled = true; i += 4; }
+                                                        else if (json_str.compare(i, 5, "false") == 0) { i += 5; }
+                                                        else parse_uint(json_str, i);
+                                                    } else if (json_str[i] == '"') parse_string(json_str, i);
+                                                    else if (json_str[i] >= '0' && json_str[i] <= '9') parse_uint(json_str, i);
+                                                    else i++;
+                                                } else {
+                                                    i++;
+                                                }
+                                                skip_ws(json_str, i);
+                                                if (i < json_str.size() && json_str[i] == ',') i++;
+                                            }
+                                            if (i < json_str.size() && json_str[i] == '}') i++;
+                                        }
+                                    }
                                     else {
                                         // skip value
                                         if (json_str[i] == '"') parse_string(json_str, i);
@@ -139,6 +183,24 @@ static LaunchConfig parse_launch_json(const std::string& json_str) {
         }
     }
     return cfg;
+}
+
+static VkFormat format_from_string(const std::string& s) {
+    if (s == "r16g16b16a16_sfloat") return VK_FORMAT_R16G16B16A16_SFLOAT;
+    if (s == "r32g32b32a32_sfloat") return VK_FORMAT_R32G32B32A32_SFLOAT;
+    if (s == "r32g32_sfloat") return VK_FORMAT_R32G32_SFLOAT;
+    if (s == "r8g8b8a8_unorm") return VK_FORMAT_R8G8B8A8_UNORM;
+    return VK_FORMAT_UNDEFINED;
+}
+
+static uint32_t format_texel_bytes(VkFormat f) {
+    switch (f) {
+    case VK_FORMAT_R16G16B16A16_SFLOAT: return 8;
+    case VK_FORMAT_R32G32B32A32_SFLOAT: return 16;
+    case VK_FORMAT_R32G32_SFLOAT: return 8;
+    case VK_FORMAT_R8G8B8A8_UNORM: return 4;
+    default: return 0;
+    }
 }
 
 static uint32_t find_memory_type(VkPhysicalDevice phys, uint32_t typeFilter, VkMemoryPropertyFlags properties) {
@@ -343,7 +405,12 @@ int main(int argc, char** argv) {
     for (const auto& b : cfg.bindings) {
         VkDescriptorSetLayoutBinding dslb{};
         dslb.binding = b.binding;
-        dslb.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        if (b.img.set) {
+            dslb.descriptorType = b.img.sampled ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+                                                : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        } else {
+            dslb.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        }
         dslb.descriptorCount = 1;
         dslb.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         dsl_bindings.push_back(dslb);
@@ -407,11 +474,15 @@ int main(int argc, char** argv) {
     }
 
     // Descriptor pool
-    VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, std::max(1u, (uint32_t)cfg.bindings.size())};
+    VkDescriptorPoolSize pool_sizes[3] = {
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, std::max(1u, (uint32_t)cfg.bindings.size())},
+        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, std::max(1u, (uint32_t)cfg.bindings.size())},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, std::max(1u, (uint32_t)cfg.bindings.size())},
+    };
     VkDescriptorPoolCreateInfo dpci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     dpci.maxSets = 1;
-    dpci.poolSizeCount = 1;
-    dpci.pPoolSizes = &pool_size;
+    dpci.poolSizeCount = 3;
+    dpci.pPoolSizes = pool_sizes;
     VkDescriptorPool pool;
     vkCreateDescriptorPool(device, &dpci, nullptr, &pool);
 
@@ -432,6 +503,7 @@ int main(int argc, char** argv) {
     std::vector<BufferResource> buffers;
 
     for (const auto& b : cfg.bindings) {
+        if (b.img.set) continue;                    // images are handled below
         std::vector<uint8_t> file_bytes;
         if (!b.file.empty()) {
             std::string path = (!b.file.empty() && b.file[0] == '/') ? b.file : (launch_dir + "/" + b.file);
@@ -493,6 +565,138 @@ int main(int argc, char** argv) {
         vkUpdateDescriptorSets(device, 1, &wds, 0, nullptr);
     }
 
+    struct ImageResource {
+        VkImage image = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        VkImageView view = VK_NULL_HANDLE;
+        VkSampler sampler = VK_NULL_HANDLE;
+        VkBuffer up = VK_NULL_HANDLE;            // upload staging (host visible)
+        VkDeviceMemory up_mem = VK_NULL_HANDLE;
+        void* up_ptr = nullptr;
+        size_t up_bytes = 0;
+        VkBuffer dn = VK_NULL_HANDLE;            // readback staging
+        VkDeviceMemory dn_mem = VK_NULL_HANDLE;
+        void* dn_ptr = nullptr;
+        size_t dn_bytes = 0;
+        VkFormat format = VK_FORMAT_UNDEFINED;
+        uint32_t texel = 0;
+        BindingSpec spec;
+    };
+    std::vector<ImageResource> images;
+
+    for (const auto& b : cfg.bindings) {
+        if (!b.img.set) continue;
+        ImageResource im;
+        im.spec = b;
+        im.format = format_from_string(b.img.format);
+        im.texel = format_texel_bytes(im.format);
+        if (im.format == VK_FORMAT_UNDEFINED || im.texel == 0 || b.img.width == 0 || b.img.height == 0) {
+            std::fprintf(stderr, "kernel_run: image binding %u has an unsupported format/size (%s, %ux%u)\n",
+                         b.binding, b.img.format.c_str(), b.img.width, b.img.height);
+            return 1;
+        }
+        const size_t nbytes = size_t(b.img.width) * b.img.height * im.texel;
+
+        VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        ici.imageType = VK_IMAGE_TYPE_2D;
+        ici.format = im.format;
+        ici.extent = {b.img.width, b.img.height, 1};
+        ici.mipLevels = 1;
+        ici.arrayLayers = 1;
+        ici.samples = VK_SAMPLE_COUNT_1_BIT;
+        ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ici.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                    VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (vkCreateImage(device, &ici, nullptr, &im.image) != VK_SUCCESS) {
+            std::fprintf(stderr, "kernel_run: vkCreateImage failed for binding %u\n", b.binding);
+            return 1;
+        }
+        VkMemoryRequirements mreq;
+        vkGetImageMemoryRequirements(device, im.image, &mreq);
+        VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        mai.allocationSize = mreq.size;
+        mai.memoryTypeIndex = find_memory_type(phys, mreq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (vkAllocateMemory(device, &mai, nullptr, &im.memory) != VK_SUCCESS) {
+            std::fprintf(stderr, "kernel_run: image memory allocation failed for binding %u\n", b.binding);
+            return 1;
+        }
+        vkBindImageMemory(device, im.image, im.memory, 0);
+
+        VkImageViewCreateInfo ivci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        ivci.image = im.image;
+        ivci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        ivci.format = im.format;
+        ivci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCreateImageView(device, &ivci, nullptr, &im.view);
+
+        if (b.img.sampled) {
+            VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+            sci.magFilter = VK_FILTER_LINEAR;            // the bilinear the 5-tap CR wants
+            sci.minFilter = VK_FILTER_LINEAR;
+            sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+            sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            sci.minLod = 0.0f;
+            sci.maxLod = 0.0f;
+            vkCreateSampler(device, &sci, nullptr, &im.sampler);
+        }
+
+        // staging: upload (if a file seeds the image) and/or readback (if it is an output)
+        auto make_stage = [&](size_t sz, VkBuffer& buf, VkDeviceMemory& mem, void** ptr) {
+            VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+            bci.size = sz;
+            bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+            bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+            vkCreateBuffer(device, &bci, nullptr, &buf);
+            VkMemoryRequirements r;
+            vkGetBufferMemoryRequirements(device, buf, &r);
+            VkMemoryAllocateInfo a{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+            a.allocationSize = r.size;
+            a.memoryTypeIndex = find_memory_type(phys, r.memoryTypeBits,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            vkAllocateMemory(device, &a, nullptr, &mem);
+            vkBindBufferMemory(device, buf, mem, 0);
+            vkMapMemory(device, mem, 0, sz, 0, ptr);
+            std::memset(*ptr, 0, sz);
+        };
+        if (!b.file.empty()) {
+            std::string path = (b.file[0] == '/') ? b.file : (launch_dir + "/" + b.file);
+            std::ifstream bf(path, std::ios::binary);
+            std::vector<uint8_t> fb;
+            if (bf.is_open()) fb.assign((std::istreambuf_iterator<char>(bf)), std::istreambuf_iterator<char>());
+            if (fb.empty()) std::fprintf(stderr, "kernel_run: image binding %u: cannot read %s\n", b.binding, path.c_str());
+            if (fb.size() != nbytes)
+                std::fprintf(stderr, "kernel_run: image binding %u: %s is %zu bytes, image is %zu\n",
+                             b.binding, path.c_str(), fb.size(), nbytes);
+            im.up_bytes = nbytes;
+            make_stage(nbytes, im.up, im.up_mem, &im.up_ptr);
+            if (!fb.empty()) std::memcpy(im.up_ptr, fb.data(), std::min(fb.size(), nbytes));
+        }
+        if (!b.output.empty()) {
+            im.dn_bytes = nbytes;
+            make_stage(nbytes, im.dn, im.dn_mem, &im.dn_ptr);
+        }
+
+        VkDescriptorImageInfo dii{};
+        dii.imageView = im.view;
+        dii.imageLayout = b.img.sampled ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                        : VK_IMAGE_LAYOUT_GENERAL;
+        dii.sampler = im.sampler;
+        VkWriteDescriptorSet wds{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        wds.dstSet = desc_set;
+        wds.dstBinding = b.binding;
+        wds.descriptorCount = 1;
+        wds.descriptorType = b.img.sampled ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+                                           : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        wds.pImageInfo = &dii;
+        vkUpdateDescriptorSets(device, 1, &wds, 0, nullptr);
+
+        images.push_back(im);
+    }
+
     // Command pool and buffer
     VkCommandPoolCreateInfo cpci2{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     cpci2.queueFamilyIndex = qfamily;
@@ -510,12 +714,67 @@ int main(int argc, char** argv) {
     cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(cmd, &cbbi);
 
+    // Image setup: UNDEFINED -> TRANSFER_DST, upload, then -> the layout the shader uses. Images
+    // with no seed file still need the transition out of UNDEFINED.
+    for (auto& im : images) {
+        const bool samp = im.spec.img.sampled;
+        VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        b.srcAccessMask = 0;
+        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.image = im.image;
+        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        if (im.up) {
+            b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 0, 0, nullptr, 0, nullptr, 1, &b);
+            VkBufferImageCopy cic{};
+            cic.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            cic.imageExtent = {im.spec.img.width, im.spec.img.height, 1};
+            vkCmdCopyBufferToImage(cmd, im.up, im.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cic);
+            b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            b.dstAccessMask = samp ? VK_ACCESS_SHADER_READ_BIT : VK_ACCESS_SHADER_WRITE_BIT;
+            b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            b.newLayout = samp ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 0, 0, nullptr, 0, nullptr, 1, &b);
+        } else {
+            b.dstAccessMask = samp ? VK_ACCESS_SHADER_READ_BIT : VK_ACCESS_SHADER_WRITE_BIT;
+            b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            b.newLayout = samp ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 0, 0, nullptr, 0, nullptr, 1, &b);
+        }
+    }
+
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout, 0, 1, &desc_set, 0, nullptr);
     if (!cfg.push_data.empty()) {
         vkCmdPushConstants(cmd, pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, (uint32_t)cfg.push_data.size(), cfg.push_data.data());
     }
     vkCmdDispatch(cmd, cfg.groups[0], cfg.groups[1], cfg.groups[2]);
+
+    // Storage-image readback: GENERAL -> TRANSFER_SRC, copy out
+    for (auto& im : images) {
+        if (!im.dn) continue;
+        VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.image = im.image;
+        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &b);
+        VkBufferImageCopy cic{};
+        cic.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        cic.imageExtent = {im.spec.img.width, im.spec.img.height, 1};
+        vkCmdCopyImageToBuffer(cmd, im.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, im.dn, 1, &cic);
+    }
     vkEndCommandBuffer(cmd);
 
     VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
@@ -530,6 +789,16 @@ int main(int argc, char** argv) {
 
     // Write outputs
     mkdir(out_dir.c_str(), 0777);
+    for (auto& im : images) {                       // storage-image readbacks: raw texel bytes
+        if (im.spec.output.empty() || !im.dn_ptr) continue;
+        std::string out_path = out_dir + "/" + im.spec.output + ".bin";
+        std::ofstream out_f(out_path, std::ios::binary);
+        if (!out_f.is_open()) {
+            std::fprintf(stderr, "Failed to open output file: %s\n", out_path.c_str());
+        } else {
+            out_f.write(reinterpret_cast<const char*>(im.dn_ptr), (std::streamsize)im.dn_bytes);
+        }
+    }
     for (const auto& res : buffers) {
         if (!res.spec.output.empty()) {
             std::string out_path = out_dir + "/" + res.spec.output + ".bin";
@@ -544,6 +813,19 @@ int main(int argc, char** argv) {
         vkUnmapMemory(device, res.memory);
         vkDestroyBuffer(device, res.buffer, nullptr);
         vkFreeMemory(device, res.memory, nullptr);
+    }
+
+    for (auto& im : images) {
+        if (im.up_ptr) vkUnmapMemory(device, im.up_mem);
+        if (im.dn_ptr) vkUnmapMemory(device, im.dn_mem);
+        if (im.up) vkDestroyBuffer(device, im.up, nullptr);
+        if (im.dn) vkDestroyBuffer(device, im.dn, nullptr);
+        if (im.up_mem) vkFreeMemory(device, im.up_mem, nullptr);
+        if (im.dn_mem) vkFreeMemory(device, im.dn_mem, nullptr);
+        if (im.sampler) vkDestroySampler(device, im.sampler, nullptr);
+        if (im.view) vkDestroyImageView(device, im.view, nullptr);
+        if (im.image) vkDestroyImage(device, im.image, nullptr);
+        if (im.memory) vkFreeMemory(device, im.memory, nullptr);
     }
 
     vkDestroyFence(device, fence, nullptr);

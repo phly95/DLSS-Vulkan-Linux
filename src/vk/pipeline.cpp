@@ -165,15 +165,18 @@ static std::string g_pipeline_error;
 // garbage at subgroup size 64 (measured: the same shader logic gives sane values with 32-lane
 // workgroups and garbage with 64-lane ones - see build/agents/stage/progress.md), and the reference
 // runtime pins wave32 the same way for every pipeline (reference-nr-vulkan/linux/src/core/nrvk.hpp).
-static ChainPipeline create_compute_pipeline(VkDevice dev, const std::vector<uint32_t>& spv, uint32_t num_bindings, uint32_t push_size, uint32_t subgroup_size = 0) {
+static ChainPipeline create_compute_pipeline(VkDevice dev, const std::vector<uint32_t>& spv, uint32_t num_bindings, uint32_t push_size, uint32_t subgroup_size = 0,
+                                             const std::vector<VkDescriptorType>& types = {}) {
     ChainPipeline p;
     std::vector<VkDescriptorSetLayoutBinding> bindings(num_bindings);
     for (uint32_t i = 0; i < num_bindings; ++i) {
         bindings[i].binding = i;
-        bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[i].descriptorType = (i < types.size()) ? types[i] : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         bindings[i].descriptorCount = 1;
         bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     }
+    p.dt.resize(num_bindings, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+    for (uint32_t i = 0; i < num_bindings && i < types.size(); ++i) p.dt[i] = types[i];
     VkDescriptorSetLayoutCreateInfo dslci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     dslci.bindingCount = uint32_t(bindings.size());
     dslci.pBindings = bindings.data();
@@ -381,13 +384,14 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         return spv;
     };
 
-    auto add_pipe = [&](const std::string& name, uint32_t bindings, uint32_t push_size, uint32_t subgroup_size = 0) {
+    auto add_pipe = [&](const std::string& name, uint32_t bindings, uint32_t push_size, uint32_t subgroup_size = 0,
+                        const std::vector<VkDescriptorType>& types = {}) {
         auto spv = load_spv(name);
         if (spv.empty()) {
             std::fprintf(stderr, "Missing shader %s.spv\n", name.c_str());
             return;
         }
-        c->pipelines[name] = create_compute_pipeline(dev, spv, bindings, push_size, subgroup_size);
+        c->pipelines[name] = create_compute_pipeline(dev, spv, bindings, push_size, subgroup_size, types);
     };
 
     if (mode == "sr") {
@@ -401,7 +405,17 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         add_pipe("sr_stage", 6, 56, 32);   // 64 threads = 2 x wave32: pin the subgroup size (coopmat)
         add_pipe("sr_tube_split", 4, 56);
         add_pipe("sr_dec0", 8, 160);
-        add_pipe("sr_post", 12, 256);
+        add_pipe("sr_post", 14, 256, 0,
+                 // 0-4 SSBO, 5 history SAMPLED image (linear filter, the 5-tap CR's bilinear), 6-8
+                 // SSBO, 9 history STORAGE image write, 10-13 SSBO (12 is the unused slot that keeps
+                 // the packed views at their pass-2 indices)
+                 {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER});
         add_pipe("sr_downsample", 4, 88);
         add_pipe("sr_unorm8_table", 1, 0);
         if (preset == "L") {
@@ -451,13 +465,19 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         return nullptr;
     }
 
-    // Descriptor pool
-    VkDescriptorPoolSize dps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 512};
+    // Descriptor pool. sr_post binds one sampled and one storage image per dispatch (its temporal
+    // history), so the pool needs those types too - a set that asks for a type the pool has no
+    // descriptors of fails to allocate and the whole dispatch binds nothing.
+    VkDescriptorPoolSize dps[3] = {
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 512},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 64},
+        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 64},
+    };
     VkDescriptorPoolCreateInfo dpci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     dpci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     dpci.maxSets = 256;
-    dpci.poolSizeCount = 1;
-    dpci.pPoolSizes = &dps;
+    dpci.poolSizeCount = 3;
+    dpci.pPoolSizes = dps;
     vkCreateDescriptorPool(dev, &dpci, nullptr, &c->dpool);
 
     // Allocate Buffers
@@ -535,6 +555,112 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
     c->bec = create_buffer(dev, phys, size_t(W0) * H0 * 8, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->ihist[0] = create_buffer(dev, phys, size_t(W15) * H15 * 8, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->ihist[1] = create_buffer(dev, phys, size_t(W15) * H15 * 8, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+
+    // sr_post's history as images (PERF pass 4): two W15 x H15 rgba16f images, one sampled through a
+    // linear clamp-to-edge sampler (five texture instructions replace twelve buffer loads and the
+    // manual bilinear of the 5-tap Catmull-Rom) and one written as a storage image. Both stay in
+    // VK_IMAGE_LAYOUT_GENERAL for their whole life; the chain's per-dispatch memory barrier covers
+    // every hazard, and they are cleared ONCE here the way srref zeroes the history at allocation
+    // (no per-reset clear - see the note above record()).
+    if (mode == "sr") {
+        for (int i = 0; i < 2; ++i) {
+            VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+            ici.imageType = VK_IMAGE_TYPE_2D;
+            ici.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+            ici.extent = {uint32_t(W15), uint32_t(H15), 1};
+            ici.mipLevels = 1;
+            ici.arrayLayers = 1;
+            ici.samples = VK_SAMPLE_COUNT_1_BIT;
+            ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+            ici.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                        VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+            ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+            ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            vkCreateImage(dev, &ici, nullptr, &c->sr_hist_img[i]);
+            VkMemoryRequirements req;
+            vkGetImageMemoryRequirements(dev, c->sr_hist_img[i], &req);
+            VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+            mai.allocationSize = req.size;
+            mai.memoryTypeIndex = find_memory_type(phys, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            if (vkAllocateMemory(dev, &mai, nullptr, &c->sr_hist_mem[i]) != VK_SUCCESS) {
+                // fall back to any host-visible type rather than leaving the image unbound
+                mai.memoryTypeIndex = find_memory_type(phys, req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+                vkAllocateMemory(dev, &mai, nullptr, &c->sr_hist_mem[i]);
+            }
+            vkBindImageMemory(dev, c->sr_hist_img[i], c->sr_hist_mem[i], 0);
+            VkImageViewCreateInfo ivci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+            ivci.image = c->sr_hist_img[i];
+            ivci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            ivci.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+            ivci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            vkCreateImageView(dev, &ivci, nullptr, &c->sr_hist_view[i]);
+        }
+        VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+        sci.magFilter = VK_FILTER_LINEAR;              // the bilinear the CR weights assume
+        sci.minFilter = VK_FILTER_LINEAR;
+        sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.minLod = 0.0f;
+        sci.maxLod = 0.0f;
+        vkCreateSampler(dev, &sci, nullptr, &c->sr_hist_sampler);
+
+        uint32_t qf = 0;
+        {
+            uint32_t n = 0;
+            vkGetPhysicalDeviceQueueFamilyProperties(phys, &n, nullptr);
+            std::vector<VkQueueFamilyProperties> qp(n);
+            vkGetPhysicalDeviceQueueFamilyProperties(phys, &n, qp.data());
+            for (uint32_t q = 0; q < n; ++q)
+                if (qp[q].queueFlags & VK_QUEUE_COMPUTE_BIT) { qf = q; break; }
+        }
+        VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+        pci.queueFamilyIndex = qf;
+        pci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+        VkCommandPool pool = VK_NULL_HANDLE;
+        vkCreateCommandPool(dev, &pci, nullptr, &pool);
+        VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        cai.commandPool = pool;
+        cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cai.commandBufferCount = 1;
+        VkCommandBuffer cbuf = VK_NULL_HANDLE;
+        vkAllocateCommandBuffers(dev, &cai, &cbuf);
+        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(cbuf, &bi);
+        for (int i = 0; i < 2; ++i) {
+            VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+            b.srcAccessMask = 0;
+            b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            b.image = c->sr_hist_img[i];
+            b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            vkCmdPipelineBarrier(cbuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 0, 0, nullptr, 0, nullptr, 1, &b);
+            VkClearColorValue zero{};
+            VkImageSubresourceRange rr{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            vkCmdClearColorImage(cbuf, c->sr_hist_img[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1, &rr);
+            b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+            b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            vkCmdPipelineBarrier(cbuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 0, 0, nullptr, 0, nullptr, 1, &b);
+        }
+        vkEndCommandBuffer(cbuf);
+        VkQueue q = VK_NULL_HANDLE;
+        vkGetDeviceQueue(dev, qf, 0, &q);
+        VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &cbuf;
+        vkQueueSubmit(q, 1, &si, VK_NULL_HANDLE);
+        vkQueueWaitIdle(q);
+        vkDestroyCommandPool(dev, pool, nullptr);
+    }
 
     size_t t0_sz = std::max(size_t(W0) * H0 * 64, size_t(L1w) * L1h * 64);
     c->t_act[0] = create_buffer(dev, phys, t0_sz, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
@@ -728,6 +854,12 @@ FrameChain::~FrameChain() {
     destroy_buffer(dev, bec);
     destroy_buffer(dev, ihist[0]);
     destroy_buffer(dev, ihist[1]);
+    for (int i = 0; i < 2; ++i) {
+        if (sr_hist_view[i]) vkDestroyImageView(dev, sr_hist_view[i], nullptr);
+        if (sr_hist_img[i]) vkDestroyImage(dev, sr_hist_img[i], nullptr);
+        if (sr_hist_mem[i]) vkFreeMemory(dev, sr_hist_mem[i], nullptr);
+    }
+    if (sr_hist_sampler) vkDestroySampler(dev, sr_hist_sampler, nullptr);
     for (int i = 0; i < 9; ++i) destroy_buffer(dev, t_act[i]);
     destroy_buffer(dev, out);
     destroy_buffer(dev, wbuf);
@@ -877,7 +1009,8 @@ static int g_dispatch_seen = 0;
 // Helper to dispatch a pipeline with buffers and push constants
 void FrameChain::dispatch(VkCommandBuffer cmd, const std::string& name,
                           const std::vector<Buffer*>& bufs, const void* push,
-                          size_t push_size, uint32_t gx, uint32_t gy, uint32_t gz) {
+                          size_t push_size, uint32_t gx, uint32_t gy, uint32_t gz,
+                          const std::vector<DispatchImage>& images) {
     if (g_dispatch_seen++ >= max_dispatch()) return;
     auto it = pipelines.find(name);
     if (it == pipelines.end()) return;
@@ -892,22 +1025,53 @@ void FrameChain::dispatch(VkCommandBuffer cmd, const std::string& name,
     dsai.descriptorSetCount = 1;
     dsai.pSetLayouts = &p.dsl;
     VkDescriptorSet ds;
-    vkAllocateDescriptorSets(dev, &dsai, &ds);
+    VkResult dsr = vkAllocateDescriptorSets(dev, &dsai, &ds);
+    if (dsr != VK_SUCCESS) {
+        std::fprintf(stderr, "dispatch %s: vkAllocateDescriptorSets failed (%d)\n", name.c_str(), int(dsr));
+        return;
+    }
 
     std::vector<VkDescriptorBufferInfo> dbis(bufs.size());
     std::vector<VkWriteDescriptorSet> writes(bufs.size());
+    std::vector<VkDescriptorImageInfo> iis(bufs.size());
+    std::vector<size_t> live;                      // indices that actually carry a descriptor
     for (size_t i = 0; i < bufs.size(); ++i) {
-        dbis[i].buffer = bufs[i]->buffer;
-        dbis[i].offset = 0;
-        dbis[i].range = VK_WHOLE_SIZE;
-        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[i].dstSet = ds;
-        writes[i].dstBinding = uint32_t(i);
-        writes[i].descriptorCount = 1;
-        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[i].pBufferInfo = &dbis[i];
+        if (bufs[i]) {
+            dbis[i].buffer = bufs[i]->buffer;
+            dbis[i].offset = 0;
+            dbis[i].range = VK_WHOLE_SIZE;
+            writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstSet = ds;
+            writes[i].dstBinding = uint32_t(i);
+            writes[i].descriptorCount = 1;
+            writes[i].descriptorType = (i < p.dt.size()) ? p.dt[i] : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            if (writes[i].descriptorType != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
+                std::fprintf(stderr, "dispatch %s: binding %zu is not a storage buffer in the layout\n",
+                             name.c_str(), i);
+                return;
+            }
+            writes[i].pBufferInfo = &dbis[i];
+            live.push_back(i);
+        } else {
+            // a nullptr slot: the image list is keyed by binding number, not by position
+            const DispatchImage* im = nullptr;
+            for (const auto& cand : images)
+                if (cand.binding == uint32_t(i)) { im = &cand; break; }
+            if (!im || !im->view) continue;
+            iis[i].sampler = im->sampler;
+            iis[i].imageView = im->view;
+            iis[i].imageLayout = im->layout;
+            writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstSet = ds;
+            writes[i].dstBinding = uint32_t(i);
+            writes[i].descriptorCount = 1;
+            writes[i].descriptorType = im->type;
+            writes[i].pImageInfo = &iis[i];
+            live.push_back(i);
+        }
     }
-    vkUpdateDescriptorSets(dev, uint32_t(writes.size()), writes.data(), 0, nullptr);
+    // vkUpdateDescriptorSets has no way to skip a slot, so write the live ones individually
+    for (size_t k : live) vkUpdateDescriptorSets(dev, 1, &writes[k], 0, nullptr);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.pipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.layout, 0, 1, &ds, 0, nullptr);
@@ -1349,8 +1513,17 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             if (const char* dump = std::getenv("DLSS5_AMD_POST_PUSH_DUMP")) {   // A3 check: append each frame's push
                 if (FILE* f = std::fopen(dump, "ab")) { std::fwrite(push, 1, 256, f); std::fclose(f); }
             }
-            dispatch(cmd, "sr_post", {&g_col, &expo, &gates, &factors, &aniso, &ihist[p], &prev_mvec[p ^ 1], &mv_ero, &mv_nondil,
-                                 &ihist[p ^ 1], &full15, &dhist}, push, 256, (W15 + 31) / 32, (hH15 + 15) / 16, 1);
+            // bindings 5 and 9 are the history IMAGES (5 = sampled read, 9 = storage write; they live
+            // in VK_IMAGE_LAYOUT_GENERAL for their whole life), so those slots carry nullptr in the
+            // buffer vector. Binding 12 is the unused slot that keeps full15's packed view at 13.
+            std::vector<DispatchImage> himg = {
+                {5, sr_hist_view[p], sr_hist_sampler, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                 VK_IMAGE_LAYOUT_GENERAL},
+                {9, sr_hist_view[p ^ 1], VK_NULL_HANDLE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                 VK_IMAGE_LAYOUT_GENERAL},
+            };
+            dispatch(cmd, "sr_post", {&g_col, &expo, &gates, &factors, &aniso, nullptr, &prev_mvec[p ^ 1], &mv_ero, &mv_nondil,
+                                 nullptr, &full15, &dhist, nullptr, &full15}, push, 256, (W15 + 31) / 32, (hH15 + 15) / 16, 1, himg);
             inject_after(cmd, "post", sr_l[13]);
         }
 

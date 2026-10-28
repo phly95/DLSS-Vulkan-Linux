@@ -54,6 +54,19 @@ struct ChainPipeline {
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkDescriptorSetLayout dsl = VK_NULL_HANDLE;
+    // per-binding descriptor types (index = binding); entries default to STORAGE_BUFFER
+    std::vector<VkDescriptorType> dt;
+};
+
+// One image binding of a dispatch: indexed by binding number, so a dispatch's buffer vector holds
+// nullptr at that index (see FrameChain::dispatch). sr_post's history is the first user - a
+// sampled image for the 5-tap Catmull-Rom's bilinear fetches and a storage image for the write.
+struct DispatchImage {
+    uint32_t binding = 0;
+    VkImageView view = VK_NULL_HANDLE;
+    VkSampler sampler = VK_NULL_HANDLE;        // set iff type is COMBINED_IMAGE_SAMPLER
+    VkDescriptorType type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    VkImageLayout layout = VK_IMAGE_LAYOUT_GENERAL;
 };
 
 class FrameChain {
@@ -147,7 +160,8 @@ private:
 
     void dispatch(VkCommandBuffer cmd, const std::string& name,
                   const std::vector<Buffer*>& bufs, const void* push,
-                  size_t push_size, uint32_t gx, uint32_t gy, uint32_t gz);
+                  size_t push_size, uint32_t gx, uint32_t gy, uint32_t gz,
+                  const std::vector<DispatchImage>& images = {});
 
     // Oracle-injection diagnosis (see set_injection).  point names the dispatch just
     // recorded; launch is that point's launch number in the dump of the *current* frame
@@ -180,6 +194,17 @@ private:
     Buffer gates, factors, aniso;
     Buffer dhist, full15, cf2, cf6, cfa, c0e, bfa, bfe, bf6, bec;
     Buffer ihist[2];
+    // SR only, PERF pass 4 (2026-10-28): the temporal history as two W15 x H15 rgba16f IMAGES.
+    // sr_post samples one through a linear clamp-to-edge sampler - the 5-tap Catmull-Rom's five
+    // bilinear fetches become five texture instructions with the hardware's own 8-bit weights -
+    // and writes the other as a storage image. ihist[] stays: the RR chain reads and writes it as
+    // a buffer, and the injection/leverage tools target it by name. Both images live in
+    // VK_IMAGE_LAYOUT_GENERAL for their whole life (cleared once at creation, like srref zeroes
+    // the history at allocation); the chain's per-dispatch memory barrier covers every hazard.
+    VkImage sr_hist_img[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    VkDeviceMemory sr_hist_mem[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    VkImageView sr_hist_view[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    VkSampler sr_hist_sampler = VK_NULL_HANDLE;
     Buffer t_act[9];
     Buffer ae_next, ae_exp;   // rr_ae_final's bindings 2/3 (writeonly, never read back)
     Buffer out, wbuf, w_enc0, w_dec0, w_dec0rep;

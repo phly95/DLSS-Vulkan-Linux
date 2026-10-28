@@ -67,12 +67,20 @@ layout(set = 0, binding = 0) readonly buffer InCol      { f16vec4 g_col[]; };
 layout(set = 0, binding = 1) readonly buffer InExpo     { float16_t expo[]; };
 layout(set = 0, binding = 2) readonly buffer InGates    { u8vec4 gates[]; };
 layout(set = 0, binding = 4) readonly buffer InAniso    { f16vec4 aniso[]; };
-layout(set = 0, binding = 5) readonly buffer InIhist    { f16vec4 in_ihist[]; };
+// The history is an IMAGE, not a buffer (PERF pass 4). The host binds two W15 x H15 rgba16f
+// images in VK_IMAGE_LAYOUT_GENERAL: binding 5 is sampled through a linear clamp-to-edge sampler,
+// binding 9 is written as a storage image. The sampler is what the 5-tap Catmull-Rom's bilinear
+// fetches were written for - cr_axis already quantises the sub-texel fractions to 1/256 precisely
+// because hardware bilinear weights are 8-bit, so this changes the fetch, not the arithmetic.
+layout(set = 0, binding = 5) uniform sampler2D inHist;
 layout(set = 0, binding = 8) readonly buffer InMvNondil { f16vec2 in_mv_nondil[]; };
 
-layout(set = 0, binding = 9) writeonly buffer OutIhist   { f16vec4 out_ihist[]; };
+layout(set = 0, binding = 9, rgba16f) writeonly uniform image2D outHist;
 layout(set = 0, binding = 10) writeonly buffer OutFull15 { uint full15[]; };
 layout(set = 0, binding = 11) writeonly buffer OutDhist  { uint out_dhist[]; };
+// binding 12 carries no descriptor (the history no longer needs a packed second view); full15
+// keeps its, so one store writes two output pixels.
+layout(set = 0, binding = 13) writeonly buffer OutFull152 { uvec2 out_full15_2[]; };
 
 layout(push_constant) uniform PostArgs {
     layout(offset = 0x10) uint parity;     // PostArgs +0x10: p (u64; the low dword is read)
@@ -154,24 +162,14 @@ void cr_axis(float f0, out float wm1, out float w2, out float a, out float rq) {
     rq = roundEven((w1 / a_) * 256.0) / 256.0;
 }
 
-// SPEC 6: one bilinear fetch of the history at texel (xi0, yi0) with sub-texel weights rx, ry;
-// clamp-to-edge addressing; texel centres.
-vec3 bil(int xi0, int yi0, float rx, float ry) {
-    int xi = clamp(xi0, 0, W15 - 1);
-    int yi = clamp(yi0, 0, H15 - 1);
-    int x1 = clamp(xi0 + 1, 0, W15 - 1);
-    int y1 = clamp(yi0 + 1, 0, H15 - 1);
-    vec3 h00 = vec3(in_ihist[yi * W15 + xi].xyz);
-    vec3 h01 = vec3(in_ihist[yi * W15 + x1].xyz);
-    vec3 h10 = vec3(in_ihist[y1 * W15 + xi].xyz);
-    vec3 h11 = vec3(in_ihist[y1 * W15 + x1].xyz);
-    vec3 top = h00 * (1.0 - rx) + h01 * rx;
-    vec3 bot = h10 * (1.0 - rx) + h11 * rx;
-    return top * (1.0 - ry) + bot * ry;
-}
-
 // SPEC 6: the 5-tap bilinear Catmull-Rom history sample at the reprojected position (posx, posy),
 // in output texels; returns h, the tm-domain history.
+//
+// PERF pass 4: the five bilinear fetches go through the sampler (binding 5: linear filter,
+// clamp-to-edge) - the classic form the 5-tap CR is designed for. One texture instruction replaces
+// the twelve buffer loads and the five manual blends of the pass-2 version, on the texture unit's
+// own cache path. cr_axis already quantises rx/ry to 1/256 precisely because hardware bilinear
+// weights are 8-bit, so the sampled values are the same the manual bilinear produced.
 vec3 cr_sample(float posx, float posy) {
     int Ix = int(floor(posx - 0.5));
     int Iy = int(floor(posy - 0.5));
@@ -186,12 +184,23 @@ vec3 cr_sample(float posx, float posy) {
     float W3 = ax * wmy;
     float W4 = ax * w2y;
     float W5 = ax * ay;
-    vec3 t1 = bil(Ix - 1, Iy, 0.0, ryq);      // pure texel x, blended y
-    vec3 t3 = bil(Ix, Iy - 1, rxq, 0.0);      // blended x, pure texel y
-    vec3 t5 = bil(Ix, Iy, rxq, ryq);          // the main bilinear
-    vec3 t4 = bil(Ix, Iy + 2, rxq, 0.0);
-    vec3 t2 = bil(Ix + 2, Iy, 0.0, ryq);
-    vec3 num = t1 * W1 + t3 * W3 + t5 * W5 + t4 * W4 + t2 * W2;
+
+    float ix = (float(Ix) + 0.5) / float(W15);              // texel centres, normalized
+    float iy = (float(Iy) + 0.5) / float(H15);
+    float dx = 1.0 / float(W15);
+    float dy = 1.0 / float(H15);
+
+    vec3 v1 = texture(inHist, vec2(ix - dx,        iy + ryq * dy)).rgb;   // bil(Ix-1, Iy,   0, ryq)
+    vec3 v2 = texture(inHist, vec2(ix + 2.0 * dx,  iy + ryq * dy)).rgb;   // bil(Ix+2, Iy,   0, ryq)
+    vec3 v3 = texture(inHist, vec2(ix + rxq * dx,  iy - dy)).rgb;         // bil(Ix,   Iy-1, rxq, 0)
+    vec3 v4 = texture(inHist, vec2(ix + rxq * dx,  iy + 2.0 * dy)).rgb;   // bil(Ix,   Iy+2, rxq, 0)
+    vec3 t5 = texture(inHist, vec2(ix + rxq * dx,  iy + ryq * dy)).rgb;   // bil(Ix,   Iy,  rxq, ryq)
+
+    vec3 num = v1 * W1;
+    num = fma(v3, vec3(W3), num);
+    num = fma(t5, vec3(W5), num);
+    num = fma(v4, vec3(W4), num);
+    num = fma(v2, vec3(W2), num);
     float wcr = (((W3 + W1) + W5) + W4) + W2;
     return num / wcr;
 }
@@ -392,25 +401,37 @@ void main() {
         x2O[c] = fma(vec3(t2O), BO[c] - AO[c], AO[c]);
     }
 
-    // ---- SPEC 7: stores. Consecutive lanes hold consecutive column pairs of the same two rows, so
-    // the four 8 B stores of a thread are one contiguous 32 B run per row across a wave.
+    // ---- SPEC 7: stores. Four history texels per imageStore (the image IS the output layout, so
+    // there is nothing to pack), and full15 two pixels per store through its packed view.
     const bool v0 = (x15 < W15) && (r < hH15);
     const bool v1 = (x15 + 1 < W15) && (r < hH15);
-    if (v0) {
+    if (v0 && v1) {
         const int iE = ye * W15 + x15;
         const int iO = yo * W15 + x15;
-        out_ihist[iE] = f16vec4(f16vec3(tm_lin(x1E[0])), float16_t(0.0));
-        out_ihist[iO] = f16vec4(f16vec3(tm_lin(x1O[0])), float16_t(0.0));
-        full15[iE] = enc_full15(tm_lin(x2E[0]));
-        full15[iO] = enc_full15(tm_lin(x2O[0]));
-    }
-    if (v1) {
-        const int iE = ye * W15 + x15 + 1;
-        const int iO = yo * W15 + x15 + 1;
-        out_ihist[iE] = f16vec4(f16vec3(tm_lin(x1E[1])), float16_t(0.0));
-        out_ihist[iO] = f16vec4(f16vec3(tm_lin(x1O[1])), float16_t(0.0));
-        full15[iE] = enc_full15(tm_lin(x2E[1]));
-        full15[iO] = enc_full15(tm_lin(x2O[1]));
+        imageStore(outHist, ivec2(x15,     ye), vec4(tm_lin(x1E[0]), 0.0));
+        imageStore(outHist, ivec2(x15 + 1, ye), vec4(tm_lin(x1E[1]), 0.0));
+        imageStore(outHist, ivec2(x15,     yo), vec4(tm_lin(x1O[0]), 0.0));
+        imageStore(outHist, ivec2(x15 + 1, yo), vec4(tm_lin(x1O[1]), 0.0));
+        out_full15_2[iE >> 1] = uvec2(enc_full15(tm_lin(x2E[0])), enc_full15(tm_lin(x2E[1])));
+        out_full15_2[iO >> 1] = uvec2(enc_full15(tm_lin(x2O[0])), enc_full15(tm_lin(x2O[1])));
+    } else {
+        // odd W15 (never on a real frame): write the in-range column only
+        if (v0) {
+            const int iE = ye * W15 + x15;
+            const int iO = yo * W15 + x15;
+            imageStore(outHist, ivec2(x15, ye), vec4(tm_lin(x1E[0]), 0.0));
+            imageStore(outHist, ivec2(x15, yo), vec4(tm_lin(x1O[0]), 0.0));
+            full15[iE] = enc_full15(tm_lin(x2E[0]));
+            full15[iO] = enc_full15(tm_lin(x2O[0]));
+        }
+        if (v1) {
+            const int iE = ye * W15 + x15 + 1;
+            const int iO = yo * W15 + x15 + 1;
+            imageStore(outHist, ivec2(x15 + 1, ye), vec4(tm_lin(x1E[1]), 0.0));
+            imageStore(outHist, ivec2(x15 + 1, yo), vec4(tm_lin(x1O[1]), 0.0));
+            full15[iE] = enc_full15(tm_lin(x2E[1]));
+            full15[iO] = enc_full15(tm_lin(x2O[1]));
+        }
     }
 
     // SPEC 7: dhist = the t1-blend x of the thread's own 2x2 block in the LINEAR domain: the row

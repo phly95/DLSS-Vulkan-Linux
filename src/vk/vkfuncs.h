@@ -13,11 +13,15 @@
 #include <vulkan/vulkan.h>
 
 #define NGXD_VK_FUNCS(X)                 \
+    X(vkAllocateCommandBuffers)          \
     X(vkAllocateDescriptorSets)          \
     X(vkAllocateMemory)                  \
+    X(vkBeginCommandBuffer)              \
     X(vkBindBufferMemory)                \
+    X(vkBindImageMemory)                 \
     X(vkCmdBindDescriptorSets)           \
     X(vkCmdBindPipeline)                 \
+    X(vkCmdClearColorImage)              \
     X(vkCmdCopyBuffer)                   \
     X(vkCmdCopyBufferToImage)            \
     X(vkCmdCopyImageToBuffer)            \
@@ -25,22 +29,36 @@
     X(vkCmdPipelineBarrier)              \
     X(vkCmdPushConstants)                \
     X(vkCreateBuffer)                    \
+    X(vkCreateCommandPool)               \
     X(vkCreateComputePipelines)          \
     X(vkCreateDescriptorPool)            \
     X(vkCreateDescriptorSetLayout)       \
+    X(vkCreateImage)                     \
+    X(vkCreateImageView)                 \
     X(vkCreatePipelineLayout)            \
+    X(vkCreateSampler)                   \
     X(vkCreateShaderModule)              \
     X(vkDestroyBuffer)                   \
+    X(vkDestroyCommandPool)              \
     X(vkDestroyDescriptorPool)           \
     X(vkDestroyDescriptorSetLayout)      \
+    X(vkDestroyImage)                    \
+    X(vkDestroyImageView)                \
     X(vkDestroyPipeline)                 \
     X(vkDestroyPipelineLayout)           \
+    X(vkDestroySampler)                  \
     X(vkDestroyShaderModule)             \
     X(vkDeviceWaitIdle)                  \
+    X(vkEndCommandBuffer)                \
     X(vkFreeMemory)                      \
     X(vkGetBufferMemoryRequirements)     \
+    X(vkGetDeviceQueue)                  \
+    X(vkGetImageMemoryRequirements)      \
     X(vkGetPhysicalDeviceMemoryProperties) \
+    X(vkGetPhysicalDeviceQueueFamilyProperties) \
     X(vkMapMemory)                       \
+    X(vkQueueSubmit)                     \
+    X(vkQueueWaitIdle)                   \
     X(vkResetDescriptorPool)             \
     X(vkUnmapMemory)                     \
     X(vkUpdateDescriptorSets)

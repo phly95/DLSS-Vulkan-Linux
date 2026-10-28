@@ -5,18 +5,23 @@
 #extension GL_GOOGLE_include_directive : require
 
 // sr_downsample (k_sr_downsample): the level-15 full15 buffer -> the final output image, a 5x5
-// (separable) Catmull-Rom-ish FIR at half the output pitch, firefly-clamped to the tap min/max per
-// axis, then the inverse tonemap and the alpha from g_col.
+// (separable) FIR at 2/3 of the output pitch, firefly-clamped to the tap min/max per axis, then the
+// inverse tonemap and the alpha from g_col.
 //
-// PERF (2026-10-28, optimisation phase):
+// PERF (2026-10-28):
 //  - the f16 rounding emulation is gone (the `rh()`/`rh3()` chain after every FIR tap existed only
-//    to match NeuralHub's rounding bit for bit; the optimisation policy drops it): the FIR now
+//    to match NeuralHub's rounding bit for bit; the optimisation policy drops it): the FIR
 //    accumulates in f32 and the tap weights are plain f32 constants,
 //  - the inverse tonemap's three fma "remainder" pairs existed to emulate an exactly rounded IEEE
 //    divide (v_div_scale/fmas/fixup); a plain divide is allowed now,
-//  - the 28x28 LDS patch, the tap min/max clamp and the output geometry are unchanged: the patch
-//    load is linear (consecutive lanes stage consecutive pixels), the FIR reads are LDS, and the
-//    output store is 16 B per lane over a contiguous run.
+//  - the 28x28 LDS patch is staged as f32, not f16: the FIR reads it 25 times per output pixel and
+//    an f16 LDS element costs a load PLUS a v_cvt per tap (75 conversions a thread).
+//  TRIED AND REJECTED (pass 3): doing the whole FIR in f16, which is what NeuralHub's ISA does
+//  (v_fma_f16 per tap) and which would let RADV pack two channels per instruction. Measured
+//  3.491 ms against f32's 3.472, and the ISA explains it - ACO does not pack f16vec3 operands, so
+//  the vopd dual-issue count fell from 74 to 8 and the instruction count rose 623 -> 685. This
+//  kernel is ALU bound at ~74% of the issue peak; only fewer taps would make it faster, and the
+//  5x5 tap set is the spec.
 //
 // The ldr path (ldr != 0) is the SDR variant: linear values, no tonemap, 1/2047 and 1/1023 scales.
 
