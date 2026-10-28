@@ -580,7 +580,7 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         for (int i = 0; i < 2; ++i) {
             VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
             ici.imageType = VK_IMAGE_TYPE_2D;
-            ici.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+            ici.format = VK_FORMAT_R32G32B32A32_SFLOAT;
             ici.extent = {uint32_t(W15), uint32_t(H15), 1};
             ici.mipLevels = 1;
             ici.arrayLayers = 1;
@@ -605,7 +605,7 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
             VkImageViewCreateInfo ivci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
             ivci.image = c->sr_hist_img[i];
             ivci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-            ivci.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+            ivci.format = VK_FORMAT_R32G32B32A32_SFLOAT;
             ivci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
             vkCreateImageView(dev, &ivci, nullptr, &c->sr_hist_view[i]);
         }
