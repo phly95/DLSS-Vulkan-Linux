@@ -351,3 +351,38 @@ inputs are port-class - next: fold the fix's per-frame gains into the work order
 residual is closed as far as the spec can reach; upstream dec0/stage9 + l0's attention residue
 feed the rest). RR carries the same double-clip (rr_post_model 365-366 + rr_post.comp) - queued
 with the fresh-RR-leverage turn.
+
+### 2026-10-27 19:00: fresh RR leverage (the queued re-table) + the reconciled SR L table
+
+**RR F at HEAD (masks via multidump, all 9 frames, `pipeline_report` vs `rr_F_ref`):**
+
+| mask | f0 | f1 | f2 | f3 | f4 | f5 | f6 | f7 | f8 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| baseline | 37.84 | 33.72 | 32.48 | 32.90 | 37.68 | 34.01 | 32.43 | 32.74 | 32.26 |
+| gather / ae_block / ae_final | = baseline on every frame (exact) |
+| **enc0_feat** | **54.31** | **55.51** | 55.99 | 56.42 | 54.61 | 55.44 | 56.11 | 56.38 | 56.51 |
+| post_prep | 101.20 | 75.39 | 70.01 | 66.53 | 102.61 | 72.12 | 69.44 | 65.52 | 63.48 |
+| post | 118.83 | 117.13 | 117.55 | 117.04 | 117.27 | 117.13 | 117.32 | 117.30 | 117.29 |
+| downsample | 120.00 all frames |
+
+- **enc0_feat is RR's TOP lever: +16.5/+21.8 dB at f0/f1** (the pre-port table's "+4.6" is
+  superseded) - every frame reaches 54-56 with oracle E0be8. The port-fix child is in flight
+  (three pinned bugs, `4d2b62c`).
+- post_prep row (post's own given oracle cf2): after the RR bil fix (`c1d7850`) min 63.48 ->
+  **70.01**, mean 76.26 -> **85.99** (f1 75.39 -> 101.59); the residual cap (f3/f5-f8 at 70-76)
+  is the transcendental-ULP class + the unrenormalized two-candidate mix.
+- gather/ae exact; downsample 120.
+
+**SR L, reconciled (the named target; four commits of movement):**
+
+| state | f0 | f1 | f2 | f3 | f4 | f5 | f6 | f7 | f8 | min / mean |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| dummy l0_in + l-post (`a58586b`/`d73d418`) | 36.09.. | | | | | | | | | 32.87 / 33.70 |
+| real l0_in (`81b2015`) | 54.84 | 53.78 | 55.71 | 56.42 | **30.12** | 32.84 | 37.12 | 38.62 | 40.19 | 30.12 / 44.40 |
+| + bil fix (`159a694`) | 54.84 | 53.86 | 55.72 | 56.66 | 30.01 | 32.80 | 37.07 | 38.57 | 40.18 | 30.01 / 44.41 |
+| + sr_l0 ties-to-even (`fff6aaa`) | 55.04 | 54.16 | 55.84 | 56.74 | **30.08** | 32.82 | 37.11 | 38.60 | 40.19 | **30.08 / 44.51** |
+
+**Named target: SR L's f4 min drain (30.08 vs the field's 54-57).** The l0 tie residue dominated
+PRE-reset history and is fixed; after f4's reset the limiter is upstream - the mode-2/stage X1
+f16 residue (`k_sr_stage.md`, mode-2 closure attempt 2) runs through L's stages with real
+features now. L's mean is +10.8 dB over its pre-real-feature state; V4 needs min >= 50.
