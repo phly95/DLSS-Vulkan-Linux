@@ -576,8 +576,12 @@ def make_test(name, out_dir):
         open(os.path.join(out_dir, "in_spa.bin"), "wb").write(spa)
         open(os.path.join(out_dir, "in_rgh.bin"), "wb").write(rgh)
         open(os.path.join(out_dir, "in_expo.bin"), "wb").write(expo)
-        push = bytearray(16)
-        struct.pack_into("<4i", push, 0, w0, h0, w, h)
+        # binding 13: dq()'s dither table (u16[2048]; the real one is blob0's meta[20] region,
+        # here the same synthetic LCG table the SR enc0 fixtures use, so the dither path runs)
+        dither = ((np.arange(2048, dtype=np.uint64) * 2654435761 + 1013904223) & 0xFFFF).astype(np.uint16)
+        open(os.path.join(out_dir, "dither.bin"), "wb").write(dither.tobytes())
+        push = bytearray(32)
+        struct.pack_into("<4iIIIf", push, 0, w0, h0, w, h, 3, 0, 0, -0.43359375)
         cfg = {
             "groups": [(w0 + 15) // 16, (h0 + 15) // 16, 1],
             "push": push.hex(),
@@ -590,6 +594,7 @@ def make_test(name, out_dir):
                 {"binding": 5, "file": "in_spa.bin"},
                 {"binding": 6, "file": "in_rgh.bin"},
                 {"binding": 7, "file": "in_expo.bin"},
+                {"binding": 13, "file": "dither.bin"},
                 {"binding": 8, "bytes": w0 * h0 * 64, "output": "out_be8", "type": "u8"},
                 {"binding": 9, "bytes": w0 * h0 * 8, "output": "out_bec", "type": "f16"},
                 {"binding": 10, "bytes": n_pix * 8, "output": "out_bf6", "type": "f16"},

@@ -357,7 +357,10 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         // device the NGX host hands over.  The push range has to cover the shader's block, which
         // starts at offset 24 (scale) and ends at 31 (reset) - 8 bytes left both reading garbage.
         add_pipe("rr_ae_final", 4, 32);
-        add_pipe("rr_enc0_feat", 13, 16);
+        // rr_enc0_feat: 14 bindings (13 = wbuf, the dq() dither table at blob0's meta[20] offset),
+        // push 32 B = the oracle's E0Args words 0x00..0x1c this kernel reads (W0/H0/W/H, fc =
+        // E[0x19]&7 dither row, rst, the dither table's byte offset in binding 13, SC0).
+        add_pipe("rr_enc0_feat", 14, 32);
         add_pipe("rr_level", 14, 80);
         add_pipe("rr_post_prep", 4, 40);
         add_pipe("rr_post", 12, 184);
@@ -587,6 +590,14 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
                 std::string pj(pj_units.begin(), pj_units.end());
                 if (!rr_table_from_params(pj, static_cast<uint32_t*>(c->rr_tab.mapped)))
                     std::fprintf(stderr, "rr_level: params.json does not hold 16 units with meta and s1d2/4/6\n");
+                // rr_enc0_feat's SC0 (oracle E0Args +0x200): the blob's f16 scalar, the low half
+                // of params.json's enc0_s2598 word (rrref.cpp: E[0xb02] = enc0_s2598, SC0 =
+                // f16(E[0xb02] & 0xffff)).  Stashed in unit 0's rr_tab row at slot 27, past the
+                // 26 words rr_level reads (rr_level.comp: slots 0..26 only).
+                auto sc = jget(pj, "enc0_s2598");
+                uint32_t* tab = static_cast<uint32_t*>(c->rr_tab.mapped);
+                if (!sc.empty()) tab[27] = uint32_t(sc[0]) & 0xFFFFu;
+                else std::fprintf(stderr, "rr_enc0_feat: params.json has no enc0_s2598 (SC0)\n");
             }
             auto bc = slurp(wdir + "/bicubic.bin");
             Buffer& e0d02 = c->ue["E0d02"];
@@ -883,6 +894,16 @@ Buffer* FrameChain::rr_buf(const std::string& n) {
     if (n == "E0bec") return &bec;          // enc0 bec, read by launch 5 at +0x88
     auto it = ue.find(n);
     return it == ue.end() ? nullptr : &it->second;
+}
+
+// f16 bits -> f32 (rr_enc0_feat's SC0 comes out of params.json as the low half of enc0_s2598).
+static float f16_bits_to_f32(uint32_t h) {
+    uint32_t s = (h & 0x8000u) << 16, e = (h >> 10) & 31u, m = h & 0x3FFu;
+    float v;
+    if (e == 0u) v = float(m) * 5.9604644775390625e-08f;
+    else if (e == 31u) { uint32_t b = s | 0x7F800000u | (m << 13); std::memcpy(&v, &b, 4); return v; }
+    else { uint32_t b = s | ((e + 112u) << 23) | (m << 13); std::memcpy(&v, &b, 4); return v; }
+    return (h & 0x8000u) ? -v : v;
 }
 
 void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
@@ -1320,12 +1341,25 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
         }
         // 3. Enc0 feat (launch 3 + roff)
         {
-            uint8_t push[16] = {0};
+            uint8_t push[32] = {0};
             std::memcpy(push + 0, &W0, 4); std::memcpy(push + 4, &H0, 4);
             std::memcpy(push + 8, &W, 4); std::memcpy(push + 12, &H, 4);
+            // E0Args +0x10 fc = E[0x19] & 7 (the dq() dither row; this->fc is the same 8-frame
+            // ring), +0x14 rst (the history gate; the port has no history branch yet - OPEN1),
+            // +0x198's table offset inside binding 13 (blob0's meta[20] = 37984, rr_tab slot 20),
+            // +0x200 SC0 (params.json enc0_s2598 f16[0], stashed at rr_tab slot 27).
+            const uint32_t fc7 = uint32_t(fc) & 7u, rst32 = uint32_t(reset);
+            const uint32_t* tab = static_cast<const uint32_t*>(rr_tab.mapped);
+            const uint32_t dith_off = uint32_t(rr_blob_off[0]) + (tab ? tab[20] : 0u);
+            const float sc0 = f16_bits_to_f32(tab ? tab[27] : 0u);
+            std::memcpy(push + 16, &fc7, 4);
+            std::memcpy(push + 20, &rst32, 4);
+            std::memcpy(push + 24, &dith_off, 4);
+            std::memcpy(push + 28, &sc0, 4);
             trace_label = "launch " + std::to_string(3 + roff) + " k_enc0_feat";
             dispatch(cmd, "rr_enc0_feat", {&g_col, &g_mv, &g_dep, &out_norm, &out_alb, &out_spa, &out_rough_, &expo,
-                                     &t_act[0], &bec, &bf6, &bfa, &bfe}, push, 16, (W0 + 15) / 16, (H0 + 15) / 16, 1);
+                                     &t_act[0], &bec, &bf6, &bfa, &bfe, &wbuf}, push, 32,
+                     (W0 + 15) / 16, (H0 + 15) / 16, 1);
             inject_after(cmd, "enc0_feat", 3 + roff);
         }
         // 4. U-Net: one rr_level dispatch per oracle k_level launch (launches 4 + roff + u).

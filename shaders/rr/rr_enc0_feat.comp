@@ -4,6 +4,18 @@
 #extension GL_EXT_shader_16bit_storage : enable
 #extension GL_EXT_shader_8bit_storage : enable
 
+// k_enc0_feat (RR preset F, oracle launches 3/4): the producer of E0be8, the [2][H0][W0][32] fp8
+// feature tensor.  SPEC: tools/rr/rr_enc0feat_model.py (frame0 100.0000% bit-exact vs the oracle;
+// this port follows its sections 2-4):
+//   * every stored channel goes through dq(), the dithered e4m3 quantizer (dither table =
+//     wbuf[0:4096] as u16[2048] = blob0's meta[20] region, binding 13; fc = E[0x19] & 7 ring),
+//   * c02 = alb.g / c29 = alb.r (the F3 port had them swapped),
+//   * the 12 SC_TM slots hold SC0*tm(col_c*expo) (the F3 port wrote mv*3 there),
+//   * zeros / -0 / 1.0 / dep / spa all through dq() (the dither flips {18,19}, {56,57}, {48,49}
+//     and the single d==0 cell of each dither row turns dq(-0.0) into 0x00).
+// The history branch (oracle args +0x14 rst = 0 frames) is not ported yet (OPEN1 in the model);
+// the 24 history-fed channels + c36 keep the reset-frame values on history frames.
+
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) readonly buffer InCol   { f16vec4 g_col[]; };
@@ -20,25 +32,103 @@ layout(set = 0, binding = 9) writeonly buffer OutBec { f16vec4 out_bec[]; };
 layout(set = 0, binding = 10) writeonly buffer OutBf6 { f16vec4 out_bf6[]; };
 layout(set = 0, binding = 11) writeonly buffer OutBfa { f16vec2 out_bfa[]; };
 layout(set = 0, binding = 12) writeonly buffer OutBfe { f16vec2 out_bfe[]; };
+// dq()'s dither table (oracle E0Args +0x198 wbuf = blob0 + meta[20] = blob0 + 37984; u16[2048]).
+layout(set = 0, binding = 13) readonly buffer InDither { uint8_t dith[]; };
 
 layout(push_constant) uniform RrE0Args {
-    int W0;
+    int W0;               // +0x00 (oracle E0Args +0x00: W0, H0)
     int H0;
-    int W;
+    int W;                // +0x08 (render W, H)
     int H;
+    uint fc;              // +0x10 E0Args +0x10 = E[0x19] & 7: the dq() dither row
+    uint rst;             // +0x14 E0Args +0x14: history gate (unused here, see the header note)
+    uint dith_off;        // +0x18 byte offset of the dither table inside binding 13
+    float SC0;            // +0x1c E0Args +0x200: the blob's f16 scalar (params.json enc0_s2598)
 };
 
-uint f32_to_e4m3_rne(float x) {
-    if (isnan(x)) return 0x7fu;
-    uint sign = (x < 0.0) ? 0x80u : 0u;
+// ---------------------------------------------------------------- helpers
+
+// f16 rounding with a signbit test (RADV folds float16_t casts - shaders/include/rh.glsl's law;
+// signbit instead of (x < 0.0) because GLSL (-0.0 < 0.0) is false and dq(-0.0) must keep -0
+// through its round trips).
+float rh_s(float x) {
+    uint b = floatBitsToUint(x);
+    uint sgn = b & 0x80000000u;
+    float a = abs(x);
+    if (a >= 6.103515625e-05) {                      // normal f16 (>= 2^-14): 11 significant bits
+        uint ab = b & 0x7fffffffu;
+        uint r = (ab + 0xfffu + ((ab >> 13u) & 1u)) & 0xffffe000u;
+        return uintBitsToFloat(sgn | r);
+    }
+    float q = roundEven(a * 16777216.0) * 5.9604644775390625e-08;   // subnormal f16: multiples of 2^-24
+    return ((b >> 31u) != 0u) ? -q : q;
+}
+
+// f16 bit pattern of a finite f16-representable f32 (after rh_s, so no rounding is left);
+// NaN -> 0x7e00, the pattern np.float16(NaN) produces on the feature path.
+uint f32_to_f16_bits(float x) {
+    uint b = floatBitsToUint(x);
+    uint s = (b >> 16u) & 0x8000u;
+    float a = abs(x);
+    if (a != a) return 0x7E00u;
+    if (a >= 6.103515625e-05) {                      // normal f16
+        uint e32 = (b >> 23u) & 0xffu;
+        uint m = b & 0x7fffffu;
+        return s | ((e32 - 112u) << 10u) | (m >> 13u);
+    }
+    if (a == 0.0) return s;
+    return s | uint(a * 16777216.0);                 // subnormal f16: multiples of 2^-24
+}
+
+// f16 bits -> f32, exact (subnormals, +-inf, NaN).
+float f16_bits_to_f32(uint h) {
+    uint s = (h & 0x8000u) << 16u;
+    uint e = (h >> 10u) & 31u;
+    uint m = h & 0x3FFu;
+    if (e == 0u) {
+        float v = float(m) * 5.9604644775390625e-08;
+        return ((h & 0x8000u) != 0u) ? -v : v;
+    }
+    if (e == 31u) return uintBitsToFloat(s | 0x7F800000u | (m << 13u));
+    return uintBitsToFloat(s | ((e + 112u) << 23u) | (m << 13u));
+}
+
+// The model's q8r (tools/rr/rr_enc0feat_model.py): f32 -> e4m3, RNE saturating at 448; signbit so
+// -0.0 -> 0x80; the subnormal grid is RNE (ties-to-even) - the dq() 3-bit truncation grid lands
+// |t| exactly on (n+0.5)*2^-9 whenever k = 4m+2, and hardware v_cvt_pk_fp8_f32 is even there.
+uint q8r(float x) {
+    uint sign = ((floatBitsToUint(x) >> 31u) != 0u) ? 0x80u : 0u;
     float a = min(abs(x), 448.0);
+    uint bits = floatBitsToUint(a);
     if (a < 0.015625) {
-        uint sub = uint(floor(a * 512.0 + 0.5));
+        float s512 = a * 512.0;
+        float nf = floor(s512);
+        uint n = uint(nf);
+        float d = s512 - nf;
+        uint sub = ((d > 0.5) || (d == 0.5 && ((n & 1u) != 0u))) ? n + 1u : n;
         return sign | sub;
     }
-    uint bits = floatBitsToUint(a);
-    uint norm = uint((bits + 0x407ffffu + ((bits >> 20u) & 1u)) >> 20u);
+    uint norm = (bits + 0x407ffffu + ((bits >> 20u) & 1u)) >> 20u;
     return sign | (norm & 0x7fu);
+}
+
+// dq(x): the feature quantizer (model SPEC 2, same law as sr_enc0.comp's dq): x16 = f16(min(x,
+// 1024)) with NaN -> 0, dither d = dith[idx] >> 9 folded into the f16 exponent field, two f16
+// round trips, the three high mantissa bits kept (3-bit truncation), clip, q8r.  idx indexes the
+// GRID coordinates (fc&7 row, y&15, x&15).
+uint dq(float x, uint xi, uint yi) {
+    float x16 = rh_s(isnan(x) ? 0.0 : min(x, 1024.0));
+    uint h = f32_to_f16_bits(x16);
+    uint idx = ((fc & 7u) << 8u) | ((yi & 15u) << 4u) | (xi & 15u);
+    uint bo = dith_off + 2u * idx;
+    uint d = (uint(dith[bo]) | (uint(dith[bo + 1u]) << 8u)) >> 9u;
+    uint E = h & 0xFC00u;
+    float K = f16_bits_to_f32(E | d);
+    float a = rh_s(x16 + K);
+    float b = rh_s(a - f16_bits_to_f32(E));
+    float t = f16_bits_to_f32(f32_to_f16_bits(b) & 0xFF80u);
+    float tc = (t != t) ? t : min(max(t, -448.0), 448.0);
+    return q8r(tc);
 }
 
 void main() {
@@ -65,11 +155,7 @@ void main() {
         out_bf6[idx] = f16vec4(mv3.x, mv3.y, mv3.x, mv3.y);
     }
 
-    // Feature encoding for out_be8 in [C/32][H][W][32] layout
-    int N = W0 * H0;
-    int base0 = idx0 * 32;
-    int base1 = N * 32 + idx0 * 32;
-
+    // Feature encoding for out_be8 in [2][H0][W0][32] layout (model SPEC 3/4)
     float col_r = float(c.r) * expo;
     float col_g = float(c.g) * expo;
     float col_b = float(c.b) * expo;
@@ -78,52 +164,32 @@ void main() {
     float tm_b = 0.36 * (log2(max(1.0 + 100.0 * col_b, 0.0001)) * 0.3010299956639812);
 
     vec4 a_val = (x < W && y_src < H) ? g_alb[in_idx] : vec4(0.0);
-    f16vec2 mv_val = (x < W && y_src < H) ? g_mv[in_idx] : f16vec2(0.0);
+    vec4 s_val = (x < W && y_src < H) ? g_spa[in_idx] : vec4(0.0);
     float dep_val = (x < W && y_src < H) ? g_dep[in_idx] : 0.0;
 
-    // Group 0 (channels 0..31)
-    out_be8[base0 + 0]  = uint8_t(f32_to_e4m3_rne(tm_r));
-    out_be8[base0 + 1]  = uint8_t(f32_to_e4m3_rne(tm_g));
-    out_be8[base0 + 2]  = uint8_t(f32_to_e4m3_rne(a_val.r));
-    out_be8[base0 + 3]  = uint8_t(f32_to_e4m3_rne(a_val.b));
-    out_be8[base0 + 4]  = uint8_t(f32_to_e4m3_rne(tm_b));
-    out_be8[base0 + 5]  = uint8_t(f32_to_e4m3_rne(float(mv_val.x) * 3.0));
-    out_be8[base0 + 6]  = uint8_t(0x12);
-    out_be8[base0 + 7]  = uint8_t(0x12);
-    out_be8[base0 + 8]  = uint8_t(f32_to_e4m3_rne(float(mv_val.x) * 3.0));
-    out_be8[base0 + 9]  = uint8_t(f32_to_e4m3_rne(float(mv_val.y) * 3.0));
-    out_be8[base0 + 10] = uint8_t(0x12);
-    out_be8[base0 + 11] = uint8_t(0x00);
-    out_be8[base0 + 12] = uint8_t(f32_to_e4m3_rne(float(mv_val.x) * 3.0));
-    out_be8[base0 + 13] = uint8_t(f32_to_e4m3_rne(float(mv_val.x) * 3.0));
-    out_be8[base0 + 14] = uint8_t(0x00);
-    out_be8[base0 + 15] = uint8_t(0x38); // 1.0
-    out_be8[base0 + 16] = uint8_t(f32_to_e4m3_rne(float(mv_val.y) * 3.0));
-    out_be8[base0 + 17] = uint8_t(f32_to_e4m3_rne(float(mv_val.x) * 3.0));
-    out_be8[base0 + 18] = uint8_t(0x30); // 0.5
-    out_be8[base0 + 19] = uint8_t(0x00);
-    out_be8[base0 + 20] = uint8_t(f32_to_e4m3_rne(float(mv_val.x) * 3.0));
-    out_be8[base0 + 21] = uint8_t(f32_to_e4m3_rne(float(mv_val.y) * 3.0));
-    out_be8[base0 + 22] = uint8_t(0x80);
-    out_be8[base0 + 23] = uint8_t(0x80);
-    out_be8[base0 + 24] = uint8_t(f32_to_e4m3_rne(float(mv_val.x) * 3.0));
-    out_be8[base0 + 25] = uint8_t(f32_to_e4m3_rne(float(mv_val.x) * 3.0));
-    out_be8[base0 + 26] = uint8_t(0x80);
-    out_be8[base0 + 27] = uint8_t(0x80);
-    out_be8[base0 + 28] = uint8_t(f32_to_e4m3_rne(float(mv_val.y) * 3.0));
-    out_be8[base0 + 29] = uint8_t(0x04);
-    out_be8[base0 + 30] = uint8_t(0x00);
-    out_be8[base0 + 31] = uint8_t(0x00);
+    float scr = SC0 * tm_r;                 // SC_TM: SC0 * tm(col_c * expo)
+    float scg = SC0 * tm_g;
+    float scb = SC0 * tm_b;
 
-    // Group 1 (channels 32..63)
-    for (int k = 0; k < 32; ++k) {
-        out_be8[base1 + k] = uint8_t(0x00);
+    // The 64 stored channels (model build_features); unmapped slots stay +0.0.
+    float feat[64];
+    for (int i = 0; i < 64; ++i) feat[i] = 0.0;
+    feat[0] = tm_r; feat[1] = tm_g; feat[4] = tm_b;                    // TM_COL
+    feat[2] = a_val.g; feat[3] = a_val.b; feat[29] = a_val.r;          // ALB
+    feat[5] = scr;  feat[12] = scr;  feat[17] = scr;  feat[24] = scr;  feat[37] = scr;
+    feat[8] = scg;  feat[13] = scg;  feat[20] = scg;  feat[25] = scg;  feat[40] = scg;
+    feat[9] = scb;  feat[16] = scb;  feat[21] = scb;  feat[28] = scb;  feat[41] = scb;
+    feat[6] = min(s_val.r, 2.0); feat[7] = min(s_val.g, 2.0); feat[10] = min(s_val.b, 2.0);
+    feat[15] = 1.0;                                   // min(2, const 1.0)
+    feat[18] = min(dep_val, 2.0);                     // min(2, dep)
+    feat[22] = -0.0; feat[23] = -0.0; feat[26] = -0.0; feat[27] = -0.0;   // NEG0 -> dq(-0.0)
+    feat[45] = -0.0; feat[48] = -0.0; feat[49] = -0.0; feat[52] = -0.0;
+
+    int N = W0 * H0;
+    int base0 = idx0 * 32;
+    int base1 = N * 32 + idx0 * 32;
+    for (int i = 0; i < 64; ++i) {
+        uint b = dq(feat[i], uint(x), uint(y));
+        out_be8[((i < 32) ? base0 : base1) + (i & 31)] = uint8_t(b);
     }
-    out_be8[base1 + 5]  = uint8_t(f32_to_e4m3_rne(float(mv_val.x) * 3.0));
-    out_be8[base1 + 8]  = uint8_t(f32_to_e4m3_rne(float(mv_val.x) * 3.0));
-    out_be8[base1 + 9]  = uint8_t(f32_to_e4m3_rne(float(mv_val.y) * 3.0));
-    out_be8[base1 + 13] = uint8_t(0x80);
-    out_be8[base1 + 16] = uint8_t(0x80);
-    out_be8[base1 + 17] = uint8_t(0x80);
-    out_be8[base1 + 20] = uint8_t(0x80);
 }
