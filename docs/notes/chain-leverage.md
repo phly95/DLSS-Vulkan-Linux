@@ -394,3 +394,22 @@ landing exactly on the enc0_feat-injection row (reset frames skip the history br
 residual to the oracle-perfect row on history frames is the port's MISSING history branch (F5
 spec: gate=rst, E0c0e@C/2 + E0c12@C/4, pj, SC0*tm, c36; c22-family pending) plus post's
 transcendental-ULP cap - the next RR task.
+
+### 2026-10-27 23:00: fresh RR leverage after the history-branch port (`2d5342b`)
+
+| mask | f0 | f1 | f2 | f3 | f4 | f5 | f6 | f7 | f8 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| baseline | 54.31 | 36.95 | 34.56 | 35.47 | 54.61 | 37.10 | 34.66 | 34.57 | 34.12 |
+| gather | = baseline (exact) |
+| **enc0_feat** | 54.31 | **55.57** | **56.13** | **56.71** | 54.61 | **55.49** | **56.25** | **56.73** | **57.30** |
+| post_prep | 101.20 | 101.59 | 100.90 | 74.59 | 102.61 | 76.04 | 74.78 | 70.01 | 72.18 |
+| post | 118.83 | 117.13 | 117.55 | 117.04 | 117.27 | 117.13 | 117.32 | 117.30 | 117.29 |
+
+Post_prep row byte-identical to the previous run (rr_post untouched - cross-check of the method).
+**RR's ranked levers now:** (1) the REMAINING E0be8 gap (c22-family 8 channels: port 85.97-87.57%
+vs oracle; oracle-perfect inject = +18.6/+21.9 on f1/f2-f8) - partially decoded in
+build/agents/e0be8-history/progress.md Step 4 (E0c02 i8/127 bilinears x SC1 at C/3; c23 at 71.70%,
+c22/c26/c27 unpinned); (2) the U-Net->post segment with oracle features (enc0_feat-row ceiling
+55-57, capped by post's own non-border residual per post_prep rows 70-76 on history frames = the
+transcendental-ULP class); (3) gather/ae/downsample exact - closed. The c22-family + upstream
+history fidelity (k_post/pooled2 ULP) are the two active fronts.
