@@ -447,3 +447,23 @@ Remaining fronts (ranked):
    leverage must be RE-MEASURED on the fixed chain before any further X1 sessions (its old
    33.76-baseline leverage numbers are superseded by this table).
 3. gather/ae/downsample/exposure exact - closed; c22-family/OPEN1 - closed (`fb8e9a7`).
+
+### 2026-10-28: mode-2 leverage RE-MEASURED on the reset-fixed chain (SR M, `9ff6ba9`)
+
+| inject mask | f0 | f1 | f2 | f3 | f4 | f5 | f6 | f7 | f8 | min | mean | vs baseline |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| baseline | 53.82 | 54.49 | 54.64 | 55.33 | 55.82 | 56.18 | 56.51 | 56.83 | 57.17 | 53.82 | 55.64 | - |
+| stage8 | 66.00 | 60.52 | 58.74 | 58.94 | 58.79 | 58.83 | 58.98 | 59.18 | 59.42 | 58.74 | 59.48 | +4.92 / +3.84 |
+| **stage9** | 106.75 | 106.30 | 101.44 | 99.87 | 98.21 | 96.90 | 95.48 | 94.71 | 94.27 | **94.27** | **99.22** | **+40.45 / +43.58** |
+| hist | 53.82 | 57.83 | 59.41 | 64.65 | 63.59 | 65.55 | 67.81 | 66.14 | 67.61 | 53.82 | 62.05 | +0.00 / +6.41 |
+
+Reading (non-additive subsets - do NOT quote subset deltas as shares): with oracle t8 at
+stage9's output EVERY frame lands 94-106 dB, i.e. **the entire remaining SR M error after the
+reset fix is concentrated in stage9's own segment** (oracle launch 12, the mode-2 pair with
+launch 11). GPU==model is 100% there, so the residue is the MODEL's (99.62-99.88% vs oracle on
+launches 11/12) - exactly the X1-residue the ctx-instrument session was built to close (fixed
+instrument + first clean attention-boundary bytes in `13eed3a`; fragment-map closure = the
+bounded next step, its leverage NOW re-measured at +40/+43). The hist row: f0 unchanged (f0's
+start state was already zero-at-creation = the dump's), later frames +1..+10 - upstream temporal
+fidelity is the SECOND SR front after mode-2 closure. The pre-fix stage9 reading (106.75/77.96
+against a 33.76-min chain) is superseded by this table.
