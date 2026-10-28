@@ -79,6 +79,8 @@ def main() -> int:
     ap.add_argument("--work", default=os.path.join(ROOT, "build", "work", "qguard"))
     ap.add_argument("--lock", default="/home/deck/dlss5-wt/gpu.lock")
     ap.add_argument("--no-run", action="store_true", help="score existing outputs in --work")
+    ap.add_argument("--keep", action="store_true",
+                    help="keep the out_<i>.f32 frames after scoring (default: delete them - a run is ~3 GB)")
     a = ap.parse_args()
     ok_all = True
     for P in a.presets.split(","):
@@ -97,6 +99,10 @@ def main() -> int:
                         ok_all = False
                         continue
             rows = score(out, ref, gt)
+            if not a.keep and not a.no_run:
+                for f in os.listdir(out):
+                    if f.startswith("out_") and f.endswith(".f32"):
+                        os.remove(os.path.join(out, f))
             d = [pg - rg for _, _, pg, rg, _, _ in rows]
             td = [tp - tr for *_, tp, tr in rows if tp is not None]
             mn_pr = min(r[1] for r in rows)
