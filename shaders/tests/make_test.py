@@ -383,6 +383,37 @@ def make_test(name, out_dir):
                 {"binding": 5, "file": "wrepT.bin"}
             ]
         }
+    elif name in ("sr_swin64m0", "sr_swin96m0", "sr_swin64m2", "sr_swin96m2"):
+        # Fused block (Opus proposal 1): the split chain's sr_swin fixture plus binding 6 (the
+        # mode wire - m0 writes the low grid there, m2 reads the encoder skip), on the group
+        # grid: 16x16 render / ceil(16/8) = 2x2 groups of 8x8 pixels. O7 runs the f16 build,
+        # which is the proven scalar body over that grid and never touches binding 6 - so the
+        # low grid is a plain buffer here, NOT an output (a constant one fails O7).
+        open(os.path.join(out_dir, "in_act.bin"), "wb").write(
+            np.tile(np.linspace(1, 250, 4096, dtype=np.uint8), 16).tobytes())       # 65536 B
+        open(os.path.join(out_dir, "wbuf.bin"), "wb").write(
+            np.tile(np.linspace(0.5, 2.0, 32768, dtype=np.float16).tobytes(), 6))   # 393216 B
+        open(os.path.join(out_dir, "wrep.bin"), "wb").write(
+            np.tile(np.linspace(0.05, 0.5, 32768, dtype=np.float16).tobytes(), 6))  # 393216 B
+        open(os.path.join(out_dir, "wvec.bin"), "wb").write(
+            np.linspace(0.25, 1.75, 4096, dtype=np.float32).tobytes() * 4)          # 65536 B
+        open(os.path.join(out_dir, "wrepT.bin"), "wb").write(
+            np.tile(np.linspace(0.05, 0.5, 32768, dtype=np.uint8).tobytes(), 4))    # 131072 B
+        push = bytearray(56)
+        struct.pack_into("<4i", push, 40, 16, 16, 0, 0)
+        cfg = {
+            "groups": [2, 2, 1],
+            "push": push.hex(),
+            "bindings": [
+                {"binding": 0, "file": "wbuf.bin"},
+                {"binding": 1, "file": "in_act.bin"},
+                {"binding": 2, "bytes": 65536, "output": "out_act", "type": "u8"},
+                {"binding": 3, "file": "wrep.bin"},
+                {"binding": 4, "file": "wvec.bin"},
+                {"binding": 5, "file": "wrepT.bin"},
+                {"binding": 6, "bytes": 65536}
+            ]
+        }
     elif name in ("sr_swin_proj", "sr_swin_proj64", "sr_swin_proj96"):
         # mode-0 patch projection: wbuf16 (dn_b), in_act (the block's output, fp8), out_act2,
         # wrep (dn_W). Push is the same StageArgs; the grid covers the low-pixel tiles.

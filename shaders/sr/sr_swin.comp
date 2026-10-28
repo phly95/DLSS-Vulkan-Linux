@@ -26,10 +26,20 @@
 //     ~4.2 KB at C=64 (7 waves/SIMD), ~5.2 KB at C=96 (6 waves/SIMD) - main's fused stage sits at
 //     28 KB and 2.
 //
-// Mode-agnostic on purpose: the two mode-specific pieces (mode 0's 2x2 patch-concat projection,
-// mode 2's up-projection + skip) are separate dispatches (sr_swin_proj.comp / sr_swin_up.comp),
-// per the optimisation-phase split. The only mode knowledge left is the gain1 offset, which sits
-// behind mode 2's up_W/up_b in the blob (same walk sr_stage uses).
+// FUSED MODE STRUCTURE (Opus proposal 1): one wave owns a 2x2 window group (8x8 pixels,
+// dispatch ceil((dim+shift)/8) a side) and runs its four windows sequentially.
+//   mode 0 (NR_SW_M0, stages 0/1): each window also drops its 16 pixels into the group's
+//     concat tile sCat[16 lowpix][4C]; after the 4th window the projection GEMM runs from
+//     sCat and STREAMS bias + clamp(+-6.28125) + E4M3 into the low grid on binding 6.
+//     sr_swin_proj's dispatch is gone (its arithmetic is byte-for-byte sr_swin_proj.comp's).
+//   mode 2 (NR_SW_M2, stages 8/9): a prologue gathers the group's 16 parents from the low
+//     tensor (binding 1, reflect in LOW coords) and runs up = low . Wup^T (M=16, N=4C,
+//     K=Cn), streaming p = E4M3(up+up_b) + skip (binding 6, at reflect(token)) into
+//     sIn[64 tokens][C]; each window then reads its input from sIn at its own token slot.
+//     sr_swin_up's dispatch and the t2/t0 scratch round trip are gone.
+// The mode is a COMPILE-time define (sr_stage_c64m0's pattern), so each build carries only
+// its own LDS and O7 runs both halves. Without a mode define this file is the split chain
+// (A/B: DLSS5_AMD_SWIN_SEP=1), bit-for-bit today's behaviour.
 //
 // Arithmetic follows tools/sr/sr_stage_model.py: quantisation points (norm/Q/ctx/hidden to fp8,
 // probabilities f16), the scaled nr_swin_exp curve and nhgelu are kept; the R9 rounding closure is
@@ -45,6 +55,15 @@
 #define NT   (SR_C / 16)     // N tiles of a C-wide output / K=16 chunks of a C-wide input
 #define NBLK (SR_C / 8)      // MLP blocks
 #define NC   (SR_C / 32)     // 32-channel groups
+#if SR_C == 64
+#define SR_CN 96
+#else
+#define SR_CN 128
+#endif
+
+#if defined(NR_SW_M0) || defined(NR_SW_M2)
+#define SWIN_FUSED 1
+#endif
 
 layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
 
@@ -69,6 +88,9 @@ layout(set = 0, binding = 4, std430) readonly buffer WVec { uvec4 wv4[]; };
 // is 256 contiguous bytes [n][k], so each cooperative-matrix load is stride 16 (a literal) with
 // the tile index in the address immediate.
 layout(set = 0, binding = 5, std430) readonly buffer WRepT { NR_OPERAND wrepT[]; };
+// Binding 6 is the mode wire: mode 0 WRITES the projection result here (the low tensor),
+// mode 2 READS the encoder skip here. Read-write because both modes share the slot.
+layout(set = 0, binding = 6) buffer Bnd6 { NR_OPERAND b6[]; };
 
 layout(push_constant) uniform StageArgs {
     uint wbuf_lo;
@@ -176,16 +198,22 @@ float e4m3_to_f32(uint b) {
 // The RADV/FP8 build: transposed register-chained dataflow. The private state is arrays of
 // cooperative-matrix fragments (st[NT], nst8[NT]) indexed by the (constant-trip) tile loops.
 #ifndef NR_OPERAND_F16
-void main() {
+#ifdef SWIN_FUSED
+// Group storage: one wave per group, single-wave program order - no barriers anywhere
+// (sr_swin_proj ships the same pattern, and sr_stage.comp: "ACO fences LDS within the wave").
+#ifdef NR_SW_M0
+shared NR_OPERAND sCat[16 * (4 * SR_C)];     // [16 low pixels][4C] fp8, LOGICAL channel order
+#else
+shared NR_OPERAND sIn[64 * SR_C];            // [64 group tokens][C] fp8, stored byte order
+shared NR_OPERAND sLow[16 * SR_CN];          // [16 parents][Cn] fp8, LOGICAL (the up A operand)
+#endif
+#endif
+void blk_radv(int x0, int y0, int gx8, int gy8) {
     uint tid = gl_LocalInvocationID.x;
     uint tok = tid & 15u;     // token inside the window (staging / output view)
     uint col = tid & 15u;     // column inside a 16-wide fragment tile (fragment view)
     uint rowh = tid >> 4u;    // which 8-row half this lane's components belong to
 
-    int gx = int(gl_WorkGroupID.x);
-    int gy = int(gl_WorkGroupID.y);
-    int x0 = gx * 4 - shiftX;
-    int y0 = gy * 4 - shiftY;
     int dx = int(tok & 3u);
     int dy = int(tok >> 2u);
     int px = reflect_coord(x0 + dx, dimW);
@@ -216,6 +244,18 @@ void main() {
     NR_FRAG_ACC st[NT];
     NR_FRAG_B nst8[NT];             // norm outputs: e4m3 fragments, encoded ONCE at the norm
                                     // (D2 encode-once) and copied into every operand role
+#ifdef NR_SW_M2
+    // Mode 2: the block's input is the up prologue's sIn at this window's group token slot
+    // (the legacy per-token rule: parent = reflect(T>>1) is already embedded there).
+    {
+        uint gtx = uint(x0 + int(col & 3u) - gx8);
+        uint gty = uint(y0 + int(col >> 2u) - gy8);
+        uint gtok = 8u * gty + gtx;
+        for (uint t = 0u; t < NT; ++t)
+            for (uint i = 0u; i < 8u; ++i)
+                st[t][i] = float(sIn[gtok * SR_C + 16u * t + 8u * rowh + i]);
+    }
+#else
     for (uint t = 0u; t < NT; ++t) {
         uint byte = ((t >> 1u) * HW + pos) * 32u + (t & 1u) * 16u + rowh * 8u;
         uvec4 q = in_act4[byte >> 4u];
@@ -223,6 +263,7 @@ void main() {
         for (uint i = 0u; i < 4u; ++i)  st[t][i]      = e4m3_to_f32(byte_of(h2.x, i));
         for (uint i = 0u; i < 4u; ++i)  st[t][4u + i] = e4m3_to_f32(byte_of(h2.y, i));
     }
+#endif
 
     // ---- OPUS PROTOTYPE 2: transposed, register-resident block. The residual stream st[t] is an
     // accumulator with rows = channels (16t + 8*rowh + i) and lane column = token (col): Wo and fc2
@@ -385,8 +426,183 @@ void main() {
             }
         }
     }
+#ifdef NR_SW_M0
+    // Mode 0: this token's 8 channels into the group's concat tile. Row = the low pixel
+    // (4*(y>>1 - lowY0) + (x>>1 - lowX0), tile-local), k = quad*C + LOGICAL channel -
+    // sr_stage's sN8[pix*K4 + quad*C + c] exactly. Ungated like sr_stage's: an out-of-image
+    // token writes a row the epilogue never reads (dims and shifts are even, so an in-image
+    // low pixel's four quads are in-image).
+    {
+        int lowX0 = gx8 >> 1;
+        int lowY0 = gy8 >> 1;
+        uint K4c = 4u * SR_C;
+        uint qq = uint(dx & 1) + 2u * uint(dy & 1);
+        uint lrow = 4u * (uint((y0 + dy) >> 1) - uint(lowY0))
+                  + (uint((x0 + dx) >> 1) - uint(lowX0));
+        for (uint t = 0u; t < NT; ++t)
+            for (uint i = 0u; i < 8u; ++i) {
+                uint b = 16u * t + 8u * rowh + i;              // stored/basis channel
+                uint logical = (b & ~31u) | perm_P(b & 31u);   // dn_W speaks logical
+                sCat[lrow * K4c + qq * SR_C + logical] = NR_OPERAND(quant8(st[t][i]));
+            }
+    }
+#endif
 }
 
+#ifdef SWIN_FUSED
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint col = tid & 15u;     // column inside a 16-wide fragment tile (fragment view)
+    uint rowh = tid >> 4u;    // which 8-row half this lane's components belong to
+
+    int gx = int(gl_WorkGroupID.x);
+    int gy = int(gl_WorkGroupID.y);
+    // The dispatch is over 8x8 pixel GROUPS now: ceil((dim + shift)/8) a side. One wave owns
+    // the group and runs its four 4x4 windows sequentially, so every cross-window hand-off is
+    // same-wave program order (sr_proj's own rule: single-wave LDS needs no barrier).
+    int gx8 = gx * 8 - shiftX;             // group render origin (shift is 0 or 2: even)
+    int gy8 = gy * 8 - shiftY;
+    int lowX0 = gx8 >> 1;                  // group low origin
+    int lowY0 = gy8 >> 1;
+
+    uint HW = uint(dimH * dimW);
+    uint W2 = uint(dimW) >> 1;
+    uint H2 = uint(dimH) >> 1;
+    uint HW2 = W2 * H2;
+    uint w_off = wbuf_lo & 0x1fffffu;
+    uint K4 = 4u * SR_C;
+#ifdef NR_SW_M2
+    // ================================================================================
+    // Mode 2 PROLOGUE (once per group): up = low . Wup^T, + up_b + skip -> sIn[64 tokens][C].
+    // Gather the group's 16 parents (low-res reflection inside the gather, exactly
+    // sr_swin_up's), then one streamed M=16 x K=Cn x N=4C GEMM: element (parent = 8*rowh+comp,
+    // channel n = 16*n0+col) is one (q, c) of one group token, so it lands straight in that
+    // token's sIn slot - no staging tile, no second quantisation point (sr_swin_up's chain:
+    // p = E4M3(up + up_b), x = E4M3(p + skip)).
+    // ================================================================================
+    {
+        uint par = tid & 15u;
+        uint h = tid >> 4u;                 // cg-parity split across both lane halves
+        int qx = reflect_coord(lowX0 + int(par & 3u), int(W2));
+        int qy = reflect_coord(lowY0 + int(par >> 2u), int(H2));
+        uint lpos = uint(qy) * W2 + uint(qx);
+        for (uint cg = h; cg < SR_CN / 32u; cg += 2u) {
+            uint grp = (cg * HW2 + lpos) * 32u;
+            uint dst = par * SR_CN + cg * 32u;
+            uvec4 va = in_act4[grp >> 4u];
+            uvec4 vb = in_act4[(grp >> 4u) + 1u];
+#define SLP(j, bv) sLow[dst + perm_P(j)] = NR_OPERAND(e4m3_to_f32(bv));
+            GROUP_BYTES(va, vb, SLP)
+#undef SLP
+        }
+        uint upW = w_off;                    // Wup, row-major [4C][Cn] at the blob head
+        uint upb = w_off + K4 * SR_CN;       // up_b, f16 [4C]
+        for (uint n0 = 0u; n0 < K4 / 16u; ++n0) {
+            NR_FRAG_ACC p0 = NR_ACC_ZERO;
+            for (uint k = 0u; k < SR_CN; k += 32u) {
+                NR_FRAG_A fa0, fa1;
+                NR_LOAD_A(fa0, sLow, k, SR_CN);
+                NR_LOAD_A(fa1, sLow, k + 16u, SR_CN);
+                NR_FRAG_B b0, b1;
+                NR_LOAD_B(b0, wrep, upW + 16u * n0 * SR_CN + k, SR_CN);
+                NR_LOAD_B(b1, wrep, upW + 16u * n0 * SR_CN + k + 16u, SR_CN);
+                NR_MMA(p0, fa0, b0); NR_MMA(p0, fa1, b1);
+            }
+            uint n  = 16u * n0 + col;        // n = q*C + cc (logical channel)
+            uint q  = n / SR_C;
+            uint cc = n - q * SR_C;
+            uint basis = (cc & ~31u) | perm_invP(cc & 31u);   // stored byte order for sIn
+            float upbv = read_f16(upb + 2u * vidx(n));
+            for (uint comp = 0u; comp < 8u; ++comp) {
+                uint pp = 8u * rowh + comp;
+                uint lxg = 2u * (pp & 3u) + (q & 1u);
+                uint lyg = 2u * (pp >> 2u) + (q >> 1u);
+                uint tk  = 8u * lyg + lxg;
+                int rx = reflect_coord(gx8 + int(lxg), dimW);
+                int ry = reflect_coord(gy8 + int(lyg), dimH);
+                uint spos = uint(ry * dimW + rx);
+                float uv = quant8(p0[comp] + upbv);
+                float sk = float(b6[((cc >> 5u) * HW + spos) * 32u + perm_invP(cc & 31u)]);
+                sIn[tk * SR_C + basis] = NR_OPERAND(quant8(uv + sk));
+            }
+        }
+    }
+#endif
+
+    // ================================================================================
+    // The four windows, sequentially (one wave owns the group).
+    // ================================================================================
+    for (uint w = 0u; w < 4u; ++w) {
+        int x0 = gx8 + int(w & 1u) * 4;
+        int y0 = gy8 + int(w >> 1u) * 4;
+        // Fully outside the image: nothing to store, and no sCat row that is ever read (an
+        // in-image low pixel's four quads are in-image - dims and shifts are even).
+        if (x0 >= dimW || x0 + 4 <= 0 || y0 >= dimH || y0 + 4 <= 0) continue;
+        blk_radv(x0, y0, gx8, gy8);
+    }
+
+#ifdef NR_SW_M0
+    // ================================================================================
+    // Mode 0 EPILOGUE (once per group): the projection GEMM from sCat, streamed as
+    // bias + clamp(+-6.28125) + E4M3 straight into the low grid on binding 6 -
+    // sr_swin_proj's arithmetic, without its dispatch or its LDS round trip.
+    // ================================================================================
+    {
+        uint ffn = w_off + 6u * SR_C + SR_G * (96u * SR_C + 512u);
+        uint dnW = ffn + uint(NBLK) * (64u * SR_C + 64u) + 2u * SR_C;
+        uint dnb = dnW + K4 * SR_CN;
+        float db[8];                         // dn_b, this lane's channels across the N tiles
+        for (uint nt = 0u; nt < SR_CN / 16u; ++nt)
+            db[nt] = read_f16(dnb + 2u * vidx(16u * nt + col));
+        uint NTCN = SR_CN / 16u;
+#define EMIT(ACC, TILE) { \
+    uint co_ = 16u * (TILE) + col; \
+    for (uint comp = 0u; comp < 8u; ++comp) { \
+        uint rp = 8u * rowh + comp; \
+        int lx = lowX0 + int(rp & 3u); \
+        int ly = lowY0 + int(rp >> 2u); \
+        if (lx >= 0 && lx < int(W2) && ly >= 0 && ly < int(H2)) { \
+            float y_ = clamp((ACC)[comp] + db[(TILE)], -6.28125, 6.28125); \
+            b6[((co_ >> 5u) * HW2 + uint(ly) * W2 + uint(lx)) * 32u + perm_invP(co_ & 31u)] = \
+                NR_OPERAND(y_); \
+        } \
+    } }
+        for (uint n0 = 0u; n0 < NTCN; n0 += 2u) {
+            NR_FRAG_ACC p0 = NR_ACC_ZERO, p1 = NR_ACC_ZERO;
+            for (uint k = 0u; k < K4; k += 64u) {
+                NR_FRAG_A fa0, fa1, fc0, fc1;
+                NR_LOAD_A(fa0, sCat, k, K4);
+                NR_LOAD_A(fa1, sCat, k + 16u, K4);
+                NR_LOAD_A(fc0, sCat, k + 32u, K4);
+                NR_LOAD_A(fc1, sCat, k + 48u, K4);
+                NR_FRAG_B b0, b1, b2, b3, e0, e1, e2, e3;
+                NR_LOAD_B(b0, wrep, dnW + 16u * n0 * K4 + k, K4);
+                NR_LOAD_B(b1, wrep, dnW + 16u * n0 * K4 + k + 16u, K4);
+                NR_LOAD_B(b2, wrep, dnW + 16u * (n0 + 1u) * K4 + k, K4);
+                NR_LOAD_B(b3, wrep, dnW + 16u * (n0 + 1u) * K4 + k + 16u, K4);
+                NR_LOAD_B(e0, wrep, dnW + 16u * n0 * K4 + k + 32u, K4);
+                NR_LOAD_B(e1, wrep, dnW + 16u * n0 * K4 + k + 48u, K4);
+                NR_LOAD_B(e2, wrep, dnW + 16u * (n0 + 1u) * K4 + k + 32u, K4);
+                NR_LOAD_B(e3, wrep, dnW + 16u * (n0 + 1u) * K4 + k + 48u, K4);
+                NR_MMA(p0, fa0, b0); NR_MMA(p0, fa1, b1);
+                NR_MMA(p0, fc0, e0); NR_MMA(p0, fc1, e1);
+                NR_MMA(p1, fa0, b2); NR_MMA(p1, fa1, b3);
+                NR_MMA(p1, fc0, e2); NR_MMA(p1, fc1, e3);
+            }
+            EMIT(p0, n0)
+            EMIT(p1, n0 + 1u)
+        }
+#undef EMIT
+    }
+#endif
+}
+#else   // SWIN_FUSED
+void main() {
+    int gx = int(gl_WorkGroupID.x);
+    int gy = int(gl_WorkGroupID.y);
+    blk_radv(gx * 4 - shiftX, gy * 4 - shiftY, 0, 0);
+}
+#endif // SWIN_FUSED
 #else
 // The lavapipe fallback keeps the proven-O7 dataflow of the merged 77037b7 sr_swin (scalar
 // register residual, LDS tiles, barriers): Mesa's NIR/LLVM stack crashes on this operand build
@@ -414,16 +630,12 @@ void stage_cg(uint cg, uint tok, uint base) {
 #undef SB
 }
 
-void main() {
+void win16(int x0, int y0) {
     uint tid = gl_LocalInvocationID.x;
     uint tok = tid & 15u;     // token inside the window (staging / output view)
     uint col = tid & 15u;     // column inside a 16-wide fragment tile (fragment view)
     uint rowh = tid >> 4u;    // which 8-row half this lane's components belong to
 
-    int gx = int(gl_WorkGroupID.x);
-    int gy = int(gl_WorkGroupID.y);
-    int x0 = gx * 4 - shiftX;
-    int y0 = gy * 4 - shiftY;
     int dx = int(tok & 3u);
     int dy = int(tok >> 2u);
     int px = reflect_coord(x0 + dx, dimW);
@@ -655,4 +867,20 @@ void main() {
     }
 }
 
+#ifdef SWIN_FUSED
+void main() {
+    int gx = int(gl_WorkGroupID.x);
+    int gy = int(gl_WorkGroupID.y);
+    int gx8 = gx * 8 - shiftX;
+    int gy8 = gy * 8 - shiftY;
+    for (uint w = 0u; w < 4u; ++w)
+        win16(gx8 + int(w & 1u) * 4, gy8 + int(w >> 1u) * 4);
+}
+#else
+void main() {
+    int gx = int(gl_WorkGroupID.x);
+    int gy = int(gl_WorkGroupID.y);
+    win16(gx * 4 - shiftX, gy * 4 - shiftY);
+}
+#endif
 #endif

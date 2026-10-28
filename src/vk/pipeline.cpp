@@ -542,6 +542,12 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         // up+skip as their own small GEMM dispatches. sr_stage.comp stays for DLSS5_AMD_STAGE_LEGACY=1.
         add_pipe("sr_swin64", 6, 56);   // + wvec (table) + wrepT (tiled weights)
         add_pipe("sr_swin96", 6, 56);
+        // Fused builds of the same source (Opus proposal 1): binding 6 is the mode wire -
+        // mode 0 writes the projection's low grid there, mode 2 reads the encoder skip.
+        add_pipe("sr_swin64m0", 7, 56);
+        add_pipe("sr_swin96m0", 7, 56);
+        add_pipe("sr_swin64m2", 7, 56);
+        add_pipe("sr_swin96m2", 7, 56);
         add_pipe("sr_swin_proj", 4, 56);
         add_pipe("sr_swin_up", 5, 56);
         // per-(C) specializations of the same sources (SR_C define -> constant K/N loops)
@@ -1531,6 +1537,12 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             const char* e = std::getenv("DLSS5_AMD_STAGE_LEGACY");
             return e != nullptr && e[0] != '\0' && e[0] != '0';
         }();
+        // A/B: DLSS5_AMD_SWIN_SEP=1 keeps the split chain (sr_swin + sr_swin_proj / sr_swin_up,
+        // the pre-proposal-1 dispatches); default = the fused sr_swin*m0/m2 launches.
+        static const bool swin_sep = [] {
+            const char* e = std::getenv("DLSS5_AMD_SWIN_SEP");
+            return e != nullptr && e[0] != '\0' && e[0] != '0';
+        }();
         for (int st = 0; st < 10; ++st) {
             uint8_t push[56] = {0};
             uint32_t w_off = k_stage_w_off[st];
@@ -1548,22 +1560,31 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                     // DLSS5_AMD_STAGE_LEGACY=1: main 3c51da6's per-(C,mode) specialised sr_stage
                     // (the A/B bar: 6.32 ms high for the four launches).
                     dispatch(cmd, "sr_stage_c64m0", {&wbuf, &t_act[0], &t_act[1], &t_act[2], &t_act[0], &wrep}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 7) / 8, 1);
-                } else {
+                } else if (swin_sep) {
                     dispatch(cmd, "sr_swin64", {&wbuf, &t_act[0], &t_act[1], &wrep, &wvec, &wrepT}, push, 56,
                              (dimW + s0 + 3) / 4, (dimH + s1 + 3) / 4, 1);
                     dispatch(cmd, "sr_swin_proj64", {&wbuf, &t_act[1], &t_act[2], &wrep}, push, 56,
                              ((dimW >> 1) + 3) / 4, ((dimH >> 1) + 3) / 4, 1);
+                } else {
+                    // Fused: one wave per 8x8 group (4 windows), projection in the epilogue.
+                    // binding 6 = t_act[2], the low grid the epilogue writes (stage 1's input).
+                    dispatch(cmd, "sr_swin64m0", {&wbuf, &t_act[0], &t_act[1], &wrep, &wvec, &wrepT, &t_act[2]},
+                             push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 7) / 8, 1);
                 }
             } else if (st == 1) { dimW = L2w; dimH = L2h; s0 = pe; s1 = 2;
                 std::memcpy(push + 40, &dimW, 4); std::memcpy(push + 44, &dimH, 4);
                 std::memcpy(push + 48, &s0, 4); std::memcpy(push + 52, &s1, 4);
                 if (stage_legacy) {
                     dispatch(cmd, "sr_stage_c96m0", {&wbuf, &t_act[2], &t_act[3], &t_act[4], &t_act[2], &wrep}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 7) / 8, 1);
-                } else {
+                } else if (swin_sep) {
                     dispatch(cmd, "sr_swin96", {&wbuf, &t_act[2], &t_act[3], &wrep, &wvec, &wrepT}, push, 56,
                              (dimW + s0 + 3) / 4, (dimH + s1 + 3) / 4, 1);
                     dispatch(cmd, "sr_swin_proj96", {&wbuf, &t_act[3], &t_act[4], &wrep}, push, 56,
                              ((dimW >> 1) + 3) / 4, ((dimH >> 1) + 3) / 4, 1);
+                } else {
+                    // Fused: binding 6 = t_act[4], the low grid (tube0's input).
+                    dispatch(cmd, "sr_swin96m0", {&wbuf, &t_act[2], &t_act[3], &wrep, &wvec, &wrepT, &t_act[4]},
+                             push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 7) / 8, 1);
                 }
             } else if (st <= 7) {
                 Buffer* in_b = (st == 2) ? &t_act[4] : (st & 1) ? &t_act[5] : &t_act[6];
@@ -1580,7 +1601,7 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                 if (stage_legacy) {
                     // Oracle launch 11: wbuf+1341440, t6 (in), t3 (skip, StageArgs+16), t7 (out).
                     dispatch(cmd, "sr_stage_c96m2", {&wbuf, &t_act[6], &t_act[7], &t_act[7], &t_act[3], &wrep}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 7) / 8, 1);
-                } else {
+                } else if (swin_sep) {
                     // The up's output goes to t2, NOT in place on its low t6: each WG stages its
                     // 16 parents before its own stores, but across WGs there is no ordering - a
                     // later-WG gather reads low bytes an earlier-WG consume store has already
@@ -1592,6 +1613,11 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                              (dimW + 7) / 8, (dimH + 7) / 8, 1);
                     dispatch(cmd, "sr_swin96", {&wbuf, &t_act[2], &t_act[7], &wrep, &wvec, &wrepT}, push, 56,
                              (dimW + s0 + 3) / 4, (dimH + s1 + 3) / 4, 1);
+                } else {
+                    // Fused: binding 1 = the low tensor (the prologue gathers from it),
+                    // binding 6 = the encoder skip; no t2 scratch round trip any more.
+                    dispatch(cmd, "sr_swin96m2", {&wbuf, &t_act[6], &t_act[7], &wrep, &wvec, &wrepT, &t_act[3]},
+                             push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 7) / 8, 1);
                 }
             } else { dimW = L1w; dimH = L1h; s0 = po; s1 = 0;
                 std::memcpy(push + 40, &dimW, 4); std::memcpy(push + 44, &dimH, 4);
@@ -1599,13 +1625,18 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                 if (stage_legacy) {
                     // Oracle launch 12: wbuf+1505536, t7 (in), t1 (skip, StageArgs+16), t8 (out).
                     dispatch(cmd, "sr_stage_c64m2", {&wbuf, &t_act[7], &t_act[8], &t_act[8], &t_act[1], &wrep}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 7) / 8, 1);
-                } else {
+                } else if (swin_sep) {
                     // Same scratch rule as stage 8: t0 (>= L1x64, dead after stage 0 read it) holds
                     // the up's output; the block reads it into t8.
                     dispatch(cmd, "sr_swin_up64", {&wbuf, &t_act[7], &t_act[1], &t_act[0], &wrep}, push, 56,
                              (dimW + 7) / 8, (dimH + 7) / 8, 1);
                     dispatch(cmd, "sr_swin64", {&wbuf, &t_act[0], &t_act[8], &wrep, &wvec, &wrepT}, push, 56,
                              (dimW + s0 + 3) / 4, (dimH + s1 + 3) / 4, 1);
+                } else {
+                    // Fused: binding 1 = the low tensor, binding 6 = the encoder skip; t0 stays
+                    // free (it was only the split chain's up-output scratch).
+                    dispatch(cmd, "sr_swin64m2", {&wbuf, &t_act[7], &t_act[8], &wrep, &wvec, &wrepT, &t_act[1]},
+                             push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 7) / 8, 1);
                 }
             }
             static const char* st_pt[] = {"stage0", "stage1", "tube0", "tube1", "tube2",
