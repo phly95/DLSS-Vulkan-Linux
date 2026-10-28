@@ -142,8 +142,22 @@ static Buffer create_buffer(VkDevice dev, VkPhysicalDevice phys, size_t size, Vk
     vkGetBufferMemoryRequirements(dev, b.buffer, &req);
     VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     mai.allocationSize = req.size;
+    // VRAM first: host-visible device-local memory (ReBAR / the visible VRAM window). Asking only for
+    // HOST_VISIBLE | HOST_COHERENT picks the first such type, which on RADV is system RAM (GTT), so
+    // every kernel read and wrote across PCIe. System RAM stays the fallback for a device without a
+    // host-visible VRAM type.
     mai.memoryTypeIndex = find_memory_type(phys, req.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    {
+        VkPhysicalDeviceMemoryProperties mp;
+        vkGetPhysicalDeviceMemoryProperties(phys, &mp);
+        const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        if ((mp.memoryTypes[mai.memoryTypeIndex].propertyFlags & want) != want)
+            mai.memoryTypeIndex = find_memory_type(phys, req.memoryTypeBits,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    }
     vkAllocateMemory(dev, &mai, nullptr, &b.memory);
     vkBindBufferMemory(dev, b.buffer, b.memory, 0);
     vkMapMemory(dev, b.memory, 0, b.size, 0, &b.mapped);
