@@ -4,20 +4,30 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
 #extension GL_EXT_shader_8bit_storage : enable
 #extension GL_EXT_shader_16bit_storage : enable
-#include "rh.glsl"
+#include "nh_mm.glsl"
 
-// k_sr_tube_split (NeuralHub SR tube launches 5..10, C = 128, g = 4, mode 1). The arithmetic is the
-// spec in tools/sr/sr_stage_model.py (run_stage with its DEFAULTS, Review R9 and the R9 addendum), as in
-// sr_stage.comp: every rounding point is an explicit f16 (rh) or E4M3 (q8) step, in the model's order, and
-// every K=32 group of a projection is its own f32 partial, chained through f16 (group 0 first).
-// One 4x4 window per workgroup. Thread (tok, head) owns one token and one head's 32 channels.
-// Notes: docs/notes/k_sr_stage.md (Review R1-R9, the R9 addendum); byte map docs/sr/STAGE-LAYOUT.md.
+// k_sr_tube_split, cooperative-matrix rewrite (optimisation phase).
+//
+// One 4x4 window = 16 tokens per workgroup; local_size 32 = one wave (RADV runs 32-thread
+// workgroups wave32, which is what the coopmm fragment macros assume - sr_stage proves it).
+// Every GEMM is a 16x16x16 WMMA through nh_mm.glsl: A operands are the LDS activation tiles,
+// B operands the weights loaded straight from wrep (the row-major copy of the stage blob built
+// by sr_repack_stage in src/vk/pipeline.cpp). Arithmetic follows tools/sr/sr_stage_model.py with
+// f32 accumulation inside each WMMA - the R9 f16 chain splits, ISA-order sum trees and rh()
+// rounding emulations are dropped (precision policy); the quantisation points (norm/Q/ctx/hidden
+// to fp8) and the activation curves (the scaled nr_swin_exp, nhgelu) are kept.
+//
+// LDS per wave: sX fp8 [16][128] = the input; sN fp8 [16][128] = RMSNorm outputs (QKV/fc1
+// operands); sQ fp8 / sV f16 [16][32] per head; sP f16 [16][16] probabilities; sC fp8 context;
+// sH fp8 hidden; sB1 32 f16. Residual streams live in registers (st[8][8] f16 = one lane's
+// column of every 16x16 tile).
 
-layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
 
-layout(set = 0, binding = 0) readonly buffer InWeights { uint8_t wbuf[]; };
-layout(set = 0, binding = 1) readonly buffer InAct     { uint8_t in_act[]; };
-layout(set = 0, binding = 2) writeonly buffer OutAct   { uint8_t out_act[]; };
+layout(set = 0, binding = 0) readonly buffer InW16       { float16_t  wbuf16[]; };
+layout(set = 0, binding = 1) readonly buffer InAct       { NR_OPERAND in_act[]; };
+layout(set = 0, binding = 2) writeonly buffer OutAct     { NR_OPERAND out_act[]; };
+layout(set = 0, binding = 3, std430) readonly buffer WRep { NR_OPERAND wrep[]; };
 
 layout(push_constant) uniform StageArgs {
     uint wbuf_lo;
@@ -28,119 +38,40 @@ layout(push_constant) uniform StageArgs {
     int shiftY;
 };
 
-shared float16_t s_act[16][128];    // residual stream: the input, then the attention accumulator, then s
-shared float16_t s_norm[16][128];   // RMSNorm output (q8)
-shared float16_t s_K8[4][16][32];   // q8(Q) per head, key-token (the logits are Q.Q^T, Review R8)
-shared float16_t s_V[4][16][32];    // V = f16(K) per head, key-token
-shared float16_t s_ctx[4][16][32];  // q8(f16(attention context)) per head
-shared float16_t s_mlp[16][128];    // MLP sum (f16 values)
-shared float16_t s_h1[16][32];      // q8(GELU) hidden, one block
+shared NR_OPERAND sX[16 * 128];   // raw fp8: decode happens where it is read
+shared NR_OPERAND sN[16 * 128];
+shared NR_OPERAND sQ[16 * 32];
+shared float16_t  sP[16 * 16];    // probabilities stay f16 (prob8=0 in the model)
+shared NR_OPERAND sC[16 * 32];
+shared NR_OPERAND sH[16 * 32];
+shared float16_t  sB1[32];
 
-const float16_t e4m3_lut[256] = float16_t[256](
-    float16_t(0), float16_t(0.001953125), float16_t(0.00390625), float16_t(0.005859375), float16_t(0.0078125), float16_t(0.009765625), float16_t(0.01171875), float16_t(0.013671875),
-    float16_t(0.015625), float16_t(0.017578125), float16_t(0.01953125), float16_t(0.021484375), float16_t(0.0234375), float16_t(0.025390625), float16_t(0.02734375), float16_t(0.029296875),
-    float16_t(0.03125), float16_t(0.03515625), float16_t(0.0390625), float16_t(0.04296875), float16_t(0.046875), float16_t(0.05078125), float16_t(0.0546875), float16_t(0.05859375),
-    float16_t(0.0625), float16_t(0.0703125), float16_t(0.078125), float16_t(0.0859375), float16_t(0.09375), float16_t(0.1015625), float16_t(0.109375), float16_t(0.1171875),
-    float16_t(0.125), float16_t(0.140625), float16_t(0.15625), float16_t(0.171875), float16_t(0.1875), float16_t(0.203125), float16_t(0.21875), float16_t(0.234375),
-    float16_t(0.25), float16_t(0.28125), float16_t(0.3125), float16_t(0.34375), float16_t(0.375), float16_t(0.40625), float16_t(0.4375), float16_t(0.46875),
-    float16_t(0.5), float16_t(0.5625), float16_t(0.625), float16_t(0.6875), float16_t(0.75), float16_t(0.8125), float16_t(0.875), float16_t(0.9375),
-    float16_t(1), float16_t(1.125), float16_t(1.25), float16_t(1.375), float16_t(1.5), float16_t(1.625), float16_t(1.75), float16_t(1.875),
-    float16_t(2), float16_t(2.25), float16_t(2.5), float16_t(2.75), float16_t(3), float16_t(3.25), float16_t(3.5), float16_t(3.75),
-    float16_t(4), float16_t(4.5), float16_t(5), float16_t(5.5), float16_t(6), float16_t(6.5), float16_t(7), float16_t(7.5),
-    float16_t(8), float16_t(9), float16_t(10), float16_t(11), float16_t(12), float16_t(13), float16_t(14), float16_t(15),
-    float16_t(16), float16_t(18), float16_t(20), float16_t(22), float16_t(24), float16_t(26), float16_t(28), float16_t(30),
-    float16_t(32), float16_t(36), float16_t(40), float16_t(44), float16_t(48), float16_t(52), float16_t(56), float16_t(60),
-    float16_t(64), float16_t(72), float16_t(80), float16_t(88), float16_t(96), float16_t(104), float16_t(112), float16_t(120),
-    float16_t(128), float16_t(144), float16_t(160), float16_t(176), float16_t(192), float16_t(208), float16_t(224), float16_t(240),
-    float16_t(256), float16_t(288), float16_t(320), float16_t(352), float16_t(384), float16_t(416), float16_t(448), float16_t(480),
-    float16_t(-0), float16_t(-0.001953125), float16_t(-0.00390625), float16_t(-0.005859375), float16_t(-0.0078125), float16_t(-0.009765625), float16_t(-0.01171875), float16_t(-0.013671875),
-    float16_t(-0.015625), float16_t(-0.017578125), float16_t(-0.01953125), float16_t(-0.021484375), float16_t(-0.0234375), float16_t(-0.025390625), float16_t(-0.02734375), float16_t(-0.029296875),
-    float16_t(-0.03125), float16_t(-0.03515625), float16_t(-0.0390625), float16_t(-0.04296875), float16_t(-0.046875), float16_t(-0.05078125), float16_t(-0.0546875), float16_t(-0.05859375),
-    float16_t(-0.0625), float16_t(-0.0703125), float16_t(-0.078125), float16_t(-0.0859375), float16_t(-0.09375), float16_t(-0.1015625), float16_t(-0.109375), float16_t(-0.1171875),
-    float16_t(-0.125), float16_t(-0.140625), float16_t(-0.15625), float16_t(-0.171875), float16_t(-0.1875), float16_t(-0.203125), float16_t(-0.21875), float16_t(-0.234375),
-    float16_t(-0.25), float16_t(-0.28125), float16_t(-0.3125), float16_t(-0.34375), float16_t(-0.375), float16_t(-0.40625), float16_t(-0.4375), float16_t(-0.46875),
-    float16_t(-0.5), float16_t(-0.5625), float16_t(-0.625), float16_t(-0.6875), float16_t(-0.75), float16_t(-0.8125), float16_t(-0.875), float16_t(-0.9375),
-    float16_t(-1), float16_t(-1.125), float16_t(-1.25), float16_t(-1.375), float16_t(-1.5), float16_t(-1.625), float16_t(-1.75), float16_t(-1.875),
-    float16_t(-2), float16_t(-2.25), float16_t(-2.5), float16_t(-2.75), float16_t(-3), float16_t(-3.25), float16_t(-3.5), float16_t(-3.75),
-    float16_t(-4), float16_t(-4.5), float16_t(-5), float16_t(-5.5), float16_t(-6), float16_t(-6.5), float16_t(-7), float16_t(-7.5),
-    float16_t(-8), float16_t(-9), float16_t(-10), float16_t(-11), float16_t(-12), float16_t(-13), float16_t(-14), float16_t(-15),
-    float16_t(-16), float16_t(-18), float16_t(-20), float16_t(-22), float16_t(-24), float16_t(-26), float16_t(-28), float16_t(-30),
-    float16_t(-32), float16_t(-36), float16_t(-40), float16_t(-44), float16_t(-48), float16_t(-52), float16_t(-56), float16_t(-60),
-    float16_t(-64), float16_t(-72), float16_t(-80), float16_t(-88), float16_t(-96), float16_t(-104), float16_t(-112), float16_t(-120),
-    float16_t(-128), float16_t(-144), float16_t(-160), float16_t(-176), float16_t(-192), float16_t(-208), float16_t(-224), float16_t(-240),
-    float16_t(-256), float16_t(-288), float16_t(-320), float16_t(-352), float16_t(-384), float16_t(-416), float16_t(-448), float16_t(-480)
-);
+// ---- scalar helpers ----------------------------------------------------------------
 
+uint byte_of(uint w, uint k) { return (w >> (8u * k)) & 0xffu; }
 
-float e4m3_to_f32(uint b) {
-    return float(e4m3_lut[b & 255u]);
+// e4m3 code -> f16, exact (e = 0 subnormals get their own exponent field).
+float16_t h_e4m3(uint b) {
+    uint e = (b >> 3u) & 15u;
+    uint m = b & 7u;
+    uint s = (b >> 7u) << 15u;
+    uint k = (m > 3u) ? 2u : ((m > 1u) ? 1u : 0u);
+    uint sub = ((6u + k) << 10u) | (((m << (10u - k)) - 1024u) & 0x3ffu);
+    uint bits = (e == 0u) ? ((m == 0u) ? 0u : sub) : (((e + 8u) << 10u) | (m << 7u));
+    return float16_t(unpackHalf2x16(s | bits).x);
 }
 
-// f32 -> E4M3, RNE, saturating at 448 (the model's to_e4m3).
-uint f32_to_e4m3_rne(float x) {
-    if (isnan(x)) return 0x7fu;
-    uint sign = (x < 0.0) ? 0x80u : 0u;
-    float a = min(abs(x), 448.0);
-    if (a < 0.015625) {
-        uint sub = uint(floor(a * 512.0 + 0.5));
-        return sign | sub;
-    }
-    uint bits = floatBitsToUint(a);
-    uint norm = uint((bits + 0x407ffffu + ((bits >> 20u) & 1u)) >> 20u);
-    return sign | (norm & 0x7fu);
-}
+uint perm_P(uint i)    { return ((i >> 2u) << 1u) | (i & 1u) | (((i >> 1u) & 1u) << 4u); }
+uint perm_invP(uint c) { return (((c >> 1u) & 7u) << 2u) | (c & 1u) | (((c >> 4u) & 1u) << 1u); }
+uint vidx(uint c)      { return (c & ~31u) | perm_invP(c); }
 
-// q8(x): round to E4M3 and back.
-float q8(float x) {
-    return e4m3_to_f32(f32_to_e4m3_rne(x));
-}
+float read_f16(uint byte_off) { return float(wbuf16[byte_off >> 1u]); }
 
-vec2 rh2(vec2 v) {
-    return vec2(rh(v.x), rh(v.y));
-}
+// The +-448 clamp before the store. It returns plain f32 and the element type comes from
+// NR_OPERAND at the store, so the f16-operand build (the lavapipe check) contains no fp8 values
+// at all - the same shape sr_stage's q8 has (an fp8-typed value here made llvmpipe fault).
+float quant8(float x) { return clamp(x, -448.0, 448.0); }
 
-// The model's rsqrt_lut and 1/h table, f16(f32(1/x)) of an f16 value x (exhaustively checked on the GPU
-// against the model's tables: build/agents/stage-r9/lut).
-float rsqrt16(float h) {
-    return rh(inversesqrt(h));
-}
-
-float rcp16(float x) {
-    return rh(1.0 / x);
-}
-
-// The P permutation of 32-channel groups: stored index i holds logical channel P[i].
-uint perm_P(uint i) {
-    return ((i >> 2u) << 1u) | (i & 1u) | (((i >> 1u) & 1u) << 4u);
-}
-
-// invP: logical channel (mod 32) -> stored index.
-uint perm_invP(uint c) {
-    return (((c >> 1u) & 7u) << 2u) | (c & 1u) | (((c >> 4u) & 1u) << 1u);
-}
-
-// Element index of logical channel c in a P-permuted f16 vector (the blob's layout).
-uint vidx(uint c) {
-    return (c & ~31u) | perm_invP(c);
-}
-
-uint frag_off(uint r, uint c, uint cols) {
-    uint u1 = ((r & 0x7FFFFFE1u) | ((r >> 3u) & 2u)) + (r & 0xEu) * 2u;
-    uint u5 = 2u * c;
-    uint u9 = 16u * c;
-    uint low = (u5 & 4u) | (c & 1u) | ((c >> 3u) & 2u);
-    uint high = ((u5 & 0x10u) << 4u) + (u9 & (~0x1FFu)) + (cols << 4u) * (u1 >> 4u);
-    return (low | high) + ((u1 & 0xFu) + (u5 & 8u) * 2u) * 8u;
-}
-
-float read_f16(uint byte_off) {
-    uint b0 = uint(wbuf[byte_off]);
-    uint b1 = uint(wbuf[byte_off + 1u]);
-    return unpackHalf2x16(b0 | (b1 << 8u)).x;
-}
-
-// The kernel's border rule (model reflect): a = |p|, b = 2(n-1) - a, r = min(a, b, n-1), and r = n-1 when
-// b < 0 (beyond a double fold, the far edge).
 int reflect_coord(int p, int dim) {
     int a = abs(p);
     int b = 2 * (dim - 1) - a;
@@ -148,79 +79,48 @@ int reflect_coord(int p, int dim) {
     return (b < 0) ? dim - 1 : r;
 }
 
-// The model's nr_swin_exp: every rounding is an explicit f16 step, then the bit-built exp.
-float nr_swin_exp(float x) {
-    float hx = rh(x);
-    float y = clamp(rh(hx * 0.017181396484375), -0.55615234375, 0.55615234375);
-    float base = rh(-y * y + 0.92724609375);
-    float p = rh(y * base + 1.375);
+// NeuralHub's scaled exp (model nr_swin_exp): NOT exp(x) - it is 2^(32p-47) with
+// y = clamp(x*0.0171814, +-0.556), p = y*(0.92724609375 - y^2) + 1.375, i.e. exp(0.352 x)/8,
+// the softmax's temperature. The curve stays; p is packed straight into f16 bits (RTZ).
+float swin_exp(float x) {
+    float y = clamp(x * 0.017181396484375, -0.55615234375, 0.55615234375);
+    float p = y * (-y * y + 0.92724609375) + 1.375;
     uint h = packHalf2x16(vec2(p, 0.0)) & 0xffffu;
-    uint exp_bits = ((h << 5u) + 0x8000u) & 0xffffu;
-    return unpackHalf2x16(exp_bits).x;
+    return unpackHalf2x16(((h << 5u) + 0x8000u) & 0xffffu).x;
 }
 
-// NeuralHub's activation, the model's act_fn 'nhgelu': every step rounded to f16.
+// NeuralHub's spline GELU (model act_fn 'nhgelu'), f32 arithmetic.
 float nh_gelu(float z) {
-    float zh = rh(z);
-    float t = clamp(zh, -2.0, 2.0);
-    float u = rh(rh(abs(t) * -0.0810546875) + 0.412109375);
-    float g = rh(rh(t * u) + 0.5);
-    return rh(zh * g);
+    float t = clamp(z, -2.0, 2.0);
+    return z * (t * (0.412109375 - 0.0810546875 * abs(t)) + 0.5);
 }
 
-// ---- RMSNorm: the kernel's f16 sum of squares (model ss_isa), over the STORED channel order: stored
-// index k of 32-channel group gi is logical channel gi*32 + P[k]. All four groups (C = 128).
+void sync_lds() { memoryBarrierShared(); barrier(); }
 
-float sq_stored(uint t, uint gi, uint k) {
-    float x = float(s_act[t][gi * 32u + perm_P(k)]);
-    return rh(x * x);
-}
+// ---- input staging: fp8 bytes -> f16 in logical channel order -----------------------
+// One storage load and one hardware e4m3->f16 convert a byte; perm_P folds (literal indices).
 
-vec2 pair_stored(uint t, uint gi, uint off) {
-    return vec2(rh(sq_stored(t, gi, off) + sq_stored(t, gi, off + 2u)),
-                rh(sq_stored(t, gi, off + 1u) + sq_stored(t, gi, off + 3u)));
-}
-
-// ((g0+g1)+(g2+g3)) of the pair vectors at stored offset off.
-vec2 tree4(uint t, uint off) {
-    return rh2(rh2(pair_stored(t, 0u, off) + pair_stored(t, 1u, off)) +
-               rh2(pair_stored(t, 2u, off) + pair_stored(t, 3u, off)));
-}
-
-vec2 lane_half(uint t, uint h) {
-    vec2 d0 = rh2(tree4(t, 8u * h) + tree4(t, 16u + 8u * h));
-    vec2 d1 = rh2(tree4(t, 8u * h + 4u) + tree4(t, 16u + 8u * h + 4u));
-    return rh2(d0 + d1);
-}
-
-float ss_isa_row(uint t) {
-    vec2 s = rh2(lane_half(t, 0u) + lane_half(t, 1u));
-    return rh(s.x + s.y);
-}
-
-// RMSNorm of row t, this thread's head group `h` of channels written (gain applied after the norm).
-void rmsnorm_part(uint t, uint h, uint gain_base) {
-    float ss = ss_isa_row(t);
-    float rs = rsqrt16(rh(ss + 1.220703125e-4));
-    for (uint c = 0u; c < 32u; ++c) {
-        uint cc = h * 32u + c;
-        float g = rh(rs * read_f16(gain_base + 2u * vidx(cc)));
-        s_norm[t][cc] = float16_t(q8(rh(float(s_act[t][cc]) * g)));
-    }
+void stage_cg(uint cg, uint tok, uint base) {
+#define SB(I) sX[tok * 128u + cg * 32u + perm_P(I)] = in_act[base + (I)];
+    SB(0u)  SB(1u)  SB(2u)  SB(3u)  SB(4u)  SB(5u)  SB(6u)  SB(7u)
+    SB(8u)  SB(9u)  SB(10u) SB(11u) SB(12u) SB(13u) SB(14u) SB(15u)
+    SB(16u) SB(17u) SB(18u) SB(19u) SB(20u) SB(21u) SB(22u) SB(23u)
+    SB(24u) SB(25u) SB(26u) SB(27u) SB(28u) SB(29u) SB(30u) SB(31u)
+#undef SB
 }
 
 void main() {
-    uint tid = gl_LocalInvocationID.x;  // 0..63
-    uint tok = tid % 16u;               // token within the 4x4 window
-    uint head = tid / 16u;              // 0..3: attention head and channel group
+    uint tid = gl_LocalInvocationID.x;
+    uint tok = tid & 15u;     // token inside the window (staging / output view)
+    uint col = tid & 15u;     // column inside a 16-wide fragment tile (fragment view)
+    uint rowh = tid >> 4u;    // which 8-row half this lane's components belong to
 
     int gx = int(gl_WorkGroupID.x);
     int gy = int(gl_WorkGroupID.y);
     int x0 = gx * 4 - shiftX;
     int y0 = gy * 4 - shiftY;
-
-    int dx = int(tok % 4u);
-    int dy = int(tok / 4u);
+    int dx = int(tok & 3u);
+    int dy = int(tok >> 2u);
     int px = reflect_coord(x0 + dx, dimW);
     int py = reflect_coord(y0 + dy, dimH);
 
@@ -228,149 +128,224 @@ void main() {
     uint pos = uint(py * dimW + px);
     uint w_off = wbuf_lo & 0x1fffffu;
 
-    // 1. This thread's 32 channels of its token (input group = head).
-    for (uint i = 0u; i < 32u; ++i) {
-        s_act[tok][head * 32u + perm_P(i)] = float16_t(e4m3_to_f32(uint(in_act[(head * HW + pos) * 32u + i])));
+    // ---- 1. stage the window's input
+    {
+        uint cg0 = (tid >> 4u) * 2u;
+        stage_cg(cg0, tok, (cg0 * HW + pos) * 32u);
+        stage_cg(cg0 + 1u, tok, ((cg0 + 1u) * HW + pos) * 32u);
     }
-    barrier();
+    sync_lds();
 
-    // 2. RMSNorm 1 (gain1)
-    rmsnorm_part(tok, head, w_off);
-    barrier();
-
-    // 3. Q, K of head `head` for this token: f16 chains over the four groups of 32 channels.
-    // Head h: Wq (32 x 128), Wk (32 x 128), rel (16 x 16), Wo (128 x 32).
-    uint hb = w_off + 256u + head * 12800u;
-    float Q[32];
-    for (uint r = 0u; r < 32u; ++r) {
-        float qa = 0.0;
-        float ka = 0.0;
-        for (uint g = 0u; g < 4u; ++g) {
-            float sq = 0.0;
-            float sk = 0.0;
-            for (uint c = 0u; c < 32u; ++c) {
-                uint cc = g * 32u + c;
-                float sv = float(s_norm[tok][cc]);
-                sq += sv * float(e4m3_lut[uint(wbuf[hb + frag_off(r, cc, 128u)])]);
-                sk += sv * float(e4m3_lut[uint(wbuf[hb + 4096u + frag_off(r, cc, 128u)])]);
-            }
-            if (g == 0u) {
-                qa = rh(sq);
-                ka = rh(sk);
-            } else {
-                qa = rh(qa + sq);
-                ka = rh(ka + sk);
+    // ---- 2. RMSNorm 1 (gain1) -> sN, then sN feeds every head's QKV
+    {
+        float ss[8] = float[8](0, 0, 0, 0, 0, 0, 0, 0);
+        for (uint t = 0u; t < 8u; ++t) {
+            for (uint i = 0u; i < 8u; ++i) {
+                float v = float(sX[(8u * rowh + i) * 128u + 16u * t + col]);
+                ss[i] += v * v;
             }
         }
-        Q[r] = q8(qa);
-        s_V[head][tok][r] = float16_t(ka);
-        // The logits are Q.Q^T (Review R8): the shared B operand is q8(Q). V = f16(K) is s_V.
-        s_K8[head][tok][r] = float16_t(Q[r]);
-    }
-    barrier();
-
-    // 4. Attention of this query token over the window's 16 keys, then the context (q8 of f16).
-    float pe[16];
-    for (uint j = 0u; j < 16u; ++j) {
-        float dot = 0.0;
-        for (uint r = 0u; r < 32u; ++r) dot += Q[r] * float(s_K8[head][j][r]);
-        float rel = read_f16(hb + 8192u + 2u * (tok * 16u + j));
-        pe[j] = nr_swin_exp(dot + rel);
-    }
-    float a08 = rh(pe[0] + pe[8]);
-    float a210 = rh(pe[2] + pe[10]);
-    float a412 = rh(pe[4] + pe[12]);
-    float a614 = rh(pe[6] + pe[14]);
-    float a19 = rh(pe[1] + pe[9]);
-    float a311 = rh(pe[3] + pe[11]);
-    float a513 = rh(pe[5] + pe[13]);
-    float a715 = rh(pe[7] + pe[15]);
-    float ev = rh(rh(a08 + a210) + rh(a412 + a614));
-    float od = rh(rh(a19 + a311) + rh(a513 + a715));
-    float inv = rcp16(rh(ev + od));
-    float prob[16];
-    for (uint j = 0u; j < 16u; ++j) prob[j] = rh(pe[j] * inv);
-    for (uint r = 0u; r < 32u; ++r) {
-        float a = 0.0;
-        for (uint j = 0u; j < 16u; ++j) a += prob[j] * float(s_V[head][j][r]);
-        s_ctx[head][tok][r] = float16_t(q8(rh(a)));
-    }
-    barrier();
-
-    // 5. Residual: acc = f16(s + v270), then per head acc = f16(acc + Wo_h . ctx_h), this thread's 32 channels.
-    uint v270 = w_off + 256u + 4u * 12800u;
-    for (uint c = 0u; c < 32u; ++c) {
-        uint cc = head * 32u + c;
-        float acc = rh(float(s_act[tok][cc]) + read_f16(v270 + 2u * vidx(cc)));
-        for (uint hh = 0u; hh < 4u; ++hh) {
-            uint wo = w_off + 256u + hh * 12800u + 8704u;
-            float dot = 0.0;
-            for (uint r = 0u; r < 32u; ++r) {
-                dot += float(s_ctx[hh][tok][r]) * float(e4m3_lut[uint(wbuf[wo + frag_off(cc, r, 32u)])]);
+        for (uint i = 0u; i < 8u; ++i) { NR_ACC_ROW_REDUCE(ss[i]) }
+        float rs[8];
+        for (uint i = 0u; i < 8u; ++i) rs[i] = inversesqrt(ss[i] + 6.103515625e-05);
+        for (uint t = 0u; t < 8u; ++t) {
+            float g = read_f16(w_off + 2u * vidx(16u * t + col));
+            for (uint i = 0u; i < 8u; ++i) {
+                uint k = (8u * rowh + i) * 128u + 16u * t + col;
+                sN[k] = NR_OPERAND(quant8(float(sX[k]) * (rs[i] * g)));
             }
-            acc = rh(acc + dot);
         }
-        s_act[tok][cc] = float16_t(acc);
     }
-    barrier();
+    sync_lds();
 
-    // 6. RMSNorm 2 (gain2)
-    uint gain2 = v270 + 256u;
-    rmsnorm_part(tok, head, gain2);
-    barrier();
-
-    // 7. MLP: 16 blocks of fc1 (C -> 32) + b1 with the f16 chain, GELU, fc2 (32 -> C) added through f16.
-    // This thread: hidden 8*head..+8 of fc1, output channels 32*head..+32 of fc2.
-    uint ffn = gain2 + 256u;
-    uint fc2_bias = ffn + 4096u + 64u + 4096u;
-    for (uint c = 0u; c < 32u; ++c) {
-        uint cc = head * 32u + c;
-        s_mlp[tok][cc] = float16_t(rh(float(s_act[tok][cc]) + read_f16(fc2_bias + 2u * vidx(cc))));
+    // ---- 3. attention + residual: the post-attention stream lives in registers. The array is
+    // f32 holding f16-rounded values (every assignment narrows through float16_t, so the
+    // arithmetic is the model's f16 state); llvmpipe's copy_prop_vars faults on an f16 array.
+    float st[8][8];
+    {
+        // state = x + v270 (the model adds v270 before the heads)
+        uint v270 = w_off + 256u + 4u * 12800u;
+        for (uint t = 0u; t < 8u; ++t) {
+            float v = read_f16(v270 + 2u * vidx(16u * t + col));
+            for (uint i = 0u; i < 8u; ++i)
+                st[t][i] = float16_t(float(sX[(8u * rowh + i) * 128u + 16u * t + col]) + v);
+        }
     }
-    uint cur = ffn;
-    for (uint b = 0u; b < 16u; ++b) {
-        uint fc1 = cur;
-        cur += 4096u;
-        uint b1 = cur;
-        cur += 64u;
-        uint fc2 = cur;
-        cur += 4096u;
-        if (b == 0u) cur += 256u;           // fc2_bias sits once, after block 0
 
-        for (uint ms = 0u; ms < 8u; ++ms) {
-            uint m = head * 8u + ms;
-            float zc = read_f16(b1 + 2u * vidx(m));
-            for (uint g = 0u; g < 4u; ++g) {
-                float part = 0.0;
-                for (uint c = 0u; c < 32u; ++c) {
-                    uint cc = g * 32u + c;
-                    part += float(s_norm[tok][cc]) * float(e4m3_lut[uint(wbuf[fc1 + frag_off(m, cc, 128u)])]);
+    for (uint h = 0u; h < 4u; ++h) {
+        uint hb = w_off + 256u + h * 12800u;
+        uint wo = hb + 64u * 128u + 512u;
+
+        // 3a. Q and K: A = sN [tokens x C], B = wrep [32 x C] -> [token][dim] accumulators
+        NR_FRAG_ACC qf[2];
+        NR_FRAG_ACC kf[2];
+        qf[0] = NR_ACC_ZERO; qf[1] = NR_ACC_ZERO;
+        kf[0] = NR_ACC_ZERO; kf[1] = NR_ACC_ZERO;
+        for (uint kk = 0u; kk < 8u; ++kk) {
+            NR_FRAG_A fa;
+            NR_LOAD_A(fa, sN, 16u * kk, 128u);
+            NR_FRAG_B bq0;
+            NR_LOAD_B(bq0, wrep, hb + 16u * kk, 128u);
+            NR_FRAG_B bq1;
+            NR_LOAD_B(bq1, wrep, hb + 2048u + 16u * kk, 128u);
+            NR_MMA(qf[0], fa, bq0);
+            NR_MMA(qf[1], fa, bq1);
+            NR_FRAG_B bk0;
+            NR_LOAD_B(bk0, wrep, hb + 4096u + 16u * kk, 128u);
+            NR_FRAG_B bk1;
+            NR_LOAD_B(bk1, wrep, hb + 4096u + 2048u + 16u * kk, 128u);
+            NR_MMA(kf[0], fa, bk0);
+            NR_MMA(kf[1], fa, bk1);
+        }
+        for (uint j = 0u; j < 2u; ++j) {
+            for (uint i = 0u; i < 8u; ++i) {
+                sQ[(8u * rowh + i) * 32u + 16u * j + col] = NR_OPERAND(quant8(qf[j][i]));
+            }
+        }
+        sync_lds();
+
+        // 3b. logits = Q Q^T + relpos (the logit product's B operand comes from the same tile)
+        NR_FRAG_ACC lg = NR_ACC_ZERO;
+        for (uint kk = 0u; kk < 2u; ++kk) {
+            NR_FRAG_A la;
+            NR_LOAD_A(la, sQ, 16u * kk, 32u);
+            NR_FRAG_B lb;
+            NR_LOAD_B(lb, sQ, 16u * kk, 32u);
+            NR_MMA(lg, la, lb);
+        }
+        for (uint i = 0u; i < 8u; ++i)
+            lg[i] = lg[i] + read_f16(hb + 8192u + 2u * ((8u * rowh + i) * 16u + col));
+
+        // 3c. softmax: exp, then the row (query) sum over the window's 16 keys
+        float e0 = swin_exp(lg[0]), e1 = swin_exp(lg[1]);
+        float e2 = swin_exp(lg[2]), e3 = swin_exp(lg[3]);
+        float e4 = swin_exp(lg[4]), e5 = swin_exp(lg[5]);
+        float e6 = swin_exp(lg[6]), e7 = swin_exp(lg[7]);
+        float s0 = e0, s1 = e1, s2 = e2, s3 = e3, s4 = e4, s5 = e5, s6 = e6, s7 = e7;
+        NR_ACC_ROW_REDUCE(s0) NR_ACC_ROW_REDUCE(s1) NR_ACC_ROW_REDUCE(s2)
+        NR_ACC_ROW_REDUCE(s3) NR_ACC_ROW_REDUCE(s4) NR_ACC_ROW_REDUCE(s5)
+        NR_ACC_ROW_REDUCE(s6) NR_ACC_ROW_REDUCE(s7)
+        {
+            NR_FRAG_ACC16 pf;
+            pf[0] = float16_t(e0 / s0); pf[1] = float16_t(e1 / s1);
+            pf[2] = float16_t(e2 / s2); pf[3] = float16_t(e3 / s3);
+            pf[4] = float16_t(e4 / s4); pf[5] = float16_t(e5 / s5);
+            pf[6] = float16_t(e6 / s6); pf[7] = float16_t(e7 / s7);
+            NR_STORE_ACC(pf, sP, 0u, 16u);
+        }
+
+        // 3d. ctx = P V (V as f16 B operand straight from its accumulator tiles)
+        NR_FRAG_A16 pa;
+        NR_LOAD_A(pa, sP, 0u, 16u);
+        NR_FRAG_ACC cf[2];
+        cf[0] = NR_ACC_ZERO; cf[1] = NR_ACC_ZERO;
+        for (uint j = 0u; j < 2u; ++j) {
+            NR_FRAG_B16 vb;
+            for (uint i = 0u; i < 8u; ++i) vb[i] = float16_t(kf[j][i]);
+            NR_MMA(cf[j], pa, vb);
+        }
+        for (uint j = 0u; j < 2u; ++j)
+            for (uint i = 0u; i < 8u; ++i)
+                sC[(8u * rowh + i) * 32u + 16u * j + col] = NR_OPERAND(quant8(cf[j][i]));
+        sync_lds();
+
+        // 3e. Wo: state = f16(state + ctx . Wo_h)
+        for (uint nt = 0u; nt < 8u; ++nt) {
+            NR_FRAG_ACC a = NR_ACC_ZERO;
+            for (uint d0 = 0u; d0 < 2u; ++d0) {
+                NR_FRAG_A fa;
+                NR_LOAD_A(fa, sC, 16u * d0, 32u);
+                NR_FRAG_B fb;
+                NR_LOAD_B(fb, wrep, wo + 16u * nt * 32u + 16u * d0, 32u);
+                NR_MMA(a, fa, fb);
+            }
+            for (uint i = 0u; i < 8u; ++i) st[nt][i] = float16_t(st[nt][i] + a[i]);
+        }
+    }
+
+    // ---- 4. RMSNorm 2 (gain2) from the register residual -> sN (norm1's copy is dead)
+    sync_lds();
+    {
+        float ss[8] = float[8](0, 0, 0, 0, 0, 0, 0, 0);
+        for (uint t = 0u; t < 8u; ++t) {
+            for (uint i = 0u; i < 8u; ++i) ss[i] += st[t][i] * st[t][i];
+        }
+        for (uint i = 0u; i < 8u; ++i) { NR_ACC_ROW_REDUCE(ss[i]) }
+        uint gain2 = w_off + 256u + 4u * 12800u + 256u;
+        float rs[8];
+        for (uint i = 0u; i < 8u; ++i) rs[i] = inversesqrt(ss[i] + 6.103515625e-05);
+        for (uint t = 0u; t < 8u; ++t) {
+            float g = read_f16(gain2 + 2u * vidx(16u * t + col));
+            for (uint i = 0u; i < 8u; ++i) {
+                uint k = (8u * rowh + i) * 128u + 16u * t + col;
+                sN[k] = NR_OPERAND(quant8(st[t][i] * (rs[i] * g)));
+            }
+        }
+    }
+    sync_lds();
+
+    // ---- 5. MLP residual mlp = state + fc2_bias, then 16 blocks of fc1/GELU/fc2
+    {
+        uint ffn = w_off + 256u + 4u * 12800u + 512u;
+        uint fc2b = ffn + 8256u;
+        for (uint t = 0u; t < 8u; ++t) {
+            float b = read_f16(fc2b + 2u * vidx(16u * t + col));
+            for (uint i = 0u; i < 8u; ++i) st[t][i] = float16_t(float(st[t][i]) + b);
+        }
+
+        for (uint j = 0u; j < 16u; ++j) {
+            uint base = ffn + j * 8256u + ((j == 0u) ? 0u : 256u);
+            uint fc1 = base;
+            uint b1o = base + 4096u;
+            uint fc2 = base + 4160u;
+            if (tid < 32u) sB1[tid] = float16_t(read_f16(b1o + 2u * vidx(tid)));
+
+            // fc1: z = sN . W1^T + b1
+            NR_FRAG_ACC zf[2];
+            zf[0] = NR_ACC_ZERO; zf[1] = NR_ACC_ZERO;
+            for (uint kk = 0u; kk < 8u; ++kk) {
+                NR_FRAG_A fa;
+                NR_LOAD_A(fa, sN, 16u * kk, 128u);
+                NR_FRAG_B fb0;
+                NR_LOAD_B(fb0, wrep, fc1 + 16u * kk, 128u);
+                NR_FRAG_B fb1;
+                NR_LOAD_B(fb1, wrep, fc1 + 2048u + 16u * kk, 128u);
+                NR_MMA(zf[0], fa, fb0);
+                NR_MMA(zf[1], fa, fb1);
+            }
+            for (uint t = 0u; t < 2u; ++t) {
+                float b = float(sB1[16u * t + col]);
+                for (uint i = 0u; i < 8u; ++i)
+                    sH[(8u * rowh + i) * 32u + 16u * t + col] = NR_OPERAND(quant8(nh_gelu(zf[t][i] + b)));
+            }
+
+            // fc2: state = f16(state + hidden . W2^T)
+            for (uint nt = 0u; nt < 8u; ++nt) {
+                NR_FRAG_ACC a = NR_ACC_ZERO;
+                for (uint h0 = 0u; h0 < 2u; ++h0) {
+                    NR_FRAG_A fa;
+                    NR_LOAD_A(fa, sH, 16u * h0, 32u);
+                    NR_FRAG_B fb;
+                    NR_LOAD_B(fb, wrep, fc2 + 16u * nt * 32u + 16u * h0, 32u);
+                    NR_MMA(a, fa, fb);
                 }
-                zc = rh(zc + part);
+                for (uint i = 0u; i < 8u; ++i) st[nt][i] = float16_t(st[nt][i] + a[i]);
             }
-            s_h1[tok][m] = float16_t(q8(nh_gelu(zc)));
         }
-        barrier();
-        for (uint c = 0u; c < 32u; ++c) {
-            uint cc = head * 32u + c;
-            float sum = 0.0;
-            for (uint m = 0u; m < 32u; ++m) {
-                sum += float(s_h1[tok][m]) * float(e4m3_lut[uint(wbuf[fc2 + frag_off(cc, m, 32u)])]);
-            }
-            s_mlp[tok][cc] = float16_t(rh(float(s_mlp[tok][cc]) + sum));
-        }
-        barrier();
     }
 
-    // 8. out = clamp(mlp, -448, 448) as E4M3 RNE, this thread's 32 channels.
-    int real_x = x0 + dx;
-    int real_y = y0 + dy;
-    if (real_x >= 0 && real_x < dimW && real_y >= 0 && real_y < dimH) {
-        uint opos = uint(real_y * dimW + real_x);
-        for (uint c = 0u; c < 32u; ++c) {
-            uint cc = head * 32u + c;
-            float v = clamp(float(s_mlp[tok][cc]), -448.0, 448.0);
-            out_act[(head * HW + opos) * 32u + perm_invP(c)] = uint8_t(f32_to_e4m3_rne(v));
+    // ---- 6. out = clamp(state, +-448) as E4M3, scattered to in-bounds pixels
+    for (uint i = 0u; i < 8u; ++i) {
+        uint row = 8u * rowh + i;
+        int rx = x0 + int(row & 3u);
+        int ry = y0 + int(row >> 2u);
+        if (rx >= 0 && rx < dimW && ry >= 0 && ry < dimH) {
+            uint opos = uint(ry * dimW + rx);
+            for (uint t = 0u; t < 8u; ++t) {
+                uint c = 16u * t + col;
+                out_act[((c >> 5u) * HW + opos) * 32u + perm_invP(c & 31u)] =
+                    NR_OPERAND(quant8(st[t][i]));
+            }
         }
     }
 }

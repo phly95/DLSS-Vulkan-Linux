@@ -377,7 +377,7 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         add_pipe("sr_ae_copy", 2, 24);
         add_pipe("sr_enc0", 13, 256);
         add_pipe("sr_stage", 6, 56);
-        add_pipe("sr_tube_split", 3, 56);
+        add_pipe("sr_tube_split", 4, 56);
         add_pipe("sr_dec0", 8, 160);
         add_pipe("sr_post", 12, 256);
         add_pipe("sr_downsample", 4, 88);
@@ -1197,7 +1197,8 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                 if ((st & 1) == 0) { s0 = pe; s1 = 2; } else { s0 = po; s1 = 0; }
                 std::memcpy(push + 40, &dimW, 4); std::memcpy(push + 44, &dimH, 4);
                 std::memcpy(push + 48, &s0, 4); std::memcpy(push + 52, &s1, 4);
-                dispatch(cmd, "sr_tube_split", {&wbuf, in_b, out_b}, push, 56, (dimW + s0 + 3) / 4, (dimH + s1 + 3) / 4, 1);
+                // binding 3 = wrep, the row-major copy of the stage blob (the coopmm B operands)
+                dispatch(cmd, "sr_tube_split", {&wbuf, in_b, out_b, &wrep}, push, 56, (dimW + s0 + 3) / 4, (dimH + s1 + 3) / 4, 1);
             } else if (st == 8) { dimW = L2w; dimH = L2h; s0 = po; s1 = 0;
                 std::memcpy(push + 40, &dimW, 4); std::memcpy(push + 44, &dimH, 4);
                 std::memcpy(push + 48, &s0, 4); std::memcpy(push + 52, &s1, 4);

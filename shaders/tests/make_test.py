@@ -320,9 +320,17 @@ def make_test(name, out_dir):
             ]
         }
     elif name == "sr_tube_split":
-        in_act = np.linspace(1, 250, 4096, dtype=np.uint8).tobytes()
-        open(os.path.join(out_dir, "in_act.bin"), "wb").write(in_act)
-        open(os.path.join(out_dir, "wbuf.bin"), "wb").write(np.zeros(4096, dtype=np.uint8).tobytes())
+        # One wave per 4x4 window (16 tokens). The shader walks the whole 184576-byte tube blob
+        # through wbuf16 (f16 vectors, binding 0) and wrep (row-major matrices, binding 3), and the
+        # push dims are 16x16, so the tensors cover [4][16][16][32] = 32768 elements. in_act/out_act
+        # are typed NR_OPERAND, which the O7 NH_F16 build widens to f16 (2 bytes an element) - the
+        # fixture must hold 65536 bytes for those runs, while the fp8 build reads the same indices.
+        open(os.path.join(out_dir, "in_act.bin"), "wb").write(
+            np.tile(np.linspace(1, 250, 4096, dtype=np.uint8), 16).tobytes())       # 65536 B
+        open(os.path.join(out_dir, "wbuf.bin"), "wb").write(
+            np.tile(np.linspace(0.5, 2.0, 32768, dtype=np.float16).tobytes(), 6))   # 393216 B
+        open(os.path.join(out_dir, "wrep.bin"), "wb").write(
+            np.tile(np.linspace(0.05, 0.5, 32768, dtype=np.float16).tobytes(), 6))  # 393216 B
         push = bytearray(56)
         struct.pack_into("<4i", push, 40, 16, 16, 0, 0)
         cfg = {
@@ -331,7 +339,8 @@ def make_test(name, out_dir):
             "bindings": [
                 {"binding": 0, "file": "wbuf.bin"},
                 {"binding": 1, "file": "in_act.bin"},
-                {"binding": 2, "bytes": 4096, "output": "out_act", "type": "u8"}
+                {"binding": 2, "bytes": 65536, "output": "out_act", "type": "u8"},
+                {"binding": 3, "file": "wrep.bin"}
             ]
         }
     elif name == "sr_stage":
