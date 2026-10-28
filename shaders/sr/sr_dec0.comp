@@ -4,6 +4,8 @@
 #extension GL_EXT_shader_16bit_storage : enable
 #extension GL_EXT_shader_8bit_storage : enable
 #extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_control_flow_attributes : enable
+#include "nh_mm.glsl"
 
 // k_sr_dec0 (NeuralHub SR preset M, oracle launch 13). The spec is tools/sr/sr_dec0_model.py
 // (its module docstring = Review R3 + R3b in docs/notes/k_sr_dec0.md): every formula below is the
@@ -45,17 +47,33 @@
 
 layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
 
-layout(set = 0, binding = 0) readonly buffer InT8        { uint8_t in_t8[]; };
+// e4m3 in both builds (the f16-operand build widens it: make_test sizes in_t8 for that).
+layout(set = 0, binding = 0) readonly buffer InT8        { NR_OPERAND in_t8[]; };
 layout(set = 0, binding = 1) readonly buffer InPrevMv    { f16vec2 in_prev_mv[]; };
-layout(set = 0, binding = 2) readonly buffer InHidden    { int8_t in_hidden[]; };
+// A u32 view of the same bytes: one bilinear tap = its four channel bytes in ONE load (the four
+// int8 reads it replaces were four scattered, uncoalesced accesses a tap a pixel). Fixed-size type
+// in both builds, so the fixture does not change.
+layout(set = 0, binding = 2) readonly buffer InHidden    { uint in_hidden32[]; };
 layout(set = 0, binding = 3) writeonly buffer OutGates   { u8vec4 out_gates[]; };
 layout(set = 0, binding = 4) writeonly buffer OutFactors { u8vec4 out_factors[]; };
 layout(set = 0, binding = 5) writeonly buffer OutAniso   { f16vec4 out_aniso[]; };
 layout(set = 0, binding = 6) writeonly buffer OutHidden  { int8_t out_hidden[]; };
+// binding 8: t0's next door - the SAME t8 buffer again, viewed as 16-byte vectors. A t8 pixel's
+// plane is 32 B and 32 B aligned, so the staging loop takes the whole plane in two vector loads
+// (64 loads a wave) instead of 1024 byte loads with a P-permuted index each (measured staging =
+// 0.87 ms of this kernel's 1.46; see build/agents/enc0/progress.md).
+layout(set = 0, binding = 8) readonly buffer InT8V4 { uvec4 in_t8v4[]; };
+// binding 9: dec0's 128x64 tile repacked [N][K] row-major IN FP8 (sr_repack_dec0f8 from the
+// original dec0.bin frag tile - binding 7 keeps only its biases now). FP8 halves the B-fragment
+// load bytes against binding 7's f16 expansion (projection measured 0.238 ms, dominated by those
+// loads) and doubles the MMA rate; the epilogue already converts through the hardware path.
+layout(set = 0, binding = 9) readonly buffer InDec0F8 { NR_OPERAND dec0f8[]; };
 // binding 7 is sr_dec0's OWN repacked weights (pipeline.cpp sr_repack_dec0), not dec0.bin:
 //   words 0..4095   = [q][n][k] f16, two k per word
 //   words 4096..    = [q][n] f16 biases, two per word
-layout(set = 0, binding = 7) readonly buffer InDec0W     { uint dec0_w[]; };
+// Declared as an f16 view in both builds (the fp8 build reads the same bytes), so the projection
+// can take the weights straight into an f16 cooperative-matrix B operand.
+layout(set = 0, binding = 7) readonly buffer InDec0W     { float16_t dec0_w16[]; };
 
 layout(push_constant) uniform Dec0Args {
     layout(offset = 64) int W;
@@ -141,22 +159,30 @@ float tanh32(float x) {
     return copysgn(t, x);
 }
 
-float tap_dq(uint i) {                      // max(-1, i8 / 127)
-    return max(-1.0, float(int(in_hidden[i])) * (1.0 / 127.0));
+// max(-1, i8 / 127) for channel k of the word-aligned tap at byte index i (i % 4 == k)
+float tap_dq(uint i) {
+    uint w = in_hidden32[i >> 2u];
+    uint b = (w >> (8u * (i & 3u))) & 0xffu;
+    int v = int(b << 24u) >> 24u;            // sign-extend the i8
+    return max(-1.0, float(v) * (1.0 / 127.0));
 }
 
-// One f16 of the repacked weight blob: word (j*32 + k/2), .x for even k
-float w_f16(uint j, uint k) {
-    return float(unpackHalf2x16(dec0_w[j * 32u + (k >> 1)])[(k & 1u)]);
+// One f16 bias: element 8192 + j of the f16 view (word 4096 + j/2, two halfs a word)
+// The P permutation: stored byte index s holds LOGICAL channel P[s] (perm_invP is its inverse).
+uint perm_P(uint s) {
+    return ((s >> 2u) << 1u) | (s & 1u) | (((s >> 1u) & 1u) << 4u);
 }
 
-// One f16 bias: word 4096 + j/2
 float b_f16(uint j) {
-    return float(unpackHalf2x16(dec0_w[4096u + (j >> 1)])[(j & 1u)]);
+    return float(dec0_w16[8192u + j]);
 }
 
-// The workgroup's t8 tile: 4x4 t8 pixels x 64 channels, staged once (see the header)
-shared uint8_t s_t8[16 * 64];
+// The workgroup's t8 tile: 4x4 t8 pixels x 64 channels, staged once as f16 (the hardware convert
+// replaces the per-pixel 64x e4m3_to_f32 - the projection no longer decodes per render pixel).
+// s_p: the projection result [16 parents][128 sub-pixel outputs] in f16 (only q*32+0..17 of each
+// q block are ever read).
+shared NR_OPERAND s_t8[16 * 64];
+shared float16_t s_p[16 * 128];
 
 void main() {
     uint tid = gl_LocalInvocationIndex;
@@ -167,15 +193,60 @@ void main() {
     uint row_bytes = w_half * 32u;          // one t8 row, bytes
 
     // ---- stage the tile's 64 fp8 channels per t8 pixel into LDS (1 KB), in logical channel order
-    for (uint i = tid; i < 16u * 64u; i += 32u) {
-        uint k = i & 63u;                   // logical channel 0..63
-        uint pix = i >> 6;                  // local t8 pixel 0..15
+    // 64 units = 16 pixels x 2 planes x 2 vector halves, two a lane: ONE 16-byte load each,
+    // then the P-permute is a register scatter. Replaces 1024 byte loads a wave, each with its own
+    // perm_invP + plane/pixel address - the kernel's largest single block (0.87 ms measured).
+    for (uint i = tid; i < 64u; i += 32u) {
+        uint hb = i & 1u;
+        uint gp = (i >> 1) & 1u;            // t8 group plane 0..1 (k >> 5)
+        uint pix = i >> 2u;                 // local t8 pixel 0..15
         uint gx = (tile_x >> 1) + (pix & 3u);
         uint gy = (tile_y >> 1) + (pix >> 2);
-        uint off = (k >> 5u) * h_half * row_bytes + (gy * w_half + gx) * 32u + perm_invP(k & 31u);
-        s_t8[i] = in_t8[off];
+        uint byteoff = gp * h_half * row_bytes + (gy * w_half + gx) * 32u + hb * 16u;
+        uvec4 v = in_t8v4[byteoff >> 4];    // 32 B block => 16 B halves are 16 B aligned
+        [[unroll]] for (uint b = 0u; b < 16u; ++b) {
+            uint st = hb * 16u + b;       // stored byte index in the block
+            // b is a literal after unrolling, so the word pick folds to one component read
+            uint word = (b < 8u) ? ((b < 4u) ? v.x : v.y) : ((b < 12u) ? v.z : v.w);
+            uint by = (word >> (8u * (b & 3u))) & 0xFFu;
+            s_t8[pix * 64u + gp * 32u + perm_P(st)] = NR_OPERAND(e4m3_to_f32(by));
+        }
     }
-    barrier();
+
+    // ---- projection as four dense f16 WMMAs: for a fixed sub-pixel parity q the workgroup's 16
+    // t8 parents are one [16 x 64] x [64 x 32] product (every parent contributes exactly one
+    // render pixel of that parity, and the weight rows depend only on q) - 32 WMMAs replace
+    // 64 pixels x 18 x 64 scalar fmAs with a frag_off-style walk. Only q*32 + 0..17 of each
+    // 32-wide block is ever read back; the model's p = fp8(clamp(u)) is applied in the epilogue.
+    for (uint qq = 0u; qq < 4u; ++qq) {
+        NR_FRAG_ACC pr0 = NR_ACC_ZERO;
+        NR_FRAG_ACC pr1 = NR_ACC_ZERO;
+        // The bias is per output column: a lane's column inside a tile is tid & 15, so one value
+        // per lane per tile covers all eight of its rows.
+        float bj0 = b_f16(qq * 32u + (tid & 15u));
+        float bj1 = b_f16(qq * 32u + 16u + (tid & 15u));
+        for (uint k0 = 0u; k0 < 64u; k0 += 16u) {
+            NR_FRAG_A fa;
+            NR_LOAD_A(fa, s_t8, k0, 64u);
+            NR_FRAG_B fb0;
+            NR_LOAD_B(fb0, dec0f8, (qq * 32u + 0u) * 64u + k0, 64u);
+            NR_MMA(pr0, fa, fb0);
+            NR_FRAG_B fb1;
+            NR_LOAD_B(fb1, dec0f8, (qq * 32u + 16u) * 64u + k0, 64u);
+            NR_MMA(pr1, fa, fb1);
+        }
+        // bias first (f32), then the model's p = f16-decoded fp8(clamp(u)) - the quantisation
+        // itself is the HARDWARE conversion (v_cvt_pk_fp8_f32 on the clamped f32), not the
+        // software bit-twiddle: the epilogue ran to 64 x ~17 VALU a wave and measured as this
+        // kernel's largest single block (projection 0.238 ms of 0.507 on VRAM).
+        NR_FRAG_ACC16 h0, h1;
+        [[unroll]] for (uint i = 0u; i < 8u; ++i) {
+            h0[i] = float16_t(NR_OPERAND(clamp(pr0[i] + bj0, -448.0, 448.0)));
+            h1[i] = float16_t(NR_OPERAND(clamp(pr1[i] + bj1, -448.0, 448.0)));
+        }
+        NR_STORE_ACC(h0, s_p, qq * 32u + 0u, 128u);
+        NR_STORE_ACC(h1, s_p, qq * 32u + 16u, 128u);
+    }
 
     for (uint i = 0u; i < 2u; ++i) {
         uint pix = tid + i * 32u;
@@ -184,25 +255,14 @@ void main() {
         if (x >= uint(W) || y >= uint(H)) continue;
         uint idx = y * uint(W) + x;
 
-        // ---- projection: channels q*32 + 0..17 of this pixel's sub-pixel ----
+        // ---- projection: channels q*32 + 0..17 of this pixel's sub-pixel, from the tile product
         uint q = (x & 1u) + 2u * (y & 1u);
         uint j0 = q * 32u;
         uint sbase = (((y & 6u) >> 1) * 4u + ((x & 6u) >> 1)) * 64u;   // this pixel's t8 in LDS
-
-        float t[64];
-        for (uint k = 0u; k < 64u; ++k) t[k] = e4m3_to_f32(uint(s_t8[sbase + k]));
+        uint prow = sbase >> 6u;
 
         float p[18];
-        for (uint c = 0u; c < 18u; ++c) {
-            uint j = j0 + c;
-            float acc = b_f16(j);
-            for (uint k = 0u; k < 64u; k += 2u) {
-                vec2 w = unpackHalf2x16(dec0_w[j * 32u + (k >> 1)]);
-                acc = fma(t[k], w.x, acc);
-                acc = fma(t[k + 1u], w.y, acc);
-            }
-            p[c] = e4m3_to_f32(f32_to_e4m3_rne(acc));   // clamp +-448 is inside the encoder
-        }
+        for (uint c = 0u; c < 18u; ++c) p[c] = float(s_p[prow * 128u + j0 + c]);
 
         // ---- gates: channels 0, 1, 10 ----
         uint g0 = uint(roundEven(255.0 * clamp(sigm(p[0]), 0.0, 1.0)));

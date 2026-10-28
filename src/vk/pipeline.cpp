@@ -348,6 +348,18 @@ bool sr_repack_dec0(const uint8_t* src, uint8_t* dst, size_t blob_size) {
     return true;
 }
 
+// sr_dec0's embed matrix for the cooperative-matrix path: dec0.bin's one 128x64 fp8 tile, at
+// frag(128,64) offsets, rewritten [N][K] row-major (enc0's sr_repack_enc0 pattern). Binding 7's
+// f16 expansion keeps only its biases now.
+void sr_repack_dec0f8(const uint8_t* blob, size_t blob_size, uint8_t* dst) {
+    // dec0.bin = 8192 fp8 frag bytes + 128 f16 biases = 8448 B (the old `< 16384` guard here
+    // silently left the buffer zeroed and cost preset M the whole guard)
+    if (blob_size < 8448) return;
+    for (uint32_t r = 0; r < 128; ++r)
+        for (uint32_t c = 0; c < 64; ++c)
+            dst[size_t(r) * 64 + c] = blob[sr_frag_off(r, c, 64)];
+}
+
 // sr_enc0's embed matrix: the one 64x128 fp8 tile of enc0.bin, at blob offset 4096 in NeuralHub's
 // per-lane fragment order (frag_off, cols = 128), rewritten [N][K] row-major for the cooperative
 // matrix kernel's B operand (K contiguous). The 64 f16 biases at blob +12288 stay in w_enc0: the
@@ -418,7 +430,9 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         add_pipe("sr_enc0", 13, 256);
         add_pipe("sr_stage", 6, 56, 32);   // 64 threads = 2 x wave32: pin the subgroup size (coopmat)
         add_pipe("sr_tube_split", 4, 56);
-        add_pipe("sr_dec0", 8, 160);
+        // sr_dec0 gained binding 8: t8 bound again as 16-byte vectors for the staging loop
+        // (one vector load a half-pixel-plane instead of a byte load a channel).
+        add_pipe("sr_dec0", 10, 160);
         add_pipe("sr_post", 14, 256, 0,
                  // 0-4 SSBO, 5 history SAMPLED image (linear filter, the 5-tap CR's bilinear), 6-8
                  // SSBO, 9 history STORAGE image write, 10-13 SSBO (12 is the unused slot that keeps
@@ -694,6 +708,7 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
     c->w_enc0r = create_buffer(dev, phys, 8192, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     if (mode == "sr") c->wrep = create_buffer(dev, phys, 16 * 1024 * 1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->w_dec0 = create_buffer(dev, phys, 65536, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    c->w_dec0f8 = create_buffer(dev, phys, 8192, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     // sr_dec0's own repacked weights (see sr_repack_dec0): [4][32][64] f16 + 4x32 f16 biases = 16640 B.
     c->w_dec0rep = create_buffer(dev, phys, 65536, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
@@ -780,6 +795,7 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
             }
             if (!blob[11].empty() && blob[11].size() <= c->w_dec0.size) {
                 std::memcpy(c->w_dec0.mapped, blob[11].data(), blob[11].size());
+                sr_repack_dec0f8(blob[11].data(), blob[11].size(), static_cast<uint8_t*>(c->w_dec0f8.mapped));
                 // sr_dec0's own repacked weights (binding 7 of sr_dec0 only; sr_l0, preset L, keeps
                 // reading the original blob out of w_dec0)
                 if (!sr_repack_dec0(blob[11].data(), static_cast<uint8_t*>(c->w_dec0rep.mapped), blob[11].size()))
@@ -880,6 +896,7 @@ FrameChain::~FrameChain() {
     destroy_buffer(dev, w_enc0);
     destroy_buffer(dev, w_enc0r);
     destroy_buffer(dev, w_dec0);
+    destroy_buffer(dev, w_dec0f8);
     destroy_buffer(dev, wrep);
 
     for (auto& kv : ue) destroy_buffer(dev, kv.second);
@@ -1472,7 +1489,8 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             std::memcpy(push + 152, &F28yH, 4);
             // binding 7 = w_dec0rep, sr_repack_dec0's [q][n][k] f16 weights + f16 biases (the
             // original dec0.bin stays in w_dec0 for preset L's sr_l0)
-            dispatch(cmd, "sr_dec0", {&t_act[8], &prev_mvec[p ^ 1], &hidden[p], &gates, &factors, &aniso, &hidden[p ^ 1], &w_dec0rep}, push, 160, W0 / 8, H0 / 8, 1);
+            dispatch(cmd, "sr_dec0", {&t_act[8], &prev_mvec[p ^ 1], &hidden[p], &gates, &factors, &aniso, &hidden[p ^ 1], &w_dec0rep,
+                                 &t_act[8], &w_dec0f8}, push, 160, W0 / 8, H0 / 8, 1);
             inject_after(cmd, "dec0", sr_l[12]);
             }
         }

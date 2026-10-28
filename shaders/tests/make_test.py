@@ -246,6 +246,8 @@ def make_test(name, out_dir):
         vv = np.where(src & 0x80, -vv, vv).astype(np.float16)    # e4m3 -> f16 is exact
         rbias = np.array([bias[(j & ~31) | _invP(j & 31)] for j in range(128)], dtype=np.float16)
         open(os.path.join(out_dir, "wbuf.bin"), "wb").write(vv.tobytes() + rbias.tobytes())
+        # binding 9: the same fp8 128x64 tile, [N][K] row-major (sr_repack_dec0f8 on the host)
+        open(os.path.join(out_dir, "wdec0f8.bin"), "wb").write(src.astype(np.uint8).tobytes())
         push = bytearray(160)
         struct.pack_into("<8i", push, 64, w, h, w, h, w0, h0, w15, h15)
         struct.pack_into("<f", push, 96, 2.0)                    # dec0_s0
@@ -267,7 +269,10 @@ def make_test(name, out_dir):
                 {"binding": 4, "bytes": n_pix * 4, "output": "factors", "type": "u8"},
                 {"binding": 5, "bytes": n_pix * 8, "output": "aniso", "type": "f16"},
                 {"binding": 6, "bytes": n_pix * 4, "output": "hidden_out", "type": "u8"},
-                {"binding": 7, "file": "wbuf.bin"}
+                {"binding": 7, "file": "wbuf.bin"},
+                # binding 8: the same t8 bytes as 16-byte vectors (the staging loop's view)
+                {"binding": 8, "file": "in_t8.bin"},
+                {"binding": 9, "file": "wdec0f8.bin"}
             ]
         }
     elif name == "sr_post":
