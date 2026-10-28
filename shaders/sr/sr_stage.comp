@@ -306,30 +306,54 @@ void main() {
         for (uint hf = 0u; hf < 2u; ++hf) {
             // wave w computes the N-chunks with (chunk % 2) == w: the two waves used to compute the
             // same half twice (write-write benign, pure waste); the token read below is barriered.
-            for (uint n0 = hf * NH2; n0 < hf * NH2 + NH2; n0 += 2u) {
-                if ((((n0 - hf * NH2) / 2u) % 2u) != (tid >> 5u)) continue;
-                NR_FRAG_ACC p0 = NR_ACC_ZERO;
-                NR_FRAG_ACC p1 = NR_ACC_ZERO;
-                // M = the 16 low pixels (rows of the gather), N = two output tiles of this half,
-                // K = Cn unrolled by 2: four v_wmma per step.
+            for (uint n0 = hf * NH2; n0 < hf * NH2 + NH2; n0 += 4u) {
+                // four output tiles per iteration (8 v_wmma per K step); the tail (C=96 has 12
+                // tiles per half) falls back to the two-tile form.
+                if ((((n0 - hf * NH2) / 4u) % 2u) != (tid >> 5u) || n0 + 3u >= hf * NH2 + NH2) {
+                  if ((((n0 - hf * NH2) / 2u) % 2u) != (tid >> 5u) || n0 + 1u >= hf * NH2 + NH2) continue;
+                  { NR_FRAG_ACC p0 = NR_ACC_ZERO, p1 = NR_ACC_ZERO;
+                    for (uint k = 0u; k < Cn; k += 32u) {
+                        NR_FRAG_A fa0, fa1;
+                        NR_LOAD_A(fa0, sN8, k, Cn);
+                        NR_LOAD_A(fa1, sN8, k + 16u, Cn);
+                        NR_FRAG_B b0, b1, b2, b3;
+                        NR_LOAD_B(b0, wrep, w_off + 16u * n0 * Cn + k, Cn);
+                        NR_LOAD_B(b1, wrep, w_off + 16u * n0 * Cn + k + 16u, Cn);
+                        NR_LOAD_B(b2, wrep, w_off + 16u * (n0 + 1u) * Cn + k, Cn);
+                        NR_LOAD_B(b3, wrep, w_off + 16u * (n0 + 1u) * Cn + k + 16u, Cn);
+                        NR_MMA(p0, fa0, b0); NR_MMA(p0, fa1, b1);
+                        NR_MMA(p1, fa0, b2); NR_MMA(p1, fa1, b3);
+                    }
+                    uint cb = stag + 16u * (n0 - hf * NH2);
+                    STORE_E4M3(p0, sN8, 0u, cb, 2u * C)
+                    STORE_E4M3(p1, sN8, 0u, cb + 16u, 2u * C) }
+                  continue;
+                }
+                NR_FRAG_ACC p0 = NR_ACC_ZERO, p1 = NR_ACC_ZERO, p2 = NR_ACC_ZERO, p3 = NR_ACC_ZERO;
                 for (uint k = 0u; k < Cn; k += 32u) {
                     NR_FRAG_A fa0, fa1;
                     NR_LOAD_A(fa0, sN8, k, Cn);
                     NR_LOAD_A(fa1, sN8, k + 16u, Cn);
-                    NR_FRAG_B b0, b1, b2, b3;
+                    NR_FRAG_B b0, b1, b2, b3, b4, b5, b6, b7;
                     NR_LOAD_B(b0, wrep, w_off + 16u * n0 * Cn + k, Cn);
                     NR_LOAD_B(b1, wrep, w_off + 16u * n0 * Cn + k + 16u, Cn);
                     NR_LOAD_B(b2, wrep, w_off + 16u * (n0 + 1u) * Cn + k, Cn);
                     NR_LOAD_B(b3, wrep, w_off + 16u * (n0 + 1u) * Cn + k + 16u, Cn);
+                    NR_LOAD_B(b4, wrep, w_off + 16u * (n0 + 2u) * Cn + k, Cn);
+                    NR_LOAD_B(b5, wrep, w_off + 16u * (n0 + 2u) * Cn + k + 16u, Cn);
+                    NR_LOAD_B(b6, wrep, w_off + 16u * (n0 + 3u) * Cn + k, Cn);
+                    NR_LOAD_B(b7, wrep, w_off + 16u * (n0 + 3u) * Cn + k + 16u, Cn);
                     NR_MMA(p0, fa0, b0); NR_MMA(p0, fa1, b1);
                     NR_MMA(p1, fa0, b2); NR_MMA(p1, fa1, b3);
+                    NR_MMA(p2, fa0, b4); NR_MMA(p2, fa1, b5);
+                    NR_MMA(p3, fa0, b6); NR_MMA(p3, fa1, b7);
                 }
-                // Staging column = n0 - hf*2C (rows 0..15 are the low pixels, all real), placed
-                // after the low gather, which stays live for every K step of both halves.
                 uint cb = stag + 16u * (n0 - hf * NH2);
                 STORE_E4M3(p0, sN8, 0u, cb, 2u * C)
                 STORE_E4M3(p1, sN8, 0u, cb + 16u, 2u * C)
-            }
+                STORE_E4M3(p2, sN8, 0u, cb + 32u, 2u * C)
+                STORE_E4M3(p3, sN8, 0u, cb + 48u, 2u * C)
+            }   // for (n0 ... ) batched four-tile form
             sync_lds();
             // block input: f16(up8 + skip), up8 = E4M3(up + up_b) (R9 addendum's up8, the bias folded
             // in at the quantisation point exactly as the model's bias-first chain).
@@ -398,15 +422,23 @@ void main() {
         // 2a. Q. Two M tiles (this wave's windows) x two N tiles, one f32 accumulator over K = C.
         {
             NR_FRAG_ACC q00 = NR_ACC_ZERO, q01 = NR_ACC_ZERO, q10 = NR_ACC_ZERO, q11 = NR_ACC_ZERO;
-            for (uint k = 0u; k < C; k += 16u) {
-                NR_FRAG_A a0, a1;
+            // K unrolled by 2 (two 16-steps per iteration): 8 loads in flight with 8 v_wmma - the
+            // MMA microbenchmark measured 2.9x for 4-in-flight over 1-in-flight.
+            for (uint k = 0u; k < C; k += 32u) {
+                NR_FRAG_A a0, a1, c0, c1;
                 NR_LOAD_A(a0, sN8, 16u * wbase * 96u + k, 96u);
                 NR_LOAD_A(a1, sN8, 16u * (wbase + 1u) * 96u + k, 96u);
-                NR_FRAG_B b0, b1;
+                NR_LOAD_A(c0, sN8, 16u * wbase * 96u + k + 16u, 96u);
+                NR_LOAD_A(c1, sN8, 16u * (wbase + 1u) * 96u + k + 16u, 96u);
+                NR_FRAG_B b0, b1, e0, e1;
                 NR_LOAD_B(b0, wrep, hb + k, C);
                 NR_LOAD_B(b1, wrep, hb + 16u * C + k, C);
+                NR_LOAD_B(e0, wrep, hb + k + 16u, C);
+                NR_LOAD_B(e1, wrep, hb + 16u * C + k + 16u, C);
                 NR_MMA(q00, a0, b0); NR_MMA(q01, a0, b1);
                 NR_MMA(q10, a1, b0); NR_MMA(q11, a1, b1);
+                NR_MMA(q00, c0, e0); NR_MMA(q01, c0, e1);
+                NR_MMA(q10, c1, e0); NR_MMA(q11, c1, e1);
             }
             // qk8=1 of the spec: Q quantised to fp8 before Q.Q^T (and the logits' A/B fragments are
             // fp8, so they must be staged in an fp8 array - sH is free until ctx).
@@ -469,15 +501,21 @@ void main() {
         // 2d. V = Wk * s, into Q's buffer (Q's last reader, the logits, is past the barrier above).
         {
             NR_FRAG_ACC k00 = NR_ACC_ZERO, k01 = NR_ACC_ZERO, k10 = NR_ACC_ZERO, k11 = NR_ACC_ZERO;
-            for (uint k = 0u; k < C; k += 16u) {
-                NR_FRAG_A a0, a1;
+            for (uint k = 0u; k < C; k += 32u) {
+                NR_FRAG_A a0, a1, c0, c1;
                 NR_LOAD_A(a0, sN8, 16u * wbase * 96u + k, 96u);
                 NR_LOAD_A(a1, sN8, 16u * (wbase + 1u) * 96u + k, 96u);
-                NR_FRAG_B b0, b1;
+                NR_LOAD_A(c0, sN8, 16u * wbase * 96u + k + 16u, 96u);
+                NR_LOAD_A(c1, sN8, 16u * (wbase + 1u) * 96u + k + 16u, 96u);
+                NR_FRAG_B b0, b1, e0, e1;
                 NR_LOAD_B(b0, wrep, hb + 32u * C + k, C);
                 NR_LOAD_B(b1, wrep, hb + 32u * C + 16u * C + k, C);
+                NR_LOAD_B(e0, wrep, hb + 32u * C + k + 16u, C);
+                NR_LOAD_B(e1, wrep, hb + 32u * C + 16u * C + k + 16u, C);
                 NR_MMA(k00, a0, b0); NR_MMA(k01, a0, b1);
                 NR_MMA(k10, a1, b0); NR_MMA(k11, a1, b1);
+                NR_MMA(k00, c0, e0); NR_MMA(k01, c0, e1);
+                NR_MMA(k10, c1, e0); NR_MMA(k11, c1, e1);
             }
             NR_STORE_ACC(NR_NARROW_ACC(k00), sQV, 16u * wbase * 32u, 32u);
             NR_STORE_ACC(NR_NARROW_ACC(k01), sQV, 16u * wbase * 32u + 16u, 32u);
@@ -514,15 +552,21 @@ void main() {
         {
             for (uint n0 = 0u; n0 < NTC; n0 += 2u) {
                 NR_FRAG_ACC a00 = NR_ACC_ZERO, a01 = NR_ACC_ZERO, a10 = NR_ACC_ZERO, a11 = NR_ACC_ZERO;
-                for (uint k = 0u; k < 32u; k += 16u) {
-                    NR_FRAG_A fa0, fa1;
-                    NR_LOAD_A(fa0, sH, 16u * wbase * 32u + k, 32u);
-                    NR_LOAD_A(fa1, sH, 16u * (wbase + 1u) * 32u + k, 32u);
-                    NR_FRAG_B fb0, fb1;
-                    NR_LOAD_B(fb0, wrep, wo + 16u * n0 * 32u + k, 32u);
-                    NR_LOAD_B(fb1, wrep, wo + 16u * (n0 + 1u) * 32u + k, 32u);
+                {   // K = 32 in one shot: 8 loads in flight, 8 v_wmma, no loop overhead
+                    NR_FRAG_A fa0, fa1, fc0, fc1;
+                    NR_LOAD_A(fa0, sH, 16u * wbase * 32u + 0u, 32u);
+                    NR_LOAD_A(fa1, sH, 16u * (wbase + 1u) * 32u + 0u, 32u);
+                    NR_LOAD_A(fc0, sH, 16u * wbase * 32u + 16u, 32u);
+                    NR_LOAD_A(fc1, sH, 16u * (wbase + 1u) * 32u + 16u, 32u);
+                    NR_FRAG_B fb0, fb1, fe0, fe1;
+                    NR_LOAD_B(fb0, wrep, wo + 16u * n0 * 32u + 0u, 32u);
+                    NR_LOAD_B(fb1, wrep, wo + 16u * (n0 + 1u) * 32u + 0u, 32u);
+                    NR_LOAD_B(fe0, wrep, wo + 16u * n0 * 32u + 16u, 32u);
+                    NR_LOAD_B(fe1, wrep, wo + 16u * (n0 + 1u) * 32u + 16u, 32u);
                     NR_MMA(a00, fa0, fb0); NR_MMA(a01, fa0, fb1);
                     NR_MMA(a10, fa1, fb0); NR_MMA(a11, fa1, fb1);
+                    NR_MMA(a00, fc0, fe0); NR_MMA(a01, fc0, fe1);
+                    NR_MMA(a10, fc1, fe0); NR_MMA(a11, fc1, fe1);
                 }
                 RESID_ADD(a00, 16u * wbase, 16u * n0)
                 RESID_ADD(a01, 16u * wbase, 16u * (n0 + 1u))
@@ -570,15 +614,21 @@ void main() {
         uint m0 = 32u * (tid >> 5u);
         {
             NR_FRAG_ACC z00 = NR_ACC_ZERO, z01 = NR_ACC_ZERO, z10 = NR_ACC_ZERO, z11 = NR_ACC_ZERO;
-            for (uint k = 0u; k < C; k += 16u) {
-                NR_FRAG_A a0, a1;
+            for (uint k = 0u; k < C; k += 32u) {
+                NR_FRAG_A a0, a1, c0, c1;
                 NR_LOAD_A(a0, sN8, 96u * m0 + k, 96u);
                 NR_LOAD_A(a1, sN8, 96u * (m0 + 16u) + k, 96u);
-                NR_FRAG_B b0, b1;
+                NR_LOAD_A(c0, sN8, 96u * m0 + k + 16u, 96u);
+                NR_LOAD_A(c1, sN8, 96u * (m0 + 16u) + k + 16u, 96u);
+                NR_FRAG_B b0, b1, e0, e1;
                 NR_LOAD_B(b0, wrep, fc1 + k, C);
                 NR_LOAD_B(b1, wrep, fc1 + 16u * C + k, C);
+                NR_LOAD_B(e0, wrep, fc1 + k + 16u, C);
+                NR_LOAD_B(e1, wrep, fc1 + 16u * C + k + 16u, C);
                 NR_MMA(z00, a0, b0); NR_MMA(z01, a0, b1);
                 NR_MMA(z10, a1, b0); NR_MMA(z11, a1, b1);
+                NR_MMA(z00, c0, e0); NR_MMA(z01, c0, e1);
+                NR_MMA(z10, c1, e0); NR_MMA(z11, c1, e1);
             }
             NR_STORE_ACC(NR_NARROW_ACC(z00), sQV, 32u * m0, 32u);
             NR_STORE_ACC(NR_NARROW_ACC(z01), sQV, 32u * m0 + 16u, 32u);
@@ -613,15 +663,21 @@ void main() {
         uint m0 = 32u * (tid >> 5u);
         for (uint n0 = 0u; n0 < NTC; n0 += 2u) {
                 NR_FRAG_ACC m00 = NR_ACC_ZERO, m01 = NR_ACC_ZERO, m10 = NR_ACC_ZERO, m11 = NR_ACC_ZERO;
-                for (uint k = 0u; k < 32u; k += 16u) {
-                    NR_FRAG_A a0, a1;
-                    NR_LOAD_A(a0, sH, 32u * m0 + k, 32u);
-                    NR_LOAD_A(a1, sH, 32u * (m0 + 16u) + k, 32u);
-                    NR_FRAG_B b0, b1;
-                    NR_LOAD_B(b0, wrep, fc2 + 16u * n0 * 32u + k, 32u);
-                    NR_LOAD_B(b1, wrep, fc2 + 16u * (n0 + 1u) * 32u + k, 32u);
+                {   // K = 32 in one shot: 8 loads in flight, 8 v_wmma, no loop overhead
+                    NR_FRAG_A a0, a1, c0, c1;
+                    NR_LOAD_A(a0, sH, 32u * m0 + 0u, 32u);
+                    NR_LOAD_A(a1, sH, 32u * (m0 + 16u) + 0u, 32u);
+                    NR_LOAD_A(c0, sH, 32u * m0 + 16u, 32u);
+                    NR_LOAD_A(c1, sH, 32u * (m0 + 16u) + 16u, 32u);
+                    NR_FRAG_B b0, b1, e0, e1;
+                    NR_LOAD_B(b0, wrep, fc2 + 16u * n0 * 32u + 0u, 32u);
+                    NR_LOAD_B(b1, wrep, fc2 + 16u * (n0 + 1u) * 32u + 0u, 32u);
+                    NR_LOAD_B(e0, wrep, fc2 + 16u * n0 * 32u + 16u, 32u);
+                    NR_LOAD_B(e1, wrep, fc2 + 16u * (n0 + 1u) * 32u + 16u, 32u);
                     NR_MMA(m00, a0, b0); NR_MMA(m01, a0, b1);
                     NR_MMA(m10, a1, b0); NR_MMA(m11, a1, b1);
+                    NR_MMA(m00, c0, e0); NR_MMA(m01, c0, e1);
+                    NR_MMA(m10, c1, e0); NR_MMA(m11, c1, e1);
                 }
                 RESID_ADD(m00, m0, 16u * n0)
                 RESID_ADD(m01, m0, 16u * (n0 + 1u))
