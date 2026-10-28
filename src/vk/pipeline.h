@@ -212,6 +212,8 @@ private:
     Buffer w_dec0f8;
     // SR only: the row-major fp8 copy of the stage matrices (same offsets as wbuf), for KHR coopMatLoad.
     Buffer wrep;
+    Buffer wvec;    // per-stage f32 vector table for sr_swin (brief item b)
+    Buffer wrepT;   // sr_swin's tile-contiguous weight repack (brief item a)
     // SR only: enc0's 64x128 tile repacked row-major [N][K] for sr_enc0's cooperative-matrix GEMM
     // (8192 B, src/vk/pipeline.cpp sr_repack_enc0).
     Buffer w_enc0r;

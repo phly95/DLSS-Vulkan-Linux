@@ -4,6 +4,9 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
 #extension GL_EXT_shader_8bit_storage : enable
 #extension GL_EXT_shader_16bit_storage : enable
+// NR_QUANT_MODE 4: f32 -> E4M3 through the driver's saturating convert (the MODE register),
+// the same choice as sr_stage.comp (see its header for the pipestats evidence).
+#define NR_QUANT_MODE 4
 #include "nh_mm.glsl"
 
 // sr_swin: the outer-stage Swin block, generalised from sr_tube_split.comp (optimisation phase,
@@ -46,26 +49,42 @@
 layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) readonly buffer InW16       { float16_t  wbuf16[]; };
-layout(set = 0, binding = 1) readonly buffer InAct       { NR_OPERAND in_act[]; };
+layout(set = 0, binding = 1) readonly buffer InAct       { uvec4 in_act4[]; };
 layout(set = 0, binding = 2) writeonly buffer OutAct     { NR_OPERAND out_act[]; };
 layout(set = 0, binding = 3, std430) readonly buffer WRep { NR_OPERAND wrep[]; };
+// Brief item (b): per-stage f32 vector TABLE (host-built from the blob): gain1, v270, gain2,
+// fc2_bias ([C] each), then every b1 ([32] a block) and rel^T ([256] a head), de-permuted and
+// [tile][16 f32]-laid out so a lane's 8 values are one 32-byte run. Replaces ~250 scalar f16
+// loads a window plus every vidx() address computation (the review counted 124 buffer_load_d16
+// + the vidx maths in the heads alone).
+#ifdef NR_OPERAND_F16
+// The lavapipe f16 operand-probe build views the same bytes as scalars: Mesa's NIR pipeline
+// crashes (copy_prop_vars family) on a private uvec4 variable fed from this buffer, scalar
+// loads are vanilla.
+layout(set = 0, binding = 4, std430) readonly buffer WVec { float wv[]; };
+#else
+layout(set = 0, binding = 4, std430) readonly buffer WVec { uvec4 wv4[]; };
+#endif
+// Brief item (a): tile-contiguous weights (host repack sr_repack_tiles): every 16x16 fragment
+// is 256 contiguous bytes [n][k], so each cooperative-matrix load is stride 16 (a literal) with
+// the tile index in the address immediate.
+layout(set = 0, binding = 5, std430) readonly buffer WRepT { NR_OPERAND wrepT[]; };
 
 layout(push_constant) uniform StageArgs {
     uint wbuf_lo;
     uint wbuf_hi;
+    uint vec_off;                  // this stage's table base (stage_idx * 16384)
     layout(offset = 40) int dimW;
     int dimH;
     int shiftX;
     int shiftY;
 };
 
-shared NR_OPERAND sX[16 * SR_C];   // raw fp8 input: decoded where it is read
-shared NR_OPERAND sN[16 * SR_C];   // RMSNorm outputs (QKV / fc1 A operands)
-shared NR_OPERAND sQ[16 * 32];     // q8(Q)
-shared float16_t  sP[16 * 16];     // probabilities stay f16 (prob8=0 in the model)
-shared NR_OPERAND sC[16 * 32];     // q8(context)
-shared NR_OPERAND sH[16 * 32];     // q8(GELU) hidden
-shared float16_t  sB1[32];         // this MLP block's b1
+// D1 completed (d4r's token-lane idea, technique only): there is NO LDS and NO barrier left in
+// this block. The norm outputs live in `nst` (f32, encoded to e4m3 once per GEMM operand with
+// Q8P - D2's encode-once), and a lane's nst[kk][i] IS the K-chunk-kk operand fragment for BOTH
+// roles: B for Q^T = Wq . sN^T / z^T = W1 . sN^T (component c = k 8*rowh+c of token l%16) and A
+// for V = sN Wk^T (component c = k 8*rowh+c of token m = l%16) - the same registers, re-read.
 
 // ---- scalar helpers ----------------------------------------------------------------
 
@@ -79,6 +98,13 @@ float read_f16(uint byte_off) { return float(wbuf16[byte_off >> 1u]); }
 // build (the lavapipe check) carries no fp8 values at all - an fp8-typed value there made
 // kernel_run segfault (tube's O7 finding).
 float quant8(float x) { return clamp(x, -448.0, 448.0); }
+#ifdef NR_OPERAND_F16
+#define Q8P(F, i, a, b) { F[i] = NR_OPERAND(quant8(a)); F[(i) + 1u] = NR_OPERAND(quant8(b)); }
+#else
+// No local for the packed result: R1 forbids naming the FP8 vec type in shaders/ (CSE folds the
+// second nr_quant_pair32 call into the same v_cvt pair).
+#define Q8P(F, i, a, b) { F[i] = nr_quant_pair32(vec2(a, b)).x; F[(i) + 1u] = nr_quant_pair32(vec2(a, b)).y; }
+#endif
 
 int reflect_coord(int p, int dim) {
     int a = abs(p);
@@ -97,13 +123,31 @@ float swin_exp(float x) {
     return unpackHalf2x16(((h << 5u) + 0x8000u) & 0xffffu).x;
 }
 
-// NeuralHub's spline GELU (model act_fn 'nhgelu'), f32 arithmetic.
+// NeuralHub's spline GELU (model act_fn 'nhgelu'), f32 arithmetic. (A packed-f16 pair form was
+// measured SLOWER - 1.122 -> 1.132 - because the f32<->f16 conversions cost more than v_pk saves.)
 float nh_gelu(float z) {
     float t = clamp(z, -2.0, 2.0);
     return z * (t * (0.412109375 - 0.0810546875 * abs(t)) + 0.5);
 }
 
 void sync_lds() { memoryBarrierShared(); barrier(); }
+
+// The lane's 8 f32 for tile `T` of a [tile][16 f32] vector at byte base (rowh selects its half):
+// two b128 loads instead of eight scalar f16 loads + vidx.
+#ifdef NR_OPERAND_F16
+#define LANE8(BASE, T, V) \
+    uint o_ = ((BASE) + (T) * 64u + rowh * 32u) >> 2u; \
+    float V[8]; \
+    V[0] = wv[o_]; V[1] = wv[o_ + 1u]; V[2] = wv[o_ + 2u]; V[3] = wv[o_ + 3u]; \
+    V[4] = wv[o_ + 4u]; V[5] = wv[o_ + 5u]; V[6] = wv[o_ + 6u]; V[7] = wv[o_ + 7u];
+#else
+#define LANE8(BASE, T, V) \
+    uvec4 a0_ = wv4[((BASE) + (T) * 64u + rowh * 32u) >> 4u]; \
+    uvec4 a1_ = wv4[((BASE) + (T) * 64u + rowh * 32u + 16u) >> 4u]; \
+    float V[8] = float[8](uintBitsToFloat(a0_.x), uintBitsToFloat(a0_.y), uintBitsToFloat(a0_.z), \
+                          uintBitsToFloat(a0_.w), uintBitsToFloat(a1_.x), uintBitsToFloat(a1_.y), \
+                          uintBitsToFloat(a1_.z), uintBitsToFloat(a1_.w));
+#endif
 
 // Byte helpers, copied from sr_stage.comp's GROUP_BYTES pattern: the 32 bytes of a channel group
 // arrive as two uvec4 loads (contiguous, coalesced) instead of 32 scalar byte loads - measured on
@@ -123,21 +167,250 @@ float e4m3_to_f32(uint b) {
     BYTES_OF(VB.x, 4u, BODY) BYTES_OF(VB.y, 5u, BODY) BYTES_OF(VB.z, 6u, BODY) BYTES_OF(VB.w, 7u, BODY)
 
 
-// ---- input staging: fp8 bytes -> the raw fp8 tile, logical channel order -----------------
-// One storage load a byte; perm_P folds (literal indices). The two row-halves of a token stage
-// 64 channels each in tube (C=128); for C=64 the second half has nothing to stage, for C=96 it
-// stages the third group only - the rule "groups [2*rowh, 2*rowh+2) capped at C/32" covers all.
+// (c) Stored-order channels: there is no sX any more. The tensor's stored byte j of a 32-group
+// holds basis channel j (the host's tile/table repack permutes every channel axis to match), so a
+// lane's 8 channels per tile are 8 CONTIGUOUS bytes in global memory: one half-of-uvec4 load
+// straight into registers. (The old path: 64 scalar byte loads a lane into sX, a barrier, 32 LDS
+// reads back - and perm_P/perm_invP on both ends.)
+
+// The RADV/FP8 build: transposed register-chained dataflow. The private state is arrays of
+// cooperative-matrix fragments (st[NT], nst8[NT]) indexed by the (constant-trip) tile loops.
+#ifndef NR_OPERAND_F16
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint tok = tid & 15u;     // token inside the window (staging / output view)
+    uint col = tid & 15u;     // column inside a 16-wide fragment tile (fragment view)
+    uint rowh = tid >> 4u;    // which 8-row half this lane's components belong to
+
+    int gx = int(gl_WorkGroupID.x);
+    int gy = int(gl_WorkGroupID.y);
+    int x0 = gx * 4 - shiftX;
+    int y0 = gy * 4 - shiftY;
+    int dx = int(tok & 3u);
+    int dy = int(tok >> 2u);
+    int px = reflect_coord(x0 + dx, dimW);
+    int py = reflect_coord(y0 + dy, dimH);
+
+    uint HW = uint(dimH * dimW);
+    uint pos = uint(py * dimW + px);
+    uint w_off = wbuf_lo & 0x1fffffu;
+    // Only used for gain1's offset: mode 2 blobs start with up_W (4C x Cn) + up_b (4C) - the same
+    // walk sr_stage uses. Everything else is w_off-relative through this head area.
+    uint gain1b = (w_off >= 1341440u) ? (w_off + 4u * SR_C * ((SR_C == 64) ? 96u : 128u) + 8u * SR_C)
+                                      : w_off;
+    uint vt  = uint(vec_off);                       // the table (blob offsets no longer needed)
+    uint Tw  = uint(vec_off) * 8u;                  // the tiled weights (131072 B a stage)
+    uint T_C = SR_C / 16u;                          // col tiles of a C-wide matrix
+    uint wqT = Tw;                                  // [g][2][T_C] tiles
+    uint wkT = wqT + 256u * (2u * SR_G * T_C);
+    uint woT = wkT + 256u * (2u * SR_G * T_C);
+    uint w1T = woT + 256u * (2u * SR_G * T_C);
+    uint w2T = w1T + 256u * (2u * NBLK * T_C);
+    uint vt_gain2 = vt + 2u * SR_C * 4u;
+    uint vt_fc2b  = vt + 3u * SR_C * 4u;
+    uint vt_b1    = vt + 4u * SR_C * 4u;
+    uint vt_rel   = vt_b1 + NBLK * 32u * 4u;
+
+    // ---- 1. input: one half-uvec4 load per tile, straight into the residual registers
+    // (group = t>>1, in-group row = (t&1)*16 + rowh*8 - the stored-order channel run)
+    NR_FRAG_ACC st[NT];
+    NR_FRAG_B nst8[NT];             // norm outputs: e4m3 fragments, encoded ONCE at the norm
+                                    // (D2 encode-once) and copied into every operand role
+    for (uint t = 0u; t < NT; ++t) {
+        uint byte = ((t >> 1u) * HW + pos) * 32u + (t & 1u) * 16u + rowh * 8u;
+        uvec4 q = in_act4[byte >> 4u];
+        uvec2 h2 = ((byte & 8u) != 0u) ? q.zw : q.xy;
+        for (uint i = 0u; i < 4u; ++i)  st[t][i]      = e4m3_to_f32(byte_of(h2.x, i));
+        for (uint i = 0u; i < 4u; ++i)  st[t][4u + i] = e4m3_to_f32(byte_of(h2.y, i));
+    }
+
+    // ---- OPUS PROTOTYPE 2: transposed, register-resident block. The residual stream st[t] is an
+    // accumulator with rows = channels (16t + 8*rowh + i) and lane column = token (col): Wo and fc2
+    // are computed transposed (A = weight rows, B = ctx^T / h^T straight from the previous
+    // accumulator), RMSNorm sums are in-lane + one xor-16 shuffle, sN is written 8 contiguous
+    // bytes per tile. Q^T and z^T as A = weights, B = sN; V = sN Wk^T; logits transposed.
+    // RMSNorm 1
+    {
+        float ss = 0.0;
+        for (uint t = 0u; t < NT; ++t)
+            for (uint i = 0u; i < 8u; ++i) ss += st[t][i] * st[t][i];
+        ss += subgroupShuffleXor(ss, 16u);
+        float rs = inversesqrt(ss + 6.103515625e-05);
+        for (uint t = 0u; t < NT; ++t) {
+            uint c0 = 16u * t + 8u * rowh;
+            LANE8(vt, t, g)
+            for (uint i = 0u; i < 8u; i += 2u)
+                Q8P(nst8[t], i, st[t][i] * (rs * g[i]), st[t][i + 1u] * (rs * g[i + 1u]))
+        }
+        for (uint t = 0u; t < NT; ++t) {
+            LANE8(vt + SR_C * 4u, t, vv)
+            for (uint i = 0u; i < 8u; ++i) st[t][i] = st[t][i] + vv[i];
+        }
+    }
+
+    for (uint h = 0u; h < SR_G; ++h) {
+        uint hb = gain1b + 2u * SR_C + h * (96u * SR_C + 512u);
+        uint wo = hb + 64u * SR_C + 512u;
+        NR_FRAG_ACC qt[2];
+        NR_FRAG_ACC kf[2];
+        qt[0] = NR_ACC_ZERO; qt[1] = NR_ACC_ZERO;
+        kf[0] = NR_ACC_ZERO; kf[1] = NR_ACC_ZERO;
+        for (uint kk = 0u; kk < NT; ++kk) {
+            NR_FRAG_A fa;
+            NR_FRAG_B fb;
+            for (uint i = 0u; i < 8u; ++i) { fa[i] = nst8[kk][i]; fb[i] = nst8[kk][i]; }
+            NR_FRAG_A wq0;
+            NR_LOAD_A(wq0, wrepT, wqT + 256u * (2u * h * T_C) + 256u * kk, 16u);
+            NR_FRAG_A wq1;
+            NR_LOAD_A(wq1, wrepT, wqT + 256u * (2u * h * T_C + T_C) + 256u * kk, 16u);
+            NR_MMA(qt[0], wq0, fb);
+            NR_MMA(qt[1], wq1, fb);
+            NR_FRAG_B bk0;
+            NR_LOAD_B(bk0, wrepT, wkT + 256u * (2u * h * T_C) + 256u * kk, 16u);
+            NR_FRAG_B bk1;
+            NR_LOAD_B(bk1, wrepT, wkT + 256u * (2u * h * T_C + T_C) + 256u * kk, 16u);
+            NR_MMA(kf[0], fa, bk0);
+            NR_MMA(kf[1], fa, bk1);
+        }
+        NR_FRAG_ACC lg = NR_ACC_ZERO;
+        for (uint j = 0u; j < 2u; ++j) {
+            NR_FRAG_A qa;
+            NR_FRAG_B qb;
+            for (uint i = 0u; i < 8u; i += 2u) {
+                Q8P(qa, i, qt[j][i], qt[j][i + 1u])
+                qb[i] = qa[i]; qb[i + 1u] = qa[i + 1u];
+            }
+            NR_MMA(lg, qa, qb);
+        }
+        LANE8(vt_rel + h * 256u * 4u, col, rr)
+        for (uint i = 0u; i < 8u; ++i) lg[i] = lg[i] + rr[i];
+        float e[8];
+        float ssum = 0.0;
+        for (uint i = 0u; i < 8u; ++i) { e[i] = swin_exp(lg[i]); ssum += e[i]; }
+        ssum += subgroupShuffleXor(ssum, 16u);
+        float inv = 1.0 / ssum;
+        NR_FRAG_B16 pb;
+        for (uint i = 0u; i < 8u; ++i) pb[i] = float16_t(e[i] * inv);
+        NR_FRAG_ACC ct[2];
+        for (uint j = 0u; j < 2u; ++j) {
+            NR_FRAG_A16 va;
+            for (uint i = 0u; i < 8u; ++i) va[i] = float16_t(kf[j][i]);
+            ct[j] = NR_ACC_ZERO;
+            NR_MMA(ct[j], va, pb);
+        }
+        // Wo^T: st += Wo ctx^T (A = Wo rows [C][32], B = ctx^T from ct's registers)
+        NR_FRAG_B cb[2];
+        for (uint j = 0u; j < 2u; ++j)
+            for (uint i = 0u; i < 8u; i += 2u) Q8P(cb[j], i, ct[j][i], ct[j][i + 1u])
+        for (uint nt = 0u; nt < NT; ++nt) {
+            for (uint d0 = 0u; d0 < 2u; ++d0) {
+                NR_FRAG_A wa;
+                NR_LOAD_A(wa, wrepT, woT + 256u * (2u * h * T_C) + 256u * (2u * nt + uint(d0)), 16u);
+                NR_MMA(st[nt], wa, cb[d0]);
+            }
+        }
+    }
+
+    // ---- RMSNorm 2 (register-resident)
+    {
+        float ss = 0.0;
+        for (uint t = 0u; t < NT; ++t)
+            for (uint i = 0u; i < 8u; ++i) ss += st[t][i] * st[t][i];
+        ss += subgroupShuffleXor(ss, 16u);
+        float rs = inversesqrt(ss + 6.103515625e-05);
+        for (uint t = 0u; t < NT; ++t) {
+            uint c0 = 16u * t + 8u * rowh;
+            LANE8(vt_gain2, t, g)
+            for (uint i = 0u; i < 8u; i += 2u)
+                Q8P(nst8[t], i, st[t][i] * (rs * g[i]), st[t][i + 1u] * (rs * g[i + 1u]))
+        }
+    }
+
+    // ---- MLP
+    {
+        uint ffn = gain1b + 6u * SR_C + SR_G * (96u * SR_C + 512u);
+        for (uint t = 0u; t < NT; ++t) {
+            LANE8(vt_fc2b, t, bb)
+            for (uint i = 0u; i < 8u; ++i) st[t][i] = st[t][i] + bb[i];
+        }
+
+        for (uint j = 0u; j < NBLK; ++j) {
+            uint base = ffn + j * (64u * SR_C + 64u) + ((j == 0u) ? 0u : 2u * SR_C);
+            uint fc1 = base;
+            uint fc2 = base + 32u * SR_C + 64u;
+            NR_FRAG_ACC zt[2];
+            zt[0] = NR_ACC_ZERO; zt[1] = NR_ACC_ZERO;
+            for (uint kk = 0u; kk < NT; ++kk) {
+                NR_FRAG_B fb;
+                for (uint i = 0u; i < 8u; ++i) fb[i] = nst8[kk][i];
+                NR_FRAG_A w0;
+                NR_LOAD_A(w0, wrepT, w1T + 256u * (2u * uint(j) * T_C) + 256u * kk, 16u);
+                NR_FRAG_A w1;
+                NR_LOAD_A(w1, wrepT, w1T + 256u * (2u * uint(j) * T_C + T_C) + 256u * kk, 16u);
+                NR_MMA(zt[0], w0, fb);
+                NR_MMA(zt[1], w1, fb);
+            }
+            NR_FRAG_B hb2[2];
+            for (uint t = 0u; t < 2u; ++t) {
+                LANE8(vt_b1 + uint(j) * 32u * 4u, t, bb)
+                for (uint i = 0u; i < 8u; i += 2u)
+                    Q8P(hb2[t], i, nh_gelu(zt[t][i] + bb[i]), nh_gelu(zt[t][i + 1u] + bb[i + 1u]))
+            }
+            for (uint nt = 0u; nt < NT; ++nt) {
+                for (uint h0 = 0u; h0 < 2u; ++h0) {
+                    NR_FRAG_A wa;
+                    NR_LOAD_A(wa, wrepT, w2T + 256u * (2u * uint(j) * T_C) + 256u * (2u * nt + h0), 16u);
+                    NR_MMA(st[nt], wa, hb2[h0]);
+                }
+            }
+        }
+    }
+
+    // ---- out: this lane's token, 8 channels a tile
+    {
+        int rx = x0 + int(col & 3u);
+        int ry = y0 + int(col >> 2u);
+        if (rx >= 0 && rx < dimW && ry >= 0 && ry < dimH) {
+            uint opos = uint(ry * dimW + rx);
+            for (uint t = 0u; t < NT; ++t) {
+                uint c0 = 16u * t + 8u * rowh;
+                for (uint i = 0u; i < 8u; i += 2u) {
+                    uint c = c0 + i;
+                    NR_OPERAND o[2];
+                    Q8P(o, 0u, st[t][i], st[t][i + 1u])
+                    uint lbase = ((t & 1u) * 16u + rowh * 8u + i);
+                    out_act[((t >> 1u) * HW + opos) * 32u + lbase] = o[0];
+                    out_act[((t >> 1u) * HW + opos) * 32u + lbase + 1u] = o[1];
+                }
+            }
+        }
+    }
+}
+
+#else
+// The lavapipe fallback keeps the proven-O7 dataflow of the merged 77037b7 sr_swin (scalar
+// register residual, LDS tiles, barriers): Mesa's NIR/LLVM stack crashes on this operand build
+// for every "clever" form - private array CONSTRUCTORS from SSBO loads, private vectors fed
+// from loads, even element-stores into arrays behind the token-lane macros (bisected in the
+// verify worktrees; see REPORT.md). Raw fp8 input bytes -> sX via the GROUP_BYTES pattern
+// sr_stage.comp has always shipped through O7.
+#define GROUP_BYTES_F16(VA, VB, BODY) \
+    BYTES_OF(VA.x, 0u, BODY) BYTES_OF(VA.y, 1u, BODY) BYTES_OF(VA.z, 2u, BODY) BYTES_OF(VA.w, 3u, BODY) \
+    BYTES_OF(VB.x, 4u, BODY) BYTES_OF(VB.y, 5u, BODY) BYTES_OF(VB.z, 6u, BODY) BYTES_OF(VB.w, 7u, BODY)
+shared NR_OPERAND sX[16 * SR_C];   // raw fp8 input: decoded where it is read
+shared NR_OPERAND sN[16 * SR_C];   // RMSNorm outputs (QKV / fc1 A operands)
+shared NR_OPERAND sQ[16 * 32];     // q8(Q)
+shared float16_t  sP[16 * 16];     // probabilities stay f16 (prob8=0 in the model)
+shared NR_OPERAND sC[16 * 32];     // q8(context)
+shared NR_OPERAND sH[16 * 32];     // q8(GELU) hidden
+shared float16_t  sB1[32];         // this MLP block's b1
 
 void stage_cg(uint cg, uint tok, uint base) {
-    // Scalar byte copies (NOT the uvec4/GROUP_BYTES form the projections use): the ablation put
-    // this staging at ~4% of the block - it is not load-bound, and the vector form's byte decode
-    // + re-encode made the block 8% SLOWER (1.301 -> 1.475). Raw fp8 bytes pass through as-is and
-    // are decoded where they are read.
-#define SB(I) sX[tok * SR_C + cg * 32u + perm_P(I)] = in_act[base + (I)];
-    SB(0u)  SB(1u)  SB(2u)  SB(3u)  SB(4u)  SB(5u)  SB(6u)  SB(7u)
-    SB(8u)  SB(9u)  SB(10u) SB(11u) SB(12u) SB(13u) SB(14u) SB(15u)
-    SB(16u) SB(17u) SB(18u) SB(19u) SB(20u) SB(21u) SB(22u) SB(23u)
-    SB(24u) SB(25u) SB(26u) SB(27u) SB(28u) SB(29u) SB(30u) SB(31u)
+    uint v16 = base >> 4u;
+    uvec4 va = in_act4[v16];
+    uvec4 vb = in_act4[v16 + 1u];
+#define SB(j, bv) sX[tok * SR_C + cg * 32u + perm_P(j)] = NR_OPERAND(e4m3_to_f32(bv));
+    GROUP_BYTES_F16(va, vb, SB)
 #undef SB
 }
 
@@ -381,3 +654,5 @@ void main() {
         }
     }
 }
+
+#endif

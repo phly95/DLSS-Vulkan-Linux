@@ -332,7 +332,7 @@ def make_test(name, out_dir):
                 {"binding": 13, "bytes": ow * oh * 4, "output": "full15", "type": "u32"}
             ]
         }
-    elif name in ("sr_tube_split", "sr_swin64", "sr_swin96"):
+    elif name in ("sr_tube_split", "sr_swin64", "sr_swin96", "_shared_tube_swin"):
         # One wave per 4x4 window (16 tokens). The shader walks the whole 184576-byte tube blob
         # through wbuf16 (f16 vectors, binding 0) and wrep (row-major matrices, binding 3), and the
         # push dims are 16x16, so the tensors cover [4][16][16][32] = 32768 elements. in_act/out_act
@@ -354,6 +354,33 @@ def make_test(name, out_dir):
                 {"binding": 1, "file": "in_act.bin"},
                 {"binding": 2, "bytes": 65536, "output": "out_act", "type": "u8"},
                 {"binding": 3, "file": "wrep.bin"}
+            ]
+        }
+    elif name in ("sr_swin64", "sr_swin96"):
+        # Same as the tube case plus binding 4 = the sr_swin vector table (brief item b): 16384 B
+        # a stage, and push+8 = the table base (0 here).
+        open(os.path.join(out_dir, "in_act.bin"), "wb").write(
+            np.tile(np.linspace(1, 250, 4096, dtype=np.uint8), 16).tobytes())
+        open(os.path.join(out_dir, "wbuf.bin"), "wb").write(
+            np.tile(np.linspace(0.5, 2.0, 32768, dtype=np.float16).tobytes(), 6))
+        open(os.path.join(out_dir, "wrep.bin"), "wb").write(
+            np.tile(np.linspace(0.05, 0.5, 32768, dtype=np.float16).tobytes(), 6))
+        open(os.path.join(out_dir, "wvec.bin"), "wb").write(
+            np.linspace(0.25, 1.75, 4096, dtype=np.float32).tobytes() * 4)         # 65536 B
+        open(os.path.join(out_dir, "wrepT.bin"), "wb").write(
+            np.tile(np.linspace(0.05, 0.5, 32768, dtype=np.uint8).tobytes(), 4))   # 131072 B
+        push = bytearray(56)
+        struct.pack_into("<4i", push, 40, 16, 16, 0, 0)
+        cfg = {
+            "groups": [64, 1, 1],
+            "push": push.hex(),
+            "bindings": [
+                {"binding": 0, "file": "wbuf.bin"},
+                {"binding": 1, "file": "in_act.bin"},
+                {"binding": 2, "bytes": 65536, "output": "out_act", "type": "u8"},
+                {"binding": 3, "file": "wrep.bin"},
+                {"binding": 4, "file": "wvec.bin"},
+                {"binding": 5, "file": "wrepT.bin"}
             ]
         }
     elif name in ("sr_swin_proj", "sr_swin_proj64", "sr_swin_proj96"):

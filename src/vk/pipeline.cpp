@@ -285,6 +285,105 @@ uint32_t sr_frag_off(uint32_t r, uint32_t c, uint32_t cols) {
     return (low | high) + ((u1 & 0xFu) + (u5 & 8u) * 2u) * 8u;
 }
 
+// Brief item (b): sr_swin's per-stage f32 vector table. Byte layout (stage-relative, 16384
+// stride): gain1 [C] @0, v270 @4C, gain2 @8C, fc2_bias @12C, b1 [NBLK*32] @16C, rel^T [g*256]
+// @32C - every vector in LOGICAL channel order, each tile 16 contiguous f32 so a lane's 8 values
+// are one 32-byte run (the shader's LANE8). Fills the table for stage `si`; false if the blob is
+// too small.
+static bool sr_fill_vec_table(const uint8_t* blob, size_t blob_size, uint8_t* tab, const SrStageShape& s) {
+    auto f16f = [](const uint8_t* p) {
+        uint32_t h = uint32_t(p[0]) | (uint32_t(p[1]) << 8);
+        uint32_t sign = (h >> 15) & 1u, exp = (h >> 10) & 0x1Fu, man = h & 0x3FFu;
+        uint32_t e = (exp == 0) ? 0u : (exp + 112u);          // weights are normal or zero
+        uint32_t b = (sign << 31) | (e << 23) | (man << 13);
+        float v; std::memcpy(&v, &b, 4); return v;
+    };
+    auto perm_invP = [](uint32_t c) { return (((c >> 1u) & 7u) << 2u) | (c & 1u) | (((c >> 4u) & 1u) << 1u); };
+    auto vidx = [&](uint32_t c) { return (c & ~31u) | perm_invP(c); };
+    auto perm_P = [](uint32_t i) { return ((i >> 2u) << 1u) | (i & 1u) | (((i >> 1u) & 1u) << 4u); };
+    // chan: the vector is indexed by C channels -> store it in the SAME stored basis as the tile
+    // repack (slot j = logical perm_P(j)); permuted: the blob's own P-permuted vector storage.
+    auto vec = [&](uint32_t base, uint32_t n, uint32_t tab_off, uint32_t permuted, uint32_t chan) {
+        if (size_t(base) + 2u * n > blob_size) return false;
+        for (uint32_t c = 0; c < n; ++c) {
+            uint32_t lc = chan ? ((c & ~31u) | perm_P(c & 31u)) : c;
+            float v = f16f(blob + base + 2u * (permuted ? vidx(lc) : lc));
+            std::memcpy(tab + 4u * (tab_off + c), &v, 4);
+        }
+        return true;
+    };
+    const uint32_t C = s.C, g = s.g, Cn = s.Cn;
+    uint32_t base = (s.mode == 2) ? 4u * C * Cn + 8u * C : 0u;
+    if (!vec(base, C, 0, 1, 1)) return false;                                // gain1 (channel)
+    uint32_t v270 = base + 2u * C + g * (96u * C + 512u);
+    if (!vec(v270, C, C, 1, 1)) return false;                                // v270 (channel)
+    if (!vec(v270 + 2u * C, C, 2u * C, 1, 1)) return false;                  // gain2 (channel)
+    uint32_t ffn = base + 6u * C + g * (96u * C + 512u);
+    for (uint32_t j = 0; j < C / 8u; ++j) {
+        uint32_t b1o = ffn + j * (64u * C + 64u) + ((j == 0u) ? 0u : 2u * C) + 32u * C;
+        if (!vec(b1o, 32, 4u * C + 32u * j, 1, 0)) return false;             // b1: HIDDEN dim, no perm
+    }
+    if (!vec(ffn + 64u * C + 64u, C, 3u * C, 1, 1)) return false;            // fc2_bias (channel)
+    for (uint32_t h = 0; h < g; ++h) {                                       // rel^T: TOKEN dim
+        uint32_t rlo = base + 2u * C + h * (96u * C + 512u) + 64u * C;
+        if (!vec(rlo, 256, 8u * C + 256u * h, 0, 0)) return false;
+    }
+    return true;
+}
+
+// Brief item (a): sr_swin's tile-contiguous weight repack. Per stage, in compact order:
+//   Wq [g][32][C], Wk [g][32][C], Wo [g][C][32], W1 [NBLK][32][C], W2 [NBLK][C][32]
+// each matrix as [rowtile][coltile][16][16] = 256-byte tiles, so a cooperative-matrix load is
+// one tile with stride 16 (a literal) and the tile index folds into the immediate offset -
+// the review counted 47 address VALU per MLP block against this.
+static bool sr_repack_tiles(const uint8_t* wbuf, uint8_t* out, size_t woff, const SrStageShape& s) {
+    const uint32_t C = s.C, g = s.g, CT = C / 16u, NBLK = C / 8u;
+    // Brief item (c): channel axes go into the activation's STORED basis - byte j of a 32-group
+    // holds logical channel perm_P(j), so the kernel can index channels by stored byte and the
+    // input/output move as whole bytes. perm_c maps a BASIS channel index to the LOGICAL one the
+    // blob (and sr_frag_off) speaks; group order is untouched (groups of 32 stay aligned).
+    auto perm_P = [](uint32_t i) { return ((i >> 2u) << 1u) | (i & 1u) | (((i >> 1u) & 1u) << 4u); };
+    auto basis = [&](uint32_t idx) { return (idx & ~31u) | perm_P(idx & 31u); };
+    auto tile = [&](size_t rel, uint32_t rows, uint32_t cols, size_t tiles_off, bool perm_r, bool perm_c) {
+        for (uint32_t rt = 0; rt < rows / 16u; ++rt)
+            for (uint32_t ct = 0; ct < cols / 16u; ++ct)
+                for (uint32_t n = 0; n < 16u; ++n)
+                    for (uint32_t k = 0; k < 16u; ++k) {
+                        uint32_t r = rt * 16u + n, c = ct * 16u + k;
+                        uint32_t rl = perm_r ? basis(r) : r;
+                        uint32_t cl = perm_c ? basis(c) : c;
+                        out[tiles_off + (size_t(rt) * (cols / 16u) + ct) * 256u + n * 16u + k] =
+                            wbuf[woff + rel + sr_frag_off(rl, cl, cols)];
+                    }
+    };
+    size_t cur = 0;
+    // Region STARTS (the first version used sizes as bases, so every region after Wq was written
+    // one slot late - Wk's data at 8192 while the shader read at 4096; Wq alone agreed).
+    const size_t rWq = 256u * (size_t)(2u * g * CT);             // one head-unit of Wq tiles
+    const size_t wqT = 0;
+    const size_t wkT = rWq;                                      // = 256 * (2*g*CT)
+    const size_t woT = wkT + rWq;
+    const size_t w1T = woT + rWq;
+    const size_t w2T = w1T + 256u * (size_t)(2u * NBLK * CT);
+    if (s.mode == 2) cur += size_t(4) * C * s.Cn + 8u * C;      // up_W + up_b (not tiled: the up
+    cur += 2u * C;                                              // kernel reads wrep directly)
+    for (uint32_t h = 0; h < g; ++h) {
+        tile(cur, 32, C, 256u * (size_t)(2u * h * CT), false, true);           // Wq: K = C
+        tile(cur + 32u * C, 32, C, wkT + 256u * (size_t)(2u * h * CT), false, true);
+        cur += size_t(64u) * C + 512u;                          // + relpos (not tiled)
+        tile(cur, C, 32, woT + 256u * (size_t)(2u * h * CT), true, false);     // Wo: rows = C
+        cur += size_t(32u) * C;
+    }
+    cur += 4u * C;                                              // v270, gain2 (table only)
+    for (uint32_t j = 0; j < NBLK; ++j) {
+        size_t b = cur + ((j == 0u) ? 0u : 2u * C);
+        tile(b, 32, C, w1T + 256u * (size_t)(2u * j * CT), false, true);       // W1: K = C
+        tile(b + 32u * C + 64u, C, 32, w2T + 256u * (size_t)(2u * j * CT), true, false);  // W2: rows = C
+        cur += size_t(64u) * C + 64u;
+    }
+    return true;
+}
+
 // Returns false when the walk does not end at the blob size (the stage is then left unrepacked).
 bool sr_repack_stage(const uint8_t* wbuf, uint8_t* wrep, size_t woff, size_t blob_size, const SrStageShape& s) {
     size_t cur = 0;
@@ -441,8 +540,8 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         // generalised from sr_tube_split.comp (32 threads = one wave a 4x4 window, NO subgroup pin -
         // wave32 follows from the workgroup size), plus the mode-0 patch projection and the mode-2
         // up+skip as their own small GEMM dispatches. sr_stage.comp stays for DLSS5_AMD_STAGE_LEGACY=1.
-        add_pipe("sr_swin64", 4, 56);
-        add_pipe("sr_swin96", 4, 56);
+        add_pipe("sr_swin64", 6, 56);   // + wvec (table) + wrepT (tiled weights)
+        add_pipe("sr_swin96", 6, 56);
         add_pipe("sr_swin_proj", 4, 56);
         add_pipe("sr_swin_up", 5, 56);
         // per-(C) specializations of the same sources (SR_C define -> constant K/N loops)
@@ -731,6 +830,8 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
     // enc0's 64x128 tile repacked [N][K] row-major for sr_enc0's fp8 WMMA (8192 B).
     c->w_enc0r = create_buffer(dev, phys, 8192, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     if (mode == "sr") c->wrep = create_buffer(dev, phys, 16 * 1024 * 1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    if (mode == "sr") c->wvec = create_buffer(dev, phys, 10 * 16384, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    if (mode == "sr") c->wrepT = create_buffer(dev, phys, 10 * 131072, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->w_dec0 = create_buffer(dev, phys, 65536, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->w_dec0f8 = create_buffer(dev, phys, 8192, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     // sr_dec0's own repacked weights (see sr_repack_dec0): [4][32][64] f16 + 4x32 f16 biases = 16640 B.
@@ -810,6 +911,14 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
                                      woff[i], blob[i].size(), kSrStageShape[i])) {
                     std::fprintf(stderr, "SR stage %d: blob size %zu does not match its layer walk\n", i, blob[i].size());
                 }
+                if (!sr_fill_vec_table(blob[i].data(), blob[i].size(),
+                                       static_cast<uint8_t*>(c->wvec.mapped) + 16384u * i, kSrStageShape[i])) {
+                    std::fprintf(stderr, "SR stage %d: vector table walk failed (blob %zu)\n", i, blob[i].size());
+                }
+                // blob[i] is the stage's own slice (0-based) - unlike wbuf.mapped, which is what
+                // sr_repack_stage gets with woff[i]. Passing woff here read ~1.4 MB past the blob
+                // (SIGSEGV in FrameChain::create, found with the -O0 -g runner under gdb).
+                sr_repack_tiles(blob[i].data(), static_cast<uint8_t*>(c->wrepT.mapped) + 131072u * i, 0, kSrStageShape[i]);
             }
             if (!blob[10].empty() && blob[10].size() <= c->w_enc0.size) {
                 std::memcpy(c->w_enc0.mapped, blob[10].data(), blob[10].size());
@@ -922,6 +1031,8 @@ FrameChain::~FrameChain() {
     destroy_buffer(dev, w_dec0);
     destroy_buffer(dev, w_dec0f8);
     destroy_buffer(dev, wrep);
+    destroy_buffer(dev, wvec);
+    destroy_buffer(dev, wrepT);
 
     for (auto& kv : ue) destroy_buffer(dev, kv.second);
     destroy_buffer(dev, rr_dummy);
@@ -1424,17 +1535,21 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             uint8_t push[56] = {0};
             uint32_t w_off = k_stage_w_off[st];
             std::memcpy(push + 0, &w_off, 4);
+            uint32_t vec_off = 16384u * (uint32_t)st;   // sr_swin's vector table (brief item b)
+            std::memcpy(push + 8, &vec_off, 4);
             int dimW, dimH, s0, s1;
             const int pe = (p == 0) * 2, po = (p != 0) * 2;
             if (st == 0) { dimW = L1w; dimH = L1h; s0 = pe; s1 = 2;
                 std::memcpy(push + 40, &dimW, 4); std::memcpy(push + 44, &dimH, 4);
                 std::memcpy(push + 48, &s0, 4); std::memcpy(push + 52, &s1, 4);
+                // binding 4 is the mode-2 skip; the oracle passes no offset 16 in mode 0,
+                // so bind the stage's own input - the shader never reads it here.
                 if (stage_legacy) {
-                    // binding 4 is the mode-2 skip; the oracle passes no offset 16 in mode 0,
-                    // so bind the stage's own input - the shader never reads it here.
+                    // DLSS5_AMD_STAGE_LEGACY=1: main 3c51da6's per-(C,mode) specialised sr_stage
+                    // (the A/B bar: 6.32 ms high for the four launches).
                     dispatch(cmd, "sr_stage_c64m0", {&wbuf, &t_act[0], &t_act[1], &t_act[2], &t_act[0], &wrep}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 7) / 8, 1);
                 } else {
-                    dispatch(cmd, "sr_swin64", {&wbuf, &t_act[0], &t_act[1], &wrep}, push, 56,
+                    dispatch(cmd, "sr_swin64", {&wbuf, &t_act[0], &t_act[1], &wrep, &wvec, &wrepT}, push, 56,
                              (dimW + s0 + 3) / 4, (dimH + s1 + 3) / 4, 1);
                     dispatch(cmd, "sr_swin_proj64", {&wbuf, &t_act[1], &t_act[2], &wrep}, push, 56,
                              ((dimW >> 1) + 3) / 4, ((dimH >> 1) + 3) / 4, 1);
@@ -1445,7 +1560,7 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                 if (stage_legacy) {
                     dispatch(cmd, "sr_stage_c96m0", {&wbuf, &t_act[2], &t_act[3], &t_act[4], &t_act[2], &wrep}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 7) / 8, 1);
                 } else {
-                    dispatch(cmd, "sr_swin96", {&wbuf, &t_act[2], &t_act[3], &wrep}, push, 56,
+                    dispatch(cmd, "sr_swin96", {&wbuf, &t_act[2], &t_act[3], &wrep, &wvec, &wrepT}, push, 56,
                              (dimW + s0 + 3) / 4, (dimH + s1 + 3) / 4, 1);
                     dispatch(cmd, "sr_swin_proj96", {&wbuf, &t_act[3], &t_act[4], &wrep}, push, 56,
                              ((dimW >> 1) + 3) / 4, ((dimH >> 1) + 3) / 4, 1);
@@ -1475,7 +1590,7 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                     // read by the tube chain (launch <= 10).
                     dispatch(cmd, "sr_swin_up96", {&wbuf, &t_act[6], &t_act[3], &t_act[2], &wrep}, push, 56,
                              (dimW + 7) / 8, (dimH + 7) / 8, 1);
-                    dispatch(cmd, "sr_swin96", {&wbuf, &t_act[2], &t_act[7], &wrep}, push, 56,
+                    dispatch(cmd, "sr_swin96", {&wbuf, &t_act[2], &t_act[7], &wrep, &wvec, &wrepT}, push, 56,
                              (dimW + s0 + 3) / 4, (dimH + s1 + 3) / 4, 1);
                 }
             } else { dimW = L1w; dimH = L1h; s0 = po; s1 = 0;
@@ -1489,7 +1604,7 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                     // the up's output; the block reads it into t8.
                     dispatch(cmd, "sr_swin_up64", {&wbuf, &t_act[7], &t_act[1], &t_act[0], &wrep}, push, 56,
                              (dimW + 7) / 8, (dimH + 7) / 8, 1);
-                    dispatch(cmd, "sr_swin64", {&wbuf, &t_act[0], &t_act[8], &wrep}, push, 56,
+                    dispatch(cmd, "sr_swin64", {&wbuf, &t_act[0], &t_act[8], &wrep, &wvec, &wrepT}, push, 56,
                              (dimW + s0 + 3) / 4, (dimH + s1 + 3) / 4, 1);
                 }
             }
