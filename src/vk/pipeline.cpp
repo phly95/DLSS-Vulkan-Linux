@@ -160,7 +160,12 @@ static void destroy_buffer(VkDevice dev, Buffer& b) {
 
 static std::string g_pipeline_error;
 
-static ChainPipeline create_compute_pipeline(VkDevice dev, const std::vector<uint32_t>& spv, uint32_t num_bindings, uint32_t push_size) {
+// subgroup_size != 0 pins the stage's subgroup size (VkPipelineShaderStageRequiredSubgroupSizeCreateInfo,
+// needs shaderSubgroupSizeControl). k_sr_stage needs it: this driver's cooperative-matrix path computes
+// garbage at subgroup size 64 (measured: the same shader logic gives sane values with 32-lane
+// workgroups and garbage with 64-lane ones - see build/agents/stage/progress.md), and the reference
+// runtime pins wave32 the same way for every pipeline (reference-nr-vulkan/linux/src/core/nrvk.hpp).
+static ChainPipeline create_compute_pipeline(VkDevice dev, const std::vector<uint32_t>& spv, uint32_t num_bindings, uint32_t push_size, uint32_t subgroup_size = 0) {
     ChainPipeline p;
     std::vector<VkDescriptorSetLayoutBinding> bindings(num_bindings);
     for (uint32_t i = 0; i < num_bindings; ++i) {
@@ -200,9 +205,26 @@ static ChainPipeline create_compute_pipeline(VkDevice dev, const std::vector<uin
     cpci.stage.module = mod;
     cpci.stage.pName = "main";
     cpci.layout = p.layout;
+    VkPipelineShaderStageRequiredSubgroupSizeCreateInfo req{
+        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO};
+    if (subgroup_size) {
+        req.requiredSubgroupSize = subgroup_size;
+        cpci.stage.pNext = &req;
+    }
     VkResult r = vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpci, nullptr, &p.pipeline);
+    if ((r != VK_SUCCESS || p.pipeline == VK_NULL_HANDLE) && subgroup_size) {
+        // This kernel REQUIRES the pinned subgroup size: at subgroup size 64 its cooperative-matrix
+        // path computes garbage (measured - build/agents/stage/progress.md), so a silent retry without
+        // the pin would be corruption in a game. The device has to support (and have enabled)
+        // subgroupSizeControl - say so and fail the chain instead of running wrong.
+        g_pipeline_error = std::string("required subgroup size ") + std::to_string(subgroup_size) +
+            " rejected (VkResult " + std::to_string(int(r)) +
+            "): sr_stage computes incorrectly at subgroup size 64 and must not run unpinned - the "
+            "VkDevice needs VkPhysicalDeviceVulkan13Features::subgroupSizeControl";
+        p.pipeline = VK_NULL_HANDLE;
+    }
     vkDestroyShaderModule(dev, mod, nullptr);
-    if (r != VK_SUCCESS || p.pipeline == VK_NULL_HANDLE) {
+    if ((r != VK_SUCCESS || p.pipeline == VK_NULL_HANDLE) && g_pipeline_error.empty()) {
         // The usual reason is a device that was not created with the features these shaders need
         // (16-bit and 8-bit storage, shaderFloat16); say so instead of dispatching a null handle.
         g_pipeline_error = std::string("vkCreateComputePipelines failed (VkResult ") + std::to_string(int(r)) +
@@ -359,13 +381,13 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         return spv;
     };
 
-    auto add_pipe = [&](const std::string& name, uint32_t bindings, uint32_t push_size) {
+    auto add_pipe = [&](const std::string& name, uint32_t bindings, uint32_t push_size, uint32_t subgroup_size = 0) {
         auto spv = load_spv(name);
         if (spv.empty()) {
             std::fprintf(stderr, "Missing shader %s.spv\n", name.c_str());
             return;
         }
-        c->pipelines[name] = create_compute_pipeline(dev, spv, bindings, push_size);
+        c->pipelines[name] = create_compute_pipeline(dev, spv, bindings, push_size, subgroup_size);
     };
 
     if (mode == "sr") {
@@ -376,7 +398,7 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         add_pipe("sr_ae_reduce", 2, 32);
         add_pipe("sr_ae_copy", 2, 24);
         add_pipe("sr_enc0", 13, 256);
-        add_pipe("sr_stage", 6, 56);
+        add_pipe("sr_stage", 6, 56, 32);   // 64 threads = 2 x wave32: pin the subgroup size (coopmat)
         add_pipe("sr_tube_split", 4, 56);
         add_pipe("sr_dec0", 8, 160);
         add_pipe("sr_post", 12, 256);
@@ -1185,11 +1207,11 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                 std::memcpy(push + 48, &s0, 4); std::memcpy(push + 52, &s1, 4);
                 // binding 4 is the mode-2 skip; the oracle passes no offset 16 in mode 0,
                 // so bind the stage's own input - the shader never reads it here.
-                dispatch(cmd, "sr_stage", {&wbuf, &t_act[0], &t_act[1], &t_act[2], &t_act[0], &wrep}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 3) / 4, 1);
+                dispatch(cmd, "sr_stage", {&wbuf, &t_act[0], &t_act[1], &t_act[2], &t_act[0], &wrep}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 7) / 8, 1);
             } else if (st == 1) { dimW = L2w; dimH = L2h; s0 = pe; s1 = 2;
                 std::memcpy(push + 40, &dimW, 4); std::memcpy(push + 44, &dimH, 4);
                 std::memcpy(push + 48, &s0, 4); std::memcpy(push + 52, &s1, 4);
-                dispatch(cmd, "sr_stage", {&wbuf, &t_act[2], &t_act[3], &t_act[4], &t_act[2], &wrep}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 3) / 4, 1);
+                dispatch(cmd, "sr_stage", {&wbuf, &t_act[2], &t_act[3], &t_act[4], &t_act[2], &wrep}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 7) / 8, 1);
             } else if (st <= 7) {
                 Buffer* in_b = (st == 2) ? &t_act[4] : (st & 1) ? &t_act[5] : &t_act[6];
                 Buffer* out_b = (st & 1) ? &t_act[6] : &t_act[5];
@@ -1203,12 +1225,12 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                 std::memcpy(push + 40, &dimW, 4); std::memcpy(push + 44, &dimH, 4);
                 std::memcpy(push + 48, &s0, 4); std::memcpy(push + 52, &s1, 4);
                 // Oracle launch 11: wbuf+1341440, t6 (in), t3 (skip, StageArgs+16), t7 (out).
-                dispatch(cmd, "sr_stage", {&wbuf, &t_act[6], &t_act[7], &t_act[7], &t_act[3], &wrep}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 3) / 4, 1);
+                dispatch(cmd, "sr_stage", {&wbuf, &t_act[6], &t_act[7], &t_act[7], &t_act[3], &wrep}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 7) / 8, 1);
             } else { dimW = L1w; dimH = L1h; s0 = po; s1 = 0;
                 std::memcpy(push + 40, &dimW, 4); std::memcpy(push + 44, &dimH, 4);
                 std::memcpy(push + 48, &s0, 4); std::memcpy(push + 52, &s1, 4);
                 // Oracle launch 12: wbuf+1505536, t7 (in), t1 (skip, StageArgs+16), t8 (out).
-                dispatch(cmd, "sr_stage", {&wbuf, &t_act[7], &t_act[8], &t_act[8], &t_act[1], &wrep}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 3) / 4, 1);
+                dispatch(cmd, "sr_stage", {&wbuf, &t_act[7], &t_act[8], &t_act[8], &t_act[1], &wrep}, push, 56, (dimW + s0 + 7) / 8, (dimH + s1 + 7) / 8, 1);
             }
             static const char* st_pt[] = {"stage0", "stage1", "tube0", "tube1", "tube2",
                                           "tube3", "tube4", "tube5", "stage8", "stage9"};

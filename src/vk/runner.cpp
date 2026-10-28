@@ -102,6 +102,15 @@ int main(int argc, char** argv) {
     s8.storageBuffer8BitAccess = VK_TRUE;
     f16i8.shaderFloat16 = VK_TRUE;
     f16i8.shaderInt8 = VK_TRUE;
+    // k_sr_stage pins its subgroup size to 32 (VkPipelineShaderStageRequiredSubgroupSizeCreateInfo):
+    // the cooperative-matrix path computes garbage at subgroup size 64 on this driver. Only enable
+    // the feature when the device has it - enabling it blind fails vkCreateDevice.
+    VkPhysicalDeviceVulkan13Features f13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    VkPhysicalDeviceFeatures2 qf2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    qf2.pNext = &f13;
+    vkGetPhysicalDeviceFeatures2(picked_phys, &qf2);
+    f16i8.pNext = &f13;
+    f13.subgroupSizeControl = (qf2.pNext == &f13 && f13.subgroupSizeControl) ? VK_TRUE : VK_FALSE;
 
     VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     dci.pNext = &feats2;
@@ -281,11 +290,14 @@ int main(int argc, char** argv) {
                         fi, prof_n, sum, ms, ms - sum);
         }
 
-        // Write output frame
-        std::string out_path = odir + "/out_" + std::to_string(fi) + ".f32";
-        std::ofstream fout(out_path, std::ios::binary);
-        if (fout) {
-            fout.write(static_cast<const char*>(chain->out_color()), size_t(oW) * oH * 16);
+        // Write output frame. DLSS5_AMD_NO_OUT=1 skips it (timing runs: a 4K frame is 132 MB, and
+        // the write leaves the GPU idle long enough for its clocks to drop between frames).
+        if (!std::getenv("DLSS5_AMD_NO_OUT")) {
+            std::string out_path = odir + "/out_" + std::to_string(fi) + ".f32";
+            std::ofstream fout(out_path, std::ios::binary);
+            if (fout) {
+                fout.write(static_cast<const char*>(chain->out_color()), size_t(oW) * oH * 16);
+            }
         }
 
         std::printf("frame %d done (parity %d)\n", fi, chain->parity());

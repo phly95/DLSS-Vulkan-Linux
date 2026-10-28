@@ -227,6 +227,16 @@ int main(int argc, char** argv) {
     }
     std::printf("VK_DEVICE: %s\n", props.deviceName);
 
+    // Does this device support pinning a subgroup size at all? (Needed for sr_stage, whose
+    // cooperative-matrix path computes garbage at subgroup size 64.) Query it here so the feature
+    // below is only enabled when it exists - enabling it blindly fails vkCreateDevice on drivers
+    // without it (that is how the offline check's lavapipe run used to segfault).
+    VkPhysicalDeviceVulkan13Features q13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    VkPhysicalDeviceFeatures2 qf2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    qf2.pNext = &q13;
+    vkGetPhysicalDeviceFeatures2(phys, &qf2);
+    const bool have_subgroup_size_control = q13.subgroupSizeControl == VK_TRUE;
+
     // Extensions & features
     uint32_t ext_count = 0;
     vkEnumerateDeviceExtensionProperties(phys, nullptr, &ext_count, nullptr);
@@ -278,7 +288,7 @@ int main(int argc, char** argv) {
     *next_ptr = &f12; next_ptr = &f12.pNext;
 
     f13.synchronization2 = VK_TRUE;
-    f13.subgroupSizeControl = VK_TRUE;
+    f13.subgroupSizeControl = have_subgroup_size_control ? VK_TRUE : VK_FALSE;
     *next_ptr = &f13; next_ptr = &f13.pNext;
 
     uint32_t qfamily = 0;
@@ -369,6 +379,26 @@ int main(int argc, char** argv) {
     cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     cpci.stage.module = shader;
     cpci.stage.pName = "main";
+    // Pin the subgroup size to 32 whenever the workgroup has at least 32 threads: this driver's
+    // cooperative-matrix path computes garbage at subgroup size 64 (k_sr_stage; measured both ways,
+    // build/agents/stage/progress.md), and the reference runtime pins wave32 for every pipeline.
+    uint32_t lsx = 0;
+    for (size_t i = 0; i + 5 < spv.size(); ++i) {
+        // OpExecutionMode (16), word count 6, mode LocalSize (17): {6, op, 16, entry, 17, x, y, z}
+        if ((spv[i] >> 16) == 6u && (spv[i] & 0xffffu) == 16u && spv[i + 2] == 17u) { lsx = spv[i + 3]; break; }
+    }
+    VkPipelineShaderStageRequiredSubgroupSizeCreateInfo req{
+        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO};
+    if (lsx >= 32u) {
+        if (!have_subgroup_size_control) {
+            std::fprintf(stderr,
+                "kernel_run: this shader needs subgroup size 32 (its cooperative-matrix path is "
+                "wrong at 64) but the device does not support subgroupSizeControl - refusing to run it\n");
+            return 1;
+        }
+        req.requiredSubgroupSize = 32;
+        cpci.stage.pNext = &req;
+    }
 
     VkPipeline pipeline;
     if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &cpci, nullptr, &pipeline) != VK_SUCCESS) {
