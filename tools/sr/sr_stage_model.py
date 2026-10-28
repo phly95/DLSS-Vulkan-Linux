@@ -354,6 +354,8 @@ def run_stage(X, Wt, W, H, sx, sy, tile, cfg, skip=None, low=None, attn_only=Fal
         ctx = np.einsum("nqk,nkc->nqc", prob, V)
         if cfg["resid"] == "isa":                 # Review R9: ctx -> f16 -> fp8; heads chained through f16
             ctx = q8(f16(ctx).astype(np.float32))
+            if cfg.get("_tap") is not None and "ctx" not in cfg["_tap"]:   # diagnostic: head-0 ctx
+                cfg["_tap"]["ctx"] = ctx
             if attn_acc is None:
                 v270 = np.zeros(C, np.float32) if attn_only else f16(Wt.v270).astype(np.float32)
                 attn_acc = f16(s_act.astype(np.float32) + v270).astype(np.float32)
