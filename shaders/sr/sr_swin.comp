@@ -88,9 +88,14 @@ layout(set = 0, binding = 4, std430) readonly buffer WVec { uvec4 wv4[]; };
 // is 256 contiguous bytes [n][k], so each cooperative-matrix load is stride 16 (a literal) with
 // the tile index in the address immediate.
 layout(set = 0, binding = 5, std430) readonly buffer WRepT { NR_OPERAND wrepT[]; };
-// Binding 6 is the mode wire: mode 0 WRITES the projection result here (the low tensor),
-// mode 2 READS the encoder skip here. Read-write because both modes share the slot.
+// Binding 6 is the mode wire: mode 0 WRITES the projection result here (the low tensor, byte
+// view), mode 2 READS the encoder skip here (16-byte chunk view for GROUP_BYTES - the two are
+// compile-time exclusive, so each build has exactly one variable at this binding).
+#ifdef NR_SW_M2
+layout(set = 0, binding = 6) readonly buffer Bnd6 { uvec4 b6v4[]; };
+#else
 layout(set = 0, binding = 6) buffer Bnd6 { NR_OPERAND b6[]; };
+#endif
 
 layout(push_constant) uniform StageArgs {
     uint wbuf_lo;
@@ -508,6 +513,8 @@ void main() {
                 NR_LOAD_B(b1, wrep, upW + 16u * n0 * SR_CN + k + 16u, SR_CN);
                 NR_MMA(p0, fa0, b0); NR_MMA(p0, fa1, b1);
             }
+            // pass A: p = E4M3(up + up_b) straight into this (token, channel) slot - no
+            // reflection and no skip load here (those are per TOKEN, not per element).
             uint n  = 16u * n0 + col;        // n = q*C + cc (logical channel)
             uint q  = n / SR_C;
             uint cc = n - q * SR_C;
@@ -515,15 +522,26 @@ void main() {
             float upbv = read_f16(upb + 2u * vidx(n));
             for (uint comp = 0u; comp < 8u; ++comp) {
                 uint pp = 8u * rowh + comp;
-                uint lxg = 2u * (pp & 3u) + (q & 1u);
-                uint lyg = 2u * (pp >> 2u) + (q >> 1u);
-                uint tk  = 8u * lyg + lxg;
-                int rx = reflect_coord(gx8 + int(lxg), dimW);
-                int ry = reflect_coord(gy8 + int(lyg), dimH);
-                uint spos = uint(ry * dimW + rx);
-                float uv = quant8(p0[comp] + upbv);
-                float sk = float(b6[((cc >> 5u) * HW + spos) * 32u + perm_invP(cc & 31u)]);
-                sIn[tk * SR_C + basis] = NR_OPERAND(quant8(uv + sk));
+                uint tk = 8u * (2u * (pp >> 2u) + (q >> 1u)) + 2u * (pp & 3u) + (q & 1u);
+                sIn[tk * SR_C + basis] = NR_OPERAND(quant8(p0[comp] + upbv));
+            }
+        }
+        // pass B: x = E4M3(p + skip), one reflect per TOKEN and the skip in 16-byte chunks
+        // (sr_swin_up's consume shape). The skip tensor's stored byte order IS sIn's - byte j
+        // of a pixel and byte j of the token's sIn row are the same logical channel - so no
+        // permutation, and 16x fewer load/reflect instructions than the per-element form.
+        for (uint st_ = 0u; st_ < 2u; ++st_) {
+            uint tk = tid + st_ * 32u;               // 64 group tokens, 2 a lane
+            int rx = reflect_coord(gx8 + int(tk & 7u), dimW);
+            int ry = reflect_coord(gy8 + int(tk >> 3u), dimH);
+            uint spos = uint(ry * dimW + rx);
+            for (uint cg = 0u; cg < SR_C / 32u; ++cg) {
+                uint grp = (cg * HW + spos) * 32u;
+                uvec4 va = b6v4[grp >> 4u];
+                uvec4 vb = b6v4[(grp >> 4u) + 1u];
+#define SKIP_ADD(j, bv) { uint bi_ = tk * SR_C + cg * 32u + j;     sIn[bi_] = NR_OPERAND(quant8(float(sIn[bi_]) + e4m3_to_f32(bv))); }
+                GROUP_BYTES(va, vb, SKIP_ADD)
+#undef SKIP_ADD
             }
         }
     }
