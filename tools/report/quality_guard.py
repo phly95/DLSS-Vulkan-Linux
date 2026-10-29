@@ -81,6 +81,62 @@ def score(port, ref, gt):
     return rows
 
 
+CACHE_DIR = "/home/deck/dlss5-wt/guardcache"
+
+
+def _hash_files(h, paths):
+    for fp in paths:
+        h.update(fp.encode() + b"\0")
+        with open(fp, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+
+
+def cache_key(runner, preset, cell, inp, gt, ref):
+    """Content key of one guard cell: the exact runner binary and shader binaries it loads, the weights,
+    the scoring script, the cell's data identity and the DLSS5_* environment. Identical key = identical
+    (deterministic) outputs, so the scored rows can be reused. Any miss just means a normal run."""
+    import hashlib
+    h = hashlib.sha256()
+    runner = os.path.realpath(runner)
+    shd = os.path.join(os.path.dirname(os.path.dirname(runner)), "shaders")
+    files = [runner, os.path.realpath(__file__)]
+    if os.path.isdir(shd):
+        files += sorted(os.path.join(shd, f) for f in os.listdir(shd))
+    wdir = os.path.join(ROOT, "build", "ngx-weights", "rr" if preset == "F" else preset)
+    if os.path.isdir(wdir):
+        for f in sorted(os.listdir(wdir)):
+            st = os.stat(os.path.join(wdir, f))
+            h.update(f"{f}:{st.st_size}:{int(st.st_mtime)}".encode())
+    _hash_files(h, files)
+    h.update(f"{preset}|{cell}|{inp}|{gt}|{ref}".encode())
+    for k in sorted(os.environ):
+        if k.startswith("DLSS5_"):
+            h.update(f"{k}={os.environ[k]}".encode())
+    return h.hexdigest()[:32]
+
+
+def cache_get(key):
+    import json
+    try:
+        with open(os.path.join(CACHE_DIR, key + ".json")) as f:
+            return [tuple(r) for r in json.load(f)["rows"]]
+    except Exception:
+        return None
+
+
+def cache_put(key, rows):
+    import json, time
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        tmp = os.path.join(CACHE_DIR, f".{key}.{os.getpid()}.tmp")
+        with open(tmp, "w") as f:
+            json.dump({"rows": rows, "time": time.strftime("%F %T")}, f)
+        os.replace(tmp, os.path.join(CACHE_DIR, key + ".json"))
+    except Exception:
+        pass
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--presets", default="M,L")
@@ -89,6 +145,9 @@ def main() -> int:
     ap.add_argument("--work", default=os.path.join(ROOT, "build", "work", "qguard"))
     ap.add_argument("--lock", default="/home/deck/dlss5-wt/gpu.lock")
     ap.add_argument("--no-run", action="store_true", help="score existing outputs in --work")
+    ap.add_argument("--no-cache", action="store_true",
+                    help="ignore and do not write the result cache (default: a cell whose runner+shaders+weights+scorer are "
+                         "byte-identical to an earlier run reuses that run's scored rows from " + CACHE_DIR + ")")
     ap.add_argument("--keep", action="store_true",
                     help="keep the out_<i>.f32 frames after scoring (default: delete them - a run is ~3 GB)")
     a = ap.parse_args()
@@ -99,7 +158,11 @@ def main() -> int:
             inp, gt, ref = (os.path.join(DATA, x.format(P=P)) for x in (RR_CELLS if rr else CELLS)[c])
             out = os.path.join(a.work, f"{'rr' if rr else 'sr'}_{P}_{c}")
             os.makedirs(out, exist_ok=True)
-            if not a.no_run:
+            key = None if (a.no_cache or a.no_run) else cache_key(a.runner, P, c, inp, gt, ref)
+            rows = cache_get(key) if key else None
+            if rows is not None:
+                print(f"{os.path.basename(out)}: cached result (key {key}, identical runner+shaders+weights+scorer)")
+            if rows is None and not a.no_run:
                 cmd = ([a.runner, "--mode", "rr", "--weights", os.path.join(ROOT, "build", "ngx-weights", "rr")] if rr else
                        [a.runner, "--mode", "sr", "--preset", P, "--weights", os.path.join(ROOT, "build", "ngx-weights", P)]) + \
                       ["--in", inp, "--out", out]
@@ -115,7 +178,10 @@ def main() -> int:
                         print(f"{os.path.basename(out)}: vk_runner FAILED, see {out}.log")
                         ok_all = False
                         continue
-            rows = score(out, ref, gt)
+            if rows is None:
+                rows = score(out, ref, gt)
+                if key:
+                    cache_put(key, rows)
             if not a.keep and not a.no_run:
                 for f in os.listdir(out):
                     if f.startswith("out_") and f.endswith(".f32"):
