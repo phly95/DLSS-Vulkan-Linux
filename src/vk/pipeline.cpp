@@ -910,7 +910,7 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         add_pipe("rr_swin_u11", 14, 80, 32);  // mu_rrl: C=96 G=4 mode-3 + dec head (mu_h3)
         add_pipe("rr_swin_u13", 14, 80, 32);  // mu_rrl: C=64 G=2 mode-3 + dec head (mu_h3)
         add_pipe("rr_post_prep", 4, 40);
-        add_pipe("rr_post", 12, 184);
+        add_pipe("rr_post", 14, 192);   // fused prep: +InWeights/InAniso, +stride at 0xb8
         add_pipe("rr_downsample", 4, 48);
         add_pipe("rr_pooled2", 2, 32);
         add_pipe("rr_avg2x2", 2, 8);
@@ -2437,25 +2437,24 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             }
             inject_after(cmd, ("L" + std::to_string(u + 5)).c_str(), u + 4 + roff);
         }
-        // 5. Post prep (launch 20 + roff): inputs are the U-Net's own outputs E0bd4, E0c16, E0c1e
+        // 5. (FUSED, tail) rr_post_prep no longer dispatches: its tonemap/div255/aniso work now
+        //    runs in rr_post's prologue, which stages u15's RAW outputs (E0bd4/E0c16/E0c1e =
+        //    post's bindings 0/12/13) into LDS once per workgroup instead of writing cf2 for
+        //    the tap loop to re-read ~27x through the 4x4 footprint. cf2 (E0cf2) stays as a
+        //    buffer for inject compatibility; rr_post_prep.comp + its fixture still verify
+        //    standalone. The old launch-20 push is NOT reproduced (it was W0/stride only).
+        // 6. Post (launch 20 + roff now; was 21): NeuralHub's rrio::k_post<24>. The 192-byte
+        //    push is PostArgs at the oracle's own field offsets (tools/rr/rrref/rrref.cpp:533-547)
+        //    in its first 184 bytes - an oracle launch's args hex still passes verbatim, the
+        //    fused stride tail (0xb8) then reads 0 -> the shader's W fallback. The shader reads
+        //    0x00..0x1c, 0x34, 0xb8. Bindings: RAW feat (was cf2 taps), exposure, factors, the
+        //    mv record (0x58 = parity-selected E0bf6|E0bf2, both the port's bf6), E0bfa, E0bfe,
+        //    the history READ (0x70 = E0c06|E0c0a = ihist[p^1]), the E0d02 Catmull-Rom table,
+        //    the history WRITE (0x88 = ihist[p]), E0cf6, E0cfa, E0c0e, then the fused prep's
+        //    weights/aniso (E0c16, E0c1e). Grid: the oracle's own [(W15+15)/16, ((H15+1)/2+15)/16]
+        //    pairs of output rows at 16x16.
         {
-            uint8_t push[40] = {0};
-            std::memcpy(push + 8, &W0, 4);
-            std::memcpy(push + 32, &W, 4); std::memcpy(push + 36, &H, 4);
-            trace_label = "launch " + std::to_string(20 + roff) + " k_post_prep";
-            dispatch(cmd, "rr_post_prep", {&ue.at("E0bd4"), &ue.at("E0c16"), &ue.at("E0c1e"), &cf2}, push, 40, (W + 15) / 16, (H + 15) / 16, 1);
-            inject_after(cmd, "post_prep", 20 + roff);
-        }
-        // 6. Post (launch 21 + roff): NeuralHub's rrio::k_post<24>. The 184-byte push is PostArgs at
-        //    the oracle's own field offsets (tools/rr/rrref/rrref.cpp:533-547), so an oracle
-        //    launch's args hex passes verbatim; the shader reads 0x00..0x1c and 0x34. The bindings
-        //    are the PostArgs pointer slots 0x40..0xa0 in order: taps, exposure, factors, the mv
-        //    record (0x58 = parity-selected E0bf6|E0bf2, both the port's bf6), E0bfa, E0bfe, the
-        //    history READ (0x70 = E0c06|E0c0a = ihist[p^1]), the E0d02 Catmull-Rom table, the
-        //    history WRITE (0x88 = ihist[p]), E0cf6, E0cfa, E0c0e. Grid: the oracle's own
-        //    [(W15+15)/16, ((H15+1)/2+15)/16] pairs of output rows at 16x16.
-        {
-            uint8_t push[184] = {0};
+            uint8_t push[192] = {0};
             std::memcpy(push + 0x00, &W, 4);
             std::memcpy(push + 0x04, &H, 4);
             std::memcpy(push + 0x08, &W15, 4);
@@ -2481,11 +2480,14 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             std::memcpy(push + 0x34, &dec0_post, 4);
             const int pitch = W15;                       // +0x38 = E[0xbf1], the texture pitch
             std::memcpy(push + 0x38, &pitch, 4);
+            const int stride = W0;                       // +0xb8: fused prep's raw stride
+            std::memcpy(push + 0xb8, &stride, 4);
             trace_label = "launch " + std::to_string(21 + roff) + " k_post";
             dispatch(cmd, "rr_post",
-                     {&cf2, &expo, &ue.at("E0c1a"), &bf6, &bfa, &bfe, &ihist[p ^ 1],
-                      &ue.at("E0d02"), &ihist[p], &cf6, &cfa, &c0e},
-                     push, 184, (W15 + 15) / 16, (((H15 + 1) / 2) + 15) / 16, 1);
+                     {&ue.at("E0bd4"), &expo, &ue.at("E0c1a"), &bf6, &bfa, &bfe, &ihist[p ^ 1],
+                      &ue.at("E0d02"), &ihist[p], &cf6, &cfa, &c0e,
+                      &ue.at("E0c16"), &ue.at("E0c1e")},
+                     push, 192, (W15 + 15) / 16, (((H15 + 1) / 2) + 15) / 16, 1);
             inject_after(cmd, "post", 21 + roff);
         }
         // 7. Downsample (launch 22 + roff)

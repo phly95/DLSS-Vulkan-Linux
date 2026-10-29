@@ -1448,14 +1448,22 @@ def make_test(name, out_dir):
             ]
         }
     elif name == "rr_post":
-        # NeuralHub's rrio::k_post<24>: PostArgs (0xb8) at the oracle's own field offsets and 12
-        # bindings = the PostArgs pointer slots 0x40..0xa0 (tools/rr/rrref/rrref.cpp:541-544).
-        # The fixture renders at the output size (W = W15, H = H15 -> scale 1) and takes the
-        # HISTORY path (rst = 0), so the mv record, the E0d02 Catmull-Rom table and the 5-tap CR
-        # fetch are all exercised on the lavapipe run: a zero/garbage table would make wcr 0/0
-        # and O7's "finite" check would fail (the sr_post push fix 9eb91dd is the precedent).
-        col = np.linspace(0.1, 1.0, n_pix * 16, dtype=np.float16)  # 16 f16 = 32 B per render pixel
-        open(os.path.join(out_dir, "in_tap.bin"), "wb").write(col.tobytes())
+        # NeuralHub's rrio::k_post<24> with the FUSED prep (tail): PostArgs (0xc0 push now =
+        # the oracle's 0xb8 + the stride tail at 0xb8) at the oracle's own field offsets and 14
+        # bindings = the 12 PostArgs pointer slots + the prep's raw inputs (0 = feat E0bd4,
+        # 12 = weights E0c16, 13 = aniso E0c1e - generated exactly as the rr_post_prep case so
+        # prep->post old chain and fused post consume identical bytes; the byte-compare proof
+        # lives in progress.md). The fixture renders at the output size (W = W15, H = H15 ->
+        # scale 1) and takes the HISTORY path (rst = 0), so the mv record, the E0d02 Catmull-Rom
+        # table and the 5-tap CR fetch are all exercised on the lavapipe run: a zero/garbage
+        # table would make wcr 0/0 and O7's "finite" check would fail (the sr_post push fix
+        # 9eb91dd is the precedent).
+        feat = np.linspace(0.1, 1.0, n_pix * 4, dtype=np.float16).tobytes()
+        weights = np.full(n_pix, 0x80808080, dtype=np.uint32).tobytes()
+        aniso = np.zeros(n_pix * 4, dtype=np.float16).tobytes()
+        open(os.path.join(out_dir, "in_feat.bin"), "wb").write(feat)
+        open(os.path.join(out_dir, "in_weights.bin"), "wb").write(weights)
+        open(os.path.join(out_dir, "in_aniso.bin"), "wb").write(aniso)
         open(os.path.join(out_dir, "in_expo.bin"), "wb").write(
             np.array([1.0, 1.0, 1.0, 0.0], dtype=np.float32).tobytes())
         open(os.path.join(out_dir, "in_factors.bin"), "wb").write(
@@ -1477,17 +1485,18 @@ def make_test(name, out_dir):
         aa = w0 + w1
         tab = np.stack([wm1, aa, w2, w1 / aa], 1).astype(np.float32)
         open(os.path.join(out_dir, "in_crtab.bin"), "wb").write(tab.tobytes())
-        push = bytearray(184)
+        push = bytearray(192)                                 # 0xb8 PostArgs + stride tail
         struct.pack_into("<4i", push, 0, w, h, w, h)                # W, H, W15, H15
         struct.pack_into("<i", push, 16, 0)                         # rst: the history path
         struct.pack_into("<2f", push, 20, 1.0, 1.0)                 # scaleX, scaleY
         struct.pack_into("<2f", push, 28, 0.0, 0.0)                 # jitterX, jitterY
         struct.pack_into("<f", push, 52, 1.126047134399414)         # dec0 (+0x34)
+        struct.pack_into("<i", push, 0xb8, w)                       # fused stride (W0-equiv)
         cfg = {
             "groups": [(w + 15) // 16, (((h + 1) // 2) + 15) // 16, 1],
             "push": push.hex(),
             "bindings": [
-                {"binding": 0, "file": "in_tap.bin"},
+                {"binding": 0, "file": "in_feat.bin"},
                 {"binding": 1, "file": "in_expo.bin"},
                 {"binding": 2, "file": "in_factors.bin"},
                 {"binding": 3, "file": "in_mv.bin"},
@@ -1499,7 +1508,9 @@ def make_test(name, out_dir):
                 {"binding": 9, "bytes": n_pix * 4, "output": "out_rg", "type": "u32"},
                 {"binding": 10, "bytes": n_pix * 2, "output": "out_b", "type": "f16"},
                 {"binding": 11, "bytes": ((w + 1) // 2) * ((h + 1) // 2) * 4,
-                 "output": "out_packed", "type": "u32"}
+                 "output": "out_packed", "type": "u32"},
+                {"binding": 12, "file": "in_weights.bin"},
+                {"binding": 13, "file": "in_aniso.bin"}
             ]
         }
     elif name == "rr_downsample":

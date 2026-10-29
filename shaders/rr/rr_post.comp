@@ -47,7 +47,14 @@ vec3 id3(vec3 v) { return v; }
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-layout(set = 0, binding = 0) readonly buffer InTap      { f16vec4 in_tap[]; };
+// FUSED rr_post_prep (tail, RR fixed-stage fusion): binding 0 is u15's RAW feat E0bd4 (was the
+// prep'd cf2 tap buffer); bindings 12/13 carry the prep's other two raw inputs E0c16 (weights)
+// and E0c1e (aniso). The workgroup prologue below stages its tap-record region once, runs
+// prep's arithmetic once per record into LDS, and the tap loop reads LDS instead of re-reading
+// cf2's 32 B/px records through the 4x4 footprint (~27x). rr_post_prep.comp and its fixture are
+// untouched and still verified standalone; value-identical by construction (its helpers below
+// are verbatim copies), byte-proven against the old two-dispatch chain in progress.md.
+layout(set = 0, binding = 0) readonly buffer InFeat     { f16vec4 in_feat[]; };
 layout(set = 0, binding = 1) readonly buffer InExpo     { float expo[]; };
 layout(set = 0, binding = 2) readonly buffer InFactors  { uint in_factors[]; };
 layout(set = 0, binding = 3) readonly buffer InMv       { f16vec4 in_mv[]; };
@@ -59,6 +66,8 @@ layout(set = 0, binding = 8) writeonly buffer OutHist   { f16vec4 out_hist[]; };
 layout(set = 0, binding = 9) writeonly buffer OutRG     { f16vec2 out_rg[]; };
 layout(set = 0, binding = 10) writeonly buffer OutB     { float16_t out_b[]; };
 layout(set = 0, binding = 11) writeonly buffer OutPacked{ uint out_packed[]; };
+layout(set = 0, binding = 12) readonly buffer InWeights { uint in_weights[]; };
+layout(set = 0, binding = 13) readonly buffer InAniso   { f16vec4 in_aniso[]; };
 
 layout(push_constant) uniform PostArgs {
     layout(offset = 0x00) int W;
@@ -71,6 +80,9 @@ layout(push_constant) uniform PostArgs {
     layout(offset = 0x1c) float jitterX;
     float jitterY;
     layout(offset = 0x34) float dec0;
+    // Fused prep's raw-input row stride (the oracle PostArgs layout is 0x00..0xb7 and the
+    // first 184 bytes stay byte-identical: an oracle args hex leaves this 0 -> W fallback).
+    layout(offset = 0xb8) int stride;
 };
 
 // f32 constants of the spec as their bit patterns (macros: glslang rejects uintBitsToFloat in a
@@ -85,6 +97,38 @@ layout(push_constant) uniform PostArgs {
 #define C_HUNDRED   uintBitsToFloat(0x42C80000u)   // 100
 
 shared vec3 s_pair[16][16];
+
+// FUSED rr_post_prep (see the InFeat binding note). One load-prep-store loop owns each record
+// (same thread loads the raw trio and writes the prepped trio - no raw staging through LDS),
+// so only the three tap arrays exist. Sized for a tap region of cols <= 16*scaleX + 4 <= 20 and
+// rows <= 30*scaleY + 6 <= 36 at scale <= 1 (RR's scale is 1/3 on F, 2/3 native, the offline
+// fixture is 1); the loop min()-belts so a beyond-spec geometry reads the edge record instead
+// of running off the LDS.
+shared f16vec4 s_t0  [36][20];
+shared f16vec4 s_t1  [36][20];
+shared f16vec4 s_t2  [36][20];
+
+// ---- FUSED rr_post_prep helpers: verbatim copies of rr_post_prep.comp (constants and both
+// functions), so every record computes the exact bits the two-dispatch chain produced. ----
+const float C1 = 0.3010300099849701;
+const float C2 = 0.36000001430511475;
+const float C3 = -0.7213249802589417;
+const float C4 = -1.4426499605178833;
+const float INV255 = 0.003921568859368563;
+
+float16_t tonemap(float16_t h) {
+    float f = float(h);
+    float val = max(f * 100.0 + 1.0, 0.0001);
+    float l2 = log2(val);
+    return float16_t((l2 * C1) * C2);
+}
+
+float16_t div255(uint b) {
+    float bf = float(b);
+    float v = bf * INV255;
+    float rem = bf - 255.0 * v;
+    return float16_t(v + INV255 * rem);
+}
 
 // SPEC 3: q = f16( f16( f16(f16(dy*dy)*B) + f16(f16(dx*dx)*A) ) + f16(f16(dx*dy)*C) )
 float quad_q(float dx, float dy, float A, float B, float C) {
@@ -181,6 +225,47 @@ void main() {
     // No early return: every thread has to reach the shared-memory barrier below.
     const bool valid = (x15 < W15) && (ye < H15) && (yo < H15);
 
+    // ---- FUSED prep prologue: stage this group's raw-input region (u15's outputs) once and
+    // run prep's math once per record. Region = the WG's clamp-union of tap coordinates:
+    // x15 in [gx0, gx0+15] -> px monotone (scaleX > 0) -> X0 bounds; taps add kx in [-1,2].
+    // Rows take the EVEN row's source only (Yb = Y0e, both lanes share it), ye in
+    // [32*gy0, 32*gy0+30] step 2. All derived with the same fma/floor expressions as the
+    // tap loop, so every clamped (sxi, syi) lies inside [reg_x0..reg_x1] x [reg_y0..reg_y1].
+    const int str = (stride > 0) ? stride : W;
+    const int gx0 = int(gl_WorkGroupID.x) * 16, gy0 = int(gl_WorkGroupID.y) * 16;
+    const float pxl = fma(float(gx0) + 0.5, scaleX, jitterX);
+    const float pxr = fma(float(gx0 + 15) + 0.5, scaleX, jitterX);
+    const float pyf = fma(float(gy0 * 2) + 0.5, scaleY, jitterY);
+    const float pyl = fma(float(gy0 * 2 + 30) + 0.5, scaleY, jitterY);
+    const int reg_x0 = clamp(int(floor(pxl - 0.5)) - 1, 0, W - 1);
+    const int reg_x1 = clamp(int(floor(pxr - 0.5)) + 2, 0, W - 1);
+    const int reg_y0 = clamp(int(floor(pyf - 0.5)) - 1, 0, H - 1);
+    const int reg_y1 = clamp(int(floor(pyl - 0.5)) + 2, 0, H - 1);
+    const int rw = min(reg_x1 - reg_x0 + 1, 20);
+    const int rh = min(reg_y1 - reg_y0 + 1, 36);
+    const int nreg = rw * rh;
+    const int tid = int(gl_LocalInvocationIndex);
+    for (int i = tid; i < nreg; i += 256) {
+        const int lx = i % rw, ly = i / rw;
+        const int ii = (reg_y0 + ly) * str + (reg_x0 + lx);
+        const f16vec4 feat = in_feat[ii];
+        const float16_t tm_r = tonemap(feat.r);
+        const float16_t tm_g = tonemap(feat.g);
+        const float16_t tm_b = tonemap(feat.b);
+        const uint w_packed = in_weights[ii];
+        const float16_t w0 = div255(w_packed & 0xffu);
+        const float16_t w1 = div255((w_packed >> 8u) & 0xffu);
+        const float16_t w2 = div255((w_packed >> 16u) & 0xffu);
+        const f16vec4 an = in_aniso[ii];
+        const float16_t an0 = float16_t(float(an.x) * C3);
+        const float16_t an1 = float16_t(float(an.y) * C3);
+        const float16_t an2 = float16_t(float(an.z) * C4);
+        s_t0[ly][lx] = f16vec4(tm_r, tm_g, tm_b, w0);
+        s_t1[ly][lx] = f16vec4(w1, w2, an0, an1);
+        s_t2[ly][lx] = f16vec4(an2, float16_t(0.0), float16_t(0.0), float16_t(0.0));
+    }
+    barrier();
+
     // ---- SPEC 2: output geometry. px is shared by both rows, py is per row.
     float px = fma(float(x15) + 0.5, scaleX, jitterX);
     float pye = fma(float(ye) + 0.5, scaleY, jitterY);
@@ -206,10 +291,11 @@ void main() {
         const int ky = k - (k / 4) * 4 - 1;
         const int sxi = clamp(X0 + kx, 0, W - 1);
         const int syi = clamp(Yb + ky, 0, H - 1);
-        const uint si = uint(syi * W + sxi);
-        const f16vec4 t0 = in_tap[si * 4u + 0u];   // (tm R, tm G, tm B, w0)
-        const f16vec4 t1 = in_tap[si * 4u + 1u];   // (w1, w2, A, B)
-        const float16_t t2x = in_tap[si * 4u + 2u].x;   // C
+        const int rx = clamp(sxi - reg_x0, 0, rw - 1);
+        const int ry = clamp(syi - reg_y0, 0, rh - 1);
+        const f16vec4 t0 = s_t0[ry][rx];   // (tm R, tm G, tm B, w0)
+        const f16vec4 t1 = s_t1[ry][rx];   // (w1, w2, A, B)
+        const float16_t t2x = s_t2[ry][rx].x;   // C
         const vec3 col = vec3(t0.x, t0.y, t0.z);
         const vec3 gate = vec3(t0.w, t1.x, t1.y);
         const float A = float(t1.z), B = float(t1.w), C = float(t2x);
