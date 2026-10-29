@@ -664,14 +664,13 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
             // parameter has no slot in the oracle's 104-byte args).
             add_pipe("sr_l0", 7, 112);
             // Preset L's WMMA rewrite (perf mu_l0): the two sr_l0 launches as small specialised
-            // dispatches - sr_l0emb (l0_in -> E), sr_l0blk_pad (E -> l0_skip), sr_l0dn
+            // dispatches - sr_l0blk_pad (l0_in -> l0_skip, embedding fused), sr_l0dn
             // (l0_skip -> t0), sr_l0up (t8 + l0_skip -> U), sr_l0blk (U -> B), sr_l0heads.
-            add_pipe("sr_l0emb", 4, 24);
             add_pipe("sr_l0blk_pad", 6, 64);
             add_pipe("sr_l0blk", 6, 64);
             add_pipe("sr_l0dn", 4, 56);
             add_pipe("sr_l0up", 5, 56);
-            add_pipe("sr_l0heads", 5, 24);
+        add_pipe("sr_l0heads", 5, 24);
         }
     } else {
         // Bytes per texel of each RR gather format code (tools/verify/texfmt.py RR_BPP).
@@ -953,11 +952,8 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
                                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         c->ue["l0_skip"] = create_buffer(dev, phys, size_t(W0) * H0 * 32,
                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-        // Perf mu_l0's sr_l0 intermediates: E (embed output, padded fp8), U (mode-2 block
-        // input, fp8), B (mode-2 block output = heads input, fp8), plus the repacked L0
-        // weights (tiled blocks + f32 vector tables + row-major layer copies + embed mats).
-        c->ue["l0_emb"] = create_buffer(dev, phys, size_t(W0 + 8) * (H0 + 8) * 32,
-                                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        // Perf mu_l0's sr_l0 intermediates: U (mode-2 block input, fp8; the E tensor is
+        // fused away), B (mode-2 block output), plus the repacked L0 weights.
         c->ue["l0_up"] = create_buffer(dev, phys, size_t(W0) * H0 * 32,
                                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         c->ue["l0_blk"] = create_buffer(dev, phys, size_t(W0) * H0 * 32,
@@ -1256,7 +1252,7 @@ void FrameChain::set_injection(const std::string& dir, const std::string& mask) 
             if (it != ue.end()) inj_targets[nm] = &it->second;
         }
         // Perf mu_l0's intermediates (dump-only; the oracle has no files for them).
-        for (const char* nm : {"l0_emb", "l0_up", "l0_blk", "wL0tab", "wL0T", "wL0repE", "wL0repD"}) {
+        for (const char* nm : {"l0_up", "l0_blk", "wL0tab", "wL0T", "wL0repE", "wL0repD"}) {
             auto it = ue.find(nm);
             if (it != ue.end()) inj_targets[nm] = &it->second;
         }
@@ -1653,16 +1649,8 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                 // grid, (sx,sy) window shift (f0 (2,2), f1 (0,2)), (Wr,Hr) render grid.
                 // Perf mu_l0: three WMMA dispatches replace the bit-exact launch (~630 ms).
                 {
-                    // 1. embedding: l0_in (padded fp8) -> l0_emb (padded fp8, stored basis)
-                    uint8_t epush[24] = {0};
-                    const uint32_t ew1 = 0, ew2 = 1024, eb1 = 2560, eb2 = 3104;
+                    // 1+2. block with fused embedding (PAD input): l0_in -> l0_skip
                     const uint32_t eIW = uint32_t(W0 + 8), eIH = uint32_t(H0 + 8);
-                    std::memcpy(epush + 0, &ew1, 4); std::memcpy(epush + 4, &ew2, 4);
-                    std::memcpy(epush + 8, &eb1, 4); std::memcpy(epush + 12, &eb2, 4);
-                    std::memcpy(epush + 16, &eIW, 4); std::memcpy(epush + 20, &eIH, 4);
-                    dispatch(cmd, "sr_l0emb", {&w_enc0, &ue["l0_in"], &ue["l0_emb"], &ue["wL0repE"]},
-                             epush, 24, (eIW + 15) / 16, eIH, 1);
-                    // 2. block (PAD input): l0_emb -> l0_skip
                     const int l0sx = (p == 0) ? 2 : 0, l0sy = 2;
                     const uint32_t blo = 6272, bvo = 0;
                     uint8_t bpush[64] = {0};
@@ -1670,7 +1658,7 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                     std::memcpy(bpush + 40, &eIW, 4); std::memcpy(bpush + 44, &eIH, 4);
                     std::memcpy(bpush + 48, &l0sx, 4); std::memcpy(bpush + 52, &l0sy, 4);
                     std::memcpy(bpush + 56, &W0, 4); std::memcpy(bpush + 60, &H0, 4);
-                    dispatch(cmd, "sr_l0blk_pad", {&w_enc0, &ue["l0_emb"], &ue["l0_skip"],
+                    dispatch(cmd, "sr_l0blk_pad", {&w_enc0, &ue["l0_in"], &ue["l0_skip"],
                                                    &ue["wL0repE"], &ue["wL0tab"], &ue["wL0T"]},
                              bpush, 64, (W0 + l0sx + 3) / 4, (H0 + l0sy + 3) / 4, 1);
                     // 3. down projection: l0_skip -> t0 (t_act[0], stage0's input)

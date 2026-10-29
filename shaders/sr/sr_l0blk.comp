@@ -11,19 +11,37 @@
 
 // sr_l0blk: preset L's level-0 (C=32, g=2) Swin block (perf mu_l0). A copy of sr_swin.comp
 // specialised to SR_C=32/SR_G=2 (tube owns that file - it is not edited here) with two L0
-// differences: SR_L0_PAD=1 reads the padded (W0+8)x(H0+8) E tensor at (tx+2, ty+2) with no
-// reflect (mode 0: every token lands in-bounds), SR_L0_PAD=0 reads a W0xH0 tensor with
-// reflect (mode 2); and the output grid (outW x outH) is separate from the input dims.
+// differences: SR_L0_PAD=1 reads the padded (W0+8)x(H0+8) l0_in tensor at (tx+2, ty+2) with
+// no reflect and a FUSED embedding (mode 0), SR_L0_PAD=0 reads a W0xH0 tensor with reflect
+// (mode 2); the output grid (outW x outH) is separate from the input dims.
 // Two pipeline entries (sr_l0blk_pad, sr_l0blk), same 64-byte push. Dataflow, WMMA use and
 // arithmetic policy are sr_swin's unchanged (register-resident token lanes, weights as
 // operand A, activations as operand B, one wave per window, f32 accumulation, hardware E4M3).
+//
+// Shape kept from tube, which is what this task exists to reuse:
+//   * local_size 32 = one wave per 4x4 window (16 tokens). 32-thread workgroups run wave32 on this
+//     driver with no subgroup-size feature (the 64-thread shape main's sr_stage uses needs the pin,
+//     because a 64-lane workgroup runs wave64 and the cooperative-matrix path computes garbage).
+//   * residual stream and MLP sum in registers (st[NT][8] = one lane's column of each 16x16 tile),
+//     B operands loaded straight from wrep, f32 accumulation inside every WMMA, hardware E4M3
+//     conversion, vectors read from the blob where they are used.
+//   * LDS = input tile + norm tile + Q/rel-operand/probabilities/context/hidden/b1, C-sized:
+//     ~4.2 KB at C=64 (7 waves/SIMD), ~5.2 KB at C=96 (6 waves/SIMD) - main's fused stage sits at
+//     28 KB and 2.
+//
+// Mode-agnostic on purpose: the two mode-specific pieces (mode 0's 2x2 patch-concat projection,
+// mode 2's up-projection + skip) are separate dispatches (sr_swin_proj.comp / sr_swin_up.comp),
+// per the optimisation-phase split. The only mode knowledge left is the gain1 offset, which sits
+// behind mode 2's up_W/up_b in the blob (same walk sr_stage uses).
+//
+// Arithmetic follows tools/sr/sr_stage_model.py: quantisation points (norm/Q/ctx/hidden to fp8,
+// probabilities f16), the scaled nr_swin_exp curve and nhgelu are kept; the R9 rounding closure is
+// dropped (precision policy).
 
 #define SR_C 32               // L0's level-0 block: C=32, g=2, 4 MLP blocks (both modes)
 #define SR_G 2
 #ifndef SR_L0_PAD
-#define SR_L0_PAD 0           // 1 = mode 0: input is the padded (W0+8)x(H0+8) E tensor,
-                              //   tokens read (tx+2, ty+2) with no reflect (all in-bounds);
-                              // 0 = mode 2: input is the W0xH0 U tensor with reflect
+#define SR_L0_PAD 0           // 1 = mode 0 (PAD input + fused embedding); 0 = mode 2
 #endif
 
 #define NT   (SR_C / 16)     // N tiles of a C-wide output / K=16 chunks of a C-wide input
@@ -65,6 +83,12 @@ layout(push_constant) uniform StageArgs {
     int outW;                      // OUTPUT grid width (W0, both modes)
     int outH;                      // OUTPUT grid height (H0, both modes)
 };
+
+#if SR_L0_PAD
+shared NR_OPERAND sEX[16 * 32];   // fused-emb layer-1 A tile (raw fp8)
+shared NR_OPERAND sEE[16 * 32];   // fused-emb layer-1 output tile (quantised fp8)
+shared float sE2[16 * 32];        // fused-emb layer-2 output (f32 + bias, block input)
+#endif
 
 // D1 completed (d4r's token-lane idea, technique only): there is NO LDS and NO barrier left in
 // this block. The norm outputs live in `nst` (f32, encoded to e4m3 once per GEMM operand with
@@ -175,14 +199,15 @@ void main() {
     int dx = int(tok & 3u);
     int dy = int(tok >> 2u);
 #if SR_L0_PAD
-    // Mode 0: the input is the padded tensor; every token (even out-of-grid ones) lands
-    // inside it at (tx+2, ty+2), so there is no reflect and no bounds check.
+    // Mode 0: the input is the padded l0_in tensor; every token (even out-of-grid ones)
+    // lands inside it, so there is no reflect and no bounds check. The embedding is fused:
+    // this wave first embeds its 16 tokens (W1s/W2s at baked wrep offsets, b1/b2 at baked
+    // wbuf16 indices), then runs the block on the f32 result (no fp8 E round trip).
     uint HW = uint(dimH * dimW);
-    uint pos = uint((y0 + dy + 2) * dimW + (x0 + dx + 2));
+    uint pos = 0u;                                  // unused in PAD mode (kept for shape)
 #else
     int px = reflect_coord(x0 + dx, dimW);
     int py = reflect_coord(y0 + dy, dimH);
-
     uint HW = uint(dimH * dimW);
     uint pos = uint(py * dimW + px);
 #endif
@@ -204,11 +229,83 @@ void main() {
     uint vt_b1    = vt + 4u * SR_C * 4u;
     uint vt_rel   = vt_b1 + NBLK * 32u * 4u;
 
-    // ---- 1. input: one half-uvec4 load per tile, straight into the residual registers
-    // (group = t>>1, in-group row = (t&1)*16 + rowh*8 - the stored-order channel run)
+    // ---- 1. input: the residual stream in registers (stored-order channels)
     NR_FRAG_ACC st[NT];
     NR_FRAG_B nst8[NT];             // norm outputs: e4m3 fragments, encoded ONCE at the norm
                                     // (D2 encode-once) and copied into every operand role
+#if SR_L0_PAD
+    // Fused embedding (mode 0 only): l0_in (padded fp8) -> E in LDS, layer 2 straight
+    // into the residual registers (f32, no fp8 round trip). W1s/W2s (stored-basis) live
+    // in wrep at the baked offsets below, b1/b2 f16 in wbuf16 at the baked indices.
+    uint h = tid >> 4u;             // emb lane row-half (pixels 8h..8h+7)
+    uint m = tid & 15u;             // emb lane column (channel m of each N tile)
+    {
+        uint pix = (tid >> 1u);
+        uint hh = tid & 1u;
+        uint p = uint((y0 + int(pix >> 2u) + 2) * dimW + (x0 + int(pix & 3u) + 2));
+        uint byte = p * 32u + hh * 16u;
+        uvec4 q = in_act4[byte >> 4u];
+        sEX[pix * 32u + hh * 16u + 0u] = NR_OPERAND(e4m3_to_f32(byte_of(q.x, 0u)));
+        sEX[pix * 32u + hh * 16u + 1u] = NR_OPERAND(e4m3_to_f32(byte_of(q.x, 1u)));
+        sEX[pix * 32u + hh * 16u + 2u] = NR_OPERAND(e4m3_to_f32(byte_of(q.x, 2u)));
+        sEX[pix * 32u + hh * 16u + 3u] = NR_OPERAND(e4m3_to_f32(byte_of(q.x, 3u)));
+        sEX[pix * 32u + hh * 16u + 4u] = NR_OPERAND(e4m3_to_f32(byte_of(q.y, 0u)));
+        sEX[pix * 32u + hh * 16u + 5u] = NR_OPERAND(e4m3_to_f32(byte_of(q.y, 1u)));
+        sEX[pix * 32u + hh * 16u + 6u] = NR_OPERAND(e4m3_to_f32(byte_of(q.y, 2u)));
+        sEX[pix * 32u + hh * 16u + 7u] = NR_OPERAND(e4m3_to_f32(byte_of(q.y, 3u)));
+        sEX[pix * 32u + hh * 16u + 8u] = NR_OPERAND(e4m3_to_f32(byte_of(q.z, 0u)));
+        sEX[pix * 32u + hh * 16u + 9u] = NR_OPERAND(e4m3_to_f32(byte_of(q.z, 1u)));
+        sEX[pix * 32u + hh * 16u + 10u] = NR_OPERAND(e4m3_to_f32(byte_of(q.z, 2u)));
+        sEX[pix * 32u + hh * 16u + 11u] = NR_OPERAND(e4m3_to_f32(byte_of(q.z, 3u)));
+        sEX[pix * 32u + hh * 16u + 12u] = NR_OPERAND(e4m3_to_f32(byte_of(q.w, 0u)));
+        sEX[pix * 32u + hh * 16u + 13u] = NR_OPERAND(e4m3_to_f32(byte_of(q.w, 1u)));
+        sEX[pix * 32u + hh * 16u + 14u] = NR_OPERAND(e4m3_to_f32(byte_of(q.w, 2u)));
+        sEX[pix * 32u + hh * 16u + 15u] = NR_OPERAND(e4m3_to_f32(byte_of(q.w, 3u)));
+    }
+    memoryBarrierShared();
+    barrier();
+    {
+        NR_FRAG_ACC a0 = NR_ACC_ZERO, a1 = NR_ACC_ZERO;
+        for (uint k = 0u; k < 32u; k += 16u) {
+            NR_FRAG_A fa;
+            NR_LOAD_A(fa, sEX, k, 32u);
+            NR_FRAG_B b0, b1;
+            NR_LOAD_B(b0, wrep, 0u + k, 32u);
+            NR_LOAD_B(b1, wrep, 512u + k, 32u);
+            NR_MMA(a0, fa, b0);
+            NR_MMA(a1, fa, b1);
+        }
+        float g0 = float(wbuf16[2560u + m]);
+        float g1 = float(wbuf16[2560u + 16u + m]);
+        for (uint i = 0u; i < 8u; i += 2u) {
+            vec2 v0 = vec2(max(a0[i] + g0, 0.0), max(a0[i + 1u] + g0, 0.0));
+            vec2 v1 = vec2(max(a1[i] + g1, 0.0), max(a1[i + 1u] + g1, 0.0));
+            sEE[(8u * h + i) * 32u + m] = nr_quant_pair32(v0).x;
+            sEE[(8u * h + i + 1u) * 32u + m] = nr_quant_pair32(v0).y;
+            sEE[(8u * h + i) * 32u + 16u + m] = nr_quant_pair32(v1).x;
+            sEE[(8u * h + i + 1u) * 32u + 16u + m] = nr_quant_pair32(v1).y;
+        }
+    }
+    memoryBarrierShared();
+    barrier();
+    for (uint n0 = 0u; n0 < 32u; n0 += 16u) {
+        NR_FRAG_ACC acc = NR_ACC_ZERO;
+        for (uint k = 0u; k < 32u; k += 16u) {
+            NR_FRAG_A fa;
+            NR_LOAD_A(fa, sEE, k, 32u);
+            NR_FRAG_B fb;
+            NR_LOAD_B(fb, wrep, 1024u + 16u * (n0 >> 4u) * 32u + k, 32u);
+            NR_MMA(acc, fa, fb);
+        }
+        float g = float(wbuf16[3104u + n0 + m]);
+        for (uint i = 0u; i < 8u; ++i) sE2[(8u * h + i) * 32u + n0 + m] = acc[i] + g;
+    }
+    memoryBarrierShared();
+    barrier();
+    for (uint t = 0u; t < NT; ++t)
+        for (uint i = 0u; i < 8u; ++i)
+            st[t][i] = sE2[col * 32u + 16u * t + 8u * rowh + i];
+#else
     for (uint t = 0u; t < NT; ++t) {
         uint byte = ((t >> 1u) * HW + pos) * 32u + (t & 1u) * 16u + rowh * 8u;
         uvec4 q = in_act4[byte >> 4u];
@@ -216,6 +313,7 @@ void main() {
         for (uint i = 0u; i < 4u; ++i)  st[t][i]      = e4m3_to_f32(byte_of(h2.x, i));
         for (uint i = 0u; i < 4u; ++i)  st[t][4u + i] = e4m3_to_f32(byte_of(h2.y, i));
     }
+#endif
 
     // ---- OPUS PROTOTYPE 2: transposed, register-resident block. The residual stream st[t] is an
     // accumulator with rows = channels (16t + 8*rowh + i) and lane column = token (col): Wo and fc2
@@ -420,16 +518,11 @@ void main() {
     int y0 = gy * 4 - shiftY;
     int dx = int(tok & 3u);
     int dy = int(tok >> 2u);
-#if SR_L0_PAD
-    uint HW = uint(dimH * dimW);
-    uint pos = uint((y0 + dy + 2) * dimW + (x0 + dx + 2));
-#else
     int px = reflect_coord(x0 + dx, dimW);
     int py = reflect_coord(y0 + dy, dimH);
 
     uint HW = uint(dimH * dimW);
     uint pos = uint(py * dimW + px);
-#endif
     uint w_off = wbuf_lo & 0x1fffffu;
     // Only used for gain1's offset: mode 2 blobs start with up_W (4C x Cn) + up_b (4C) - the same
     // walk sr_stage uses. Everything else is w_off-relative through this head area.

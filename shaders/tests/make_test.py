@@ -207,9 +207,9 @@ def make_test(name, out_dir):
                 {"binding": 12, "file": "wrep.bin"}
             ]
         }
-    elif name in ("sr_l0emb", "sr_l0blk_pad", "sr_l0blk", "sr_l0dn", "sr_l0up", "sr_l0heads"):
-        # Preset L's WMMA rewrite (perf mu_l0): six small specialised kernels replacing
-        # k_sr_l0. Fixtures run under the NH_F16 lavapipe build only (O7): outputs are
+    elif name in ("sr_l0blk_pad", "sr_l0blk", "sr_l0dn", "sr_l0up", "sr_l0heads"):
+        # Preset L's WMMA rewrite (perf mu_l0): specialised block/projection kernels.
+        # Fixtures run under the NH_F16 lavapipe build only (O7): outputs are
         # sized for the widened types (f16 out), inputs are raw bytes (fp8 matrices and
         # activation tensors read identically in both builds).
         rng = np.random.default_rng(0x1E0)
@@ -218,31 +218,9 @@ def make_test(name, out_dir):
                                    0x10 + rng.integers(0, 16, n),
                                    0x90 + rng.integers(0, 16, n)).astype(np.uint8)
         w0, h0 = 32, 16
-        if name == "sr_l0emb":
+        if name == "sr_l0blk_pad":
             iw, ih = w0 + 8, h0 + 8
-            open(os.path.join(out_dir, "in_act.bin"), "wb").write(codes(iw * ih * 32).tobytes())
-            wbuf = bytearray(8192)
-            wbuf[0:4096] = codes(4096).tobytes()
-            wbuf[4096:4096 + 128] = np.linspace(-1, 1, 64, dtype=np.float16).tobytes()
-            open(os.path.join(out_dir, "wbuf.bin"), "wb").write(bytes(wbuf))
-            open(os.path.join(out_dir, "wrep.bin"), "wb").write(codes(2048).tobytes())
-            push = struct.pack("<6I", 0, 1024, 2048, 2080, iw, ih)
-            cfg = {
-                "groups": [(iw + 15) // 16, ih, 1],
-                "push": push.hex(),
-                "bindings": [
-                    {"binding": 0, "file": "wbuf.bin"},
-                    {"binding": 1, "file": "in_act.bin"},
-                    {"binding": 2, "bytes": iw * ih * 32 * 2, "output": "E", "type": "f16"},
-                    {"binding": 3, "file": "wrep.bin"},
-                ]
-            }
-        elif name in ("sr_l0blk_pad", "sr_l0blk"):
-            pad = (name == "sr_l0blk_pad")
-            iw, ih = (w0 + 8, h0 + 8) if pad else (w0, h0)
-            open(os.path.join(out_dir, "E.bin"), "wb").write(codes(iw * ih * 32).tobytes())
-            # enc0L layer bytes 6272..30464: fp8 matrices as codes, f16 vectors as
-            # varying nonzero linspace (zeros would collapse the fallback to a constant).
+            open(os.path.join(out_dir, "l0_in.bin"), "wb").write(codes(iw * ih * 32).tobytes())
             blob = bytearray(30464)
             blob[0:4096] = codes(4096).tobytes()
             blob[6272:6272 + 64] = np.linspace(0.5, 1.5, 32, dtype=np.float16).tobytes()
@@ -264,8 +242,9 @@ def make_test(name, out_dir):
                 if j == 0:
                     blob[15744:15744 + 64] = \
                         np.linspace(-0.5, 0.5, 32, dtype=np.float16).tobytes()
+            blob[4096:4096 + 2048] = codes(2048).tobytes()
             open(os.path.join(out_dir, "wbuf.bin"), "wb").write(bytes(blob))
-            open(os.path.join(out_dir, "wrep.bin"), "wb").write(codes(24192).tobytes())
+            open(os.path.join(out_dir, "wrep.bin"), "wb").write(bytes(2048))
             open(os.path.join(out_dir, "wvec.bin"), "wb").write(
                 np.linspace(0.25, 1.75, 4096, dtype=np.float32).tobytes())
             open(os.path.join(out_dir, "wrepT.bin"), "wb").write(codes(131072).tobytes())
@@ -277,11 +256,52 @@ def make_test(name, out_dir):
                 "push": push.hex(),
                 "bindings": [
                     {"binding": 0, "file": "wbuf.bin"},
-                    {"binding": 1, "file": "E.bin"},
+                    {"binding": 1, "file": "l0_in.bin"},
                     {"binding": 2, "bytes": w0 * h0 * 32 * 2, "output": "skip", "type": "f16"},
                     {"binding": 3, "file": "wrep.bin"},
                     {"binding": 4, "file": "wvec.bin"},
                     {"binding": 5, "file": "wrepT.bin"},
+                ]
+            }
+        elif name == "sr_l0blk":
+            iw, ih = w0, h0
+            open(os.path.join(out_dir, "U.bin"), "wb").write(codes(iw * ih * 32).tobytes())
+            blob = bytearray(24320)
+            blob[8192:8192 + 256] = np.linspace(-1, 1, 128, dtype=np.float16).tobytes()
+            blob[8448:8448 + 64] = np.linspace(0.5, 1.5, 32, dtype=np.float16).tobytes()
+            open(os.path.join(out_dir, "wbuf.bin"), "wb").write(bytes(blob))
+            open(os.path.join(out_dir, "wrep.bin"), "wb").write(codes(24320).tobytes())
+            open(os.path.join(out_dir, "wvec.bin"), "wb").write(
+                np.linspace(0.25, 1.75, 4096, dtype=np.float32).tobytes())
+            open(os.path.join(out_dir, "wrepT.bin"), "wb").write(codes(131072).tobytes())
+            sx = sy = 0
+            push = struct.pack("<3I", 0, 0, 0) + bytes(28) + \
+                struct.pack("<6i", iw, ih, sx, sy, w0, h0)
+            cfg = {
+                "groups": [(w0 + sx + 3) // 4, (h0 + sy + 3) // 4, 1],
+                "push": push.hex(),
+                "bindings": [
+                    {"binding": 0, "file": "wbuf.bin"},
+                    {"binding": 1, "file": "U.bin"},
+                    {"binding": 2, "bytes": w0 * h0 * 32, "output": "B", "type": "u8"},
+                    {"binding": 3, "file": "wrep.bin"},
+                    {"binding": 4, "file": "wvec.bin"},
+                    {"binding": 5, "file": "wrepT.bin"},
+                ]
+            }
+        elif name == "sr_l0heads":
+            wr, hr = 16, 16
+            open(os.path.join(out_dir, "B.bin"), "wb").write(codes(w0 * h0 * 32).tobytes())
+            push = struct.pack("<4I2f", w0, h0, wr, hr, 8.0, 0.09785986691713333)
+            cfg = {
+                "groups": [(wr * hr + 63) // 64, 1, 1],
+                "push": push.hex(),
+                "bindings": [
+                    {"binding": 0, "file": "B.bin"},
+                    {"binding": 1, "bytes": wr * hr * 4, "output": "gates", "type": "u8"},
+                    {"binding": 2, "bytes": wr * hr * 4, "output": "factors", "type": "u8"},
+                    {"binding": 3, "bytes": wr * hr * 8, "output": "aniso", "type": "f16"},
+                    {"binding": 4, "bytes": wr * hr * 4, "output": "hidden0", "type": "u8"},
                 ]
             }
         elif name == "sr_l0dn":
@@ -324,21 +344,6 @@ def make_test(name, out_dir):
                     {"binding": 2, "file": "skip.bin"},
                     {"binding": 3, "bytes": w0 * h0 * 32 * 2, "output": "U", "type": "f16"},
                     {"binding": 4, "file": "wrep.bin"},
-                ]
-            }
-        else:  # sr_l0heads
-            wr, hr = 16, 16
-            open(os.path.join(out_dir, "B.bin"), "wb").write(codes(w0 * h0 * 32).tobytes())
-            push = struct.pack("<4I2f", w0, h0, wr, hr, 8.0, 0.09785986691713333)
-            cfg = {
-                "groups": [(wr * hr + 63) // 64, 1, 1],
-                "push": push.hex(),
-                "bindings": [
-                    {"binding": 0, "file": "B.bin"},
-                    {"binding": 1, "bytes": wr * hr * 4, "output": "gates", "type": "u8"},
-                    {"binding": 2, "bytes": wr * hr * 4, "output": "factors", "type": "u8"},
-                    {"binding": 3, "bytes": wr * hr * 8, "output": "aniso", "type": "f16"},
-                    {"binding": 4, "bytes": wr * hr * 4, "output": "hidden0", "type": "u8"},
                 ]
             }
     elif name == "sr_dec0":
