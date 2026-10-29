@@ -99,7 +99,7 @@ def cache_key(runner, preset, cell, inp, gt, ref):
     import hashlib
     h = hashlib.sha256()
     runner = os.path.realpath(runner)
-    shd = os.path.join(os.path.dirname(os.path.dirname(runner)), "shaders")
+    shd = os.environ.get("DLSS5_AMD_SHADER_DIR") or os.path.join(os.path.dirname(os.path.dirname(runner)), "shaders")
     files = [runner, os.path.realpath(__file__)]
     if os.path.isdir(shd):
         files += sorted(os.path.join(shd, f) for f in os.listdir(shd))
@@ -111,7 +111,7 @@ def cache_key(runner, preset, cell, inp, gt, ref):
     _hash_files(h, files)
     h.update(f"{preset}|{cell}|{inp}|{gt}|{ref}".encode())
     for k in sorted(os.environ):
-        if k.startswith("DLSS5_"):
+        if k.startswith("DLSS5_") and k != "DLSS5_AMD_SHADER_DIR":   # the dir is hashed by content above
             h.update(f"{k}={os.environ[k]}".encode())
     return h.hexdigest()[:32]
 
