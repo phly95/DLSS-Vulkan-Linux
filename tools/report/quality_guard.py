@@ -47,8 +47,9 @@ RR_CELLS = {  # preset F = Ray Reconstruction, oracle = rrref (referee cells rr_
 G1, G2, T1, B1 = -0.20, -0.50, -0.20, 38.0
 # Cells that already miss the bars at the start of the optimisation phase: there the bars are relative
 # to that baseline (no further loss), and the gap itself is an open accuracy item, not an optimisation
-# regression. rr_F_seq at main fb78207 (2026-10-28): G1 mean -1.545, G2 min -2.712, T1 mean -1.517.
-KNOWN_GAP = {"rr_F_seq": (-1.545, -2.712, -1.517)}
+# regression. rr_F_seq at main fb78207 (2026-10-28): G1 mean -1.545, G2 min -2.712, T1 mean -1.517;
+# tightened after the RR accuracy fix (gather formats, per-pixel bev, native mv scale) to the new baseline.
+KNOWN_GAP = {"rr_F_seq": (-0.394, -0.613, -0.403)}
 
 
 def tpsnr(d, dg):
