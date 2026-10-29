@@ -68,7 +68,15 @@
 layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) readonly buffer InW16       { float16_t  wbuf16[]; };
+#ifdef NR_OPERAND_F16
 layout(set = 0, binding = 1) readonly buffer InAct       { uvec4 in_act4[]; };
+#else
+// Typed e4m3 view (P1 step 2): float(in_act[j]) lowers to a raw load + v_cvt_pk_f32_fp8
+// (2 bytes per op) instead of the scalar e4m3_to_f32 arithmetic - ACO pairs adjacent element
+// reads into b64 loads, exactly as it already did for the sIn LDS reads (96 hw converts in
+// the shipped 96m2). The byte index j is unchanged: an e4m3 element IS the tensor byte.
+layout(set = 0, binding = 1) readonly buffer InAct       { NR_OPERAND in_act[]; };
+#endif
 layout(set = 0, binding = 2) writeonly buffer OutAct     { NR_OPERAND out_act[]; };
 layout(set = 0, binding = 3, std430) readonly buffer WRep { NR_OPERAND wrep[]; };
 // Brief item (b): per-stage f32 vector TABLE (host-built from the blob): gain1, v270, gain2,
@@ -89,10 +97,11 @@ layout(set = 0, binding = 4, std430) readonly buffer WVec { uvec4 wv4[]; };
 // the tile index in the address immediate.
 layout(set = 0, binding = 5, std430) readonly buffer WRepT { NR_OPERAND wrepT[]; };
 // Binding 6 is the mode wire: mode 0 WRITES the projection result here (the low tensor, byte
-// view), mode 2 READS the encoder skip here (16-byte chunk view for GROUP_BYTES - the two are
-// compile-time exclusive, so each build has exactly one variable at this binding).
+// view), mode 2 READS the encoder skip here (typed e4m3 elements -> hardware decode; the two
+// are compile-time exclusive, so each build has exactly one variable at this binding; the f16
+// build never touches this binding).
 #ifdef NR_SW_M2
-layout(set = 0, binding = 6) readonly buffer Bnd6 { uvec4 b6v4[]; };
+layout(set = 0, binding = 6) readonly buffer Bnd6 { NR_OPERAND b6[]; };
 #else
 layout(set = 0, binding = 6) buffer Bnd6 { NR_OPERAND b6[]; };
 #endif
@@ -262,11 +271,9 @@ void blk_radv(int x0, int y0, int gx8, int gy8) {
     }
 #else
     for (uint t = 0u; t < NT; ++t) {
-        uint byte = ((t >> 1u) * HW + pos) * 32u + (t & 1u) * 16u + rowh * 8u;
-        uvec4 q = in_act4[byte >> 4u];
-        uvec2 h2 = ((byte & 8u) != 0u) ? q.zw : q.xy;
-        for (uint i = 0u; i < 4u; ++i)  st[t][i]      = e4m3_to_f32(byte_of(h2.x, i));
-        for (uint i = 0u; i < 4u; ++i)  st[t][4u + i] = e4m3_to_f32(byte_of(h2.y, i));
+        uint base = ((t >> 1u) * HW + pos) * 32u + (t & 1u) * 16u + rowh * 8u;
+        // 8 contiguous bytes -> 2-4 raw loads + v_cvt_pk_f32_fp8 pairs (no scalar decode)
+        for (uint i = 0u; i < 8u; ++i) st[t][i] = float(in_act[base + i]);
     }
 #endif
 
@@ -494,11 +501,8 @@ void main() {
         for (uint cg = h; cg < SR_CN / 32u; cg += 2u) {
             uint grp = (cg * HW2 + lpos) * 32u;
             uint dst = par * SR_CN + cg * 32u;
-            uvec4 va = in_act4[grp >> 4u];
-            uvec4 vb = in_act4[(grp >> 4u) + 1u];
-#define SLP(j, bv) sLow[dst + perm_P(j)] = NR_OPERAND(e4m3_to_f32(bv));
-            GROUP_BYTES(va, vb, SLP)
-#undef SLP
+            // codes are e4m3 already: store them without the decode->f32->requant round trip
+            for (uint j = 0u; j < 32u; ++j) sLow[dst + perm_P(j)] = in_act[grp + j];
         }
         uint upW = w_off;                    // Wup, row-major [4C][Cn] at the blob head
         uint upb = w_off + K4 * SR_CN;       // up_b, f16 [4C]
@@ -537,11 +541,10 @@ void main() {
             uint spos = uint(ry * dimW + rx);
             for (uint cg = 0u; cg < SR_C / 32u; ++cg) {
                 uint grp = (cg * HW + spos) * 32u;
-                uvec4 va = b6v4[grp >> 4u];
-                uvec4 vb = b6v4[(grp >> 4u) + 1u];
-#define SKIP_ADD(j, bv) { uint bi_ = tk * SR_C + cg * 32u + j;     sIn[bi_] = NR_OPERAND(quant8(float(sIn[bi_]) + e4m3_to_f32(bv))); }
-                GROUP_BYTES(va, vb, SKIP_ADD)
-#undef SKIP_ADD
+                for (uint j = 0u; j < 32u; ++j) {
+                    uint bi_ = tk * SR_C + cg * 32u + j;
+                    sIn[bi_] = NR_OPERAND(quant8(float(sIn[bi_]) + float(b6[grp + j])));
+                }
             }
         }
     }
