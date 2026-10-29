@@ -29,7 +29,10 @@ layout(push_constant) uniform StageArgs {
 
 // A = the concat (16 rows x 4C, fp8), R = the product (16 x Cn, f16) before the epilogue.
 shared NR_OPERAND sA[16 * 384];
-shared float16_t  sR[16 * 128];
+// Row stride 76 (not 128) f16: 128 B/row put the 16 rows on 2 LDS bank groups (8-way conflicts
+// in the epilogue's 32 per-byte reads a row); 152 B puts all 16 rows on distinct bank groups.
+const uint SR_STRIDE = 76u;
+shared float16_t  sR[16 * 76];
 shared float16_t  sBias[128];      // dn_b cached once (P-permuted -> vidx at staging)
 
 float read_f16(uint byte_off) { return float(wbuf16[byte_off >> 1u]); }
@@ -83,28 +86,46 @@ void main() {
     // iteration - two 40-cycle divides a byte, ~12-17k cycles a lane, which is what made this
     // dispatch cost 0.73 ms for a 96-WMMA product. Here no index needs a divide: quad/Cg only
     // bound loops, perm_P folds on the literal byte.
+#define PT(j, bv) sA[dst + perm_P(j)] = ok ? NR_OPERAND(e4m3_to_f32(bv)) : NR_OPERAND(0.0);
+    // C = 32 -> Cg = 1: the original cg-parity split gave the two lane-halves trip counts {1,0}
+    // (lanes 16-31 idle through the whole staging, divergent mask in the hottest loop; ACO's
+    // static critical path 60528 vs proj64's 17129, and staging measured 0.39 of 0.723 ms).
+    // Split by QUAD parity instead: both halves stage two quads each, straight-line, no loop.
     {
-        uint Cg = C / 32u;
         uint r = tid & 15u;
-        uint h = tid >> 4u;            // lane half: cg-parity split (rows are covered by both
-                                        // halves together - one wave, ACO orders the writes)
+        uint h = tid >> 4u;
         uint ly = r >> 2u, lx = r & 3u;
         int by_ = by + int(ly);
-        for (uint quad = 0u; quad < 4u; ++quad) {
-            int Y = 2 * by_ + int(quad >> 1u);
-            int X = 2 * (bx + int(lx)) + int(quad & 1u);
-            bool ok = X >= 0 && X < dimW && Y >= 0 && Y < dimH;
-            uint opos = ok ? uint(Y * uint(dimW) + X) : 0u;
-            for (uint cg = h; cg < Cg; cg += 2u) {
-                uint grp = ((cg * HW + (ok ? opos : 0u)) * 32u);
-                uint dst = r * K4 + quad * C + cg * 32u;
-                uvec4 va = in_act4[grp >> 4u];
-                uvec4 vb = in_act4[(grp >> 4u) + 1u];
-#define PT(j, bv) sA[dst + perm_P(j)] = ok ? NR_OPERAND(e4m3_to_f32(bv)) : NR_OPERAND(0.0);
-                GROUP_BYTES(va, vb, PT)
-#undef PT
-            }
+#define L0_STAGE_QUAD(Q)                                                        \
+        {                                                                       \
+            uint quad = (Q);                                                    \
+            int Y = 2 * by_ + int(quad >> 1u);                                  \
+            int X = 2 * (bx + int(lx)) + int(quad & 1u);                        \
+            bool ok = X >= 0 && X < dimW && Y >= 0 && Y < dimH;                 \
+            uint grp = (ok ? uint(Y * uint(dimW) + X) : 0u) * 32u;              \
+            uint dst = r * K4 + quad * C;                                       \
+            uvec4 va = in_act4[grp >> 4u];                                      \
+            uvec4 vb = in_act4[(grp >> 4u) + 1u];                               \
+            PT(0u, byte_of(va.x, 0u))  PT(1u, byte_of(va.x, 1u))                \
+            PT(2u, byte_of(va.x, 2u))  PT(3u, byte_of(va.x, 3u))                \
+            PT(4u, byte_of(va.y, 0u))  PT(5u, byte_of(va.y, 1u))                \
+            PT(6u, byte_of(va.y, 2u))  PT(7u, byte_of(va.y, 3u))                \
+            PT(8u, byte_of(va.z, 0u))  PT(9u, byte_of(va.z, 1u))                \
+            PT(10u, byte_of(va.z, 2u)) PT(11u, byte_of(va.z, 3u))               \
+            PT(12u, byte_of(va.w, 0u)) PT(13u, byte_of(va.w, 1u))               \
+            PT(14u, byte_of(va.w, 2u)) PT(15u, byte_of(va.w, 3u))               \
+            PT(16u, byte_of(vb.x, 0u)) PT(17u, byte_of(vb.x, 1u))               \
+            PT(18u, byte_of(vb.x, 2u)) PT(19u, byte_of(vb.x, 3u))               \
+            PT(20u, byte_of(vb.y, 0u)) PT(21u, byte_of(vb.y, 1u))               \
+            PT(22u, byte_of(vb.y, 2u)) PT(23u, byte_of(vb.y, 3u))               \
+            PT(24u, byte_of(vb.z, 0u)) PT(25u, byte_of(vb.z, 1u))               \
+            PT(26u, byte_of(vb.z, 2u)) PT(27u, byte_of(vb.z, 3u))               \
+            PT(28u, byte_of(vb.w, 0u)) PT(29u, byte_of(vb.w, 1u))               \
+            PT(30u, byte_of(vb.w, 2u)) PT(31u, byte_of(vb.w, 3u))               \
         }
+        L0_STAGE_QUAD(h)
+        L0_STAGE_QUAD(h + 2u)
+#undef L0_STAGE_QUAD
     }
 
     // ---- projection: M = 16 low pixels, N = Cn in two-tile chunks, K = 4C unrolled by 2
@@ -134,8 +155,8 @@ void main() {
                 NR_MMA(p1, fa0, b2); NR_MMA(p1, fa1, b3);
                 NR_MMA(p1, fc0, e2); NR_MMA(p1, fc1, e3);
             }
-            NR_STORE_ACC(NR_NARROW_ACC(p0), sR, 16u * n0, Cn);
-            NR_STORE_ACC(NR_NARROW_ACC(p1), sR, 16u * (n0 + 1u), Cn);
+            NR_STORE_ACC(NR_NARROW_ACC(p0), sR, 16u * n0, SR_STRIDE);
+            NR_STORE_ACC(NR_NARROW_ACC(p1), sR, 16u * (n0 + 1u), SR_STRIDE);
         }
     }
 
@@ -152,7 +173,7 @@ void main() {
             for (uint g = (tid >> 4u); g < Cg; g += 2u) {
                 for (uint i = 0u; i < 32u; ++i) {
                     uint co = g * 32u + i;
-                    float y = clamp(float(sR[r * Cn + co]) + float(sBias[co]),
+                    float y = clamp(float(sR[r * SR_STRIDE + co]) + float(sBias[co]),
                                     -6.28125, 6.28125);
                     out_act2[g * (W2 * H2) * 32u + base + perm_invP(i)] = NR_OPERAND(y);
                 }

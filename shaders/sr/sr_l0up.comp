@@ -6,6 +6,7 @@
 #extension GL_EXT_shader_16bit_storage : enable
 #include "nh_mm.glsl"
 
+
 // sr_l0up: preset L's mode-2 up projection + skip (perf mu_l0). A copy of sr_swin_up.comp with
 // C=32, Cn=64 hardcoded (tail owns that file - it is not edited here). Reads the (W0/2)x(H0/2)
 // t8 tensor + W0xH0 l0_skip, writes the W0xH0 U block-input tensor (fp8). Same two-pass WMMA
@@ -32,7 +33,10 @@ layout(push_constant) uniform StageArgs {
 // [16 parents][2C] per parity half (staging fp8 would quantise before the bias the model folds in
 // at its single up8 quantisation point), plus up_b (4C halfs).
 shared NR_OPERAND sLow[16 * 128];
-shared float16_t  sUp[16 * 192];
+// Row stride 76 (not 64) f16: a 128-B row stride put the 16 parent slots on 2 LDS bank groups
+// (8-way conflicts across the consume loop's 32 per-byte sUp reads); 152 B spreads all 16.
+const uint UP_STRIDE = 76u;
+shared float16_t  sUp[16 * 76];
 shared float16_t  sUpb[4 * 96];
 
 float quant8(float x) { return clamp(x, -448.0, 448.0); }
@@ -129,10 +133,10 @@ void main() {
                 NR_MMA(p3, fa0, e2); NR_MMA(p3, fa1, e3);
             }
             uint bo = 16u * (n0 - hf * NH2);
-            NR_STORE_ACC(NR_NARROW_ACC(p0), sUp, bo, 2u * C);
-            NR_STORE_ACC(NR_NARROW_ACC(p1), sUp, bo + 16u, 2u * C);
-            NR_STORE_ACC(NR_NARROW_ACC(p2), sUp, bo + 32u, 2u * C);
-            NR_STORE_ACC(NR_NARROW_ACC(p3), sUp, bo + 48u, 2u * C);
+            NR_STORE_ACC(NR_NARROW_ACC(p0), sUp, bo, UP_STRIDE);
+            NR_STORE_ACC(NR_NARROW_ACC(p1), sUp, bo + 16u, UP_STRIDE);
+            NR_STORE_ACC(NR_NARROW_ACC(p2), sUp, bo + 32u, UP_STRIDE);
+            NR_STORE_ACC(NR_NARROW_ACC(p3), sUp, bo + 48u, UP_STRIDE);
         }
         memoryBarrierShared();
 
@@ -154,7 +158,7 @@ void main() {
                 // stored byte j = logical channel perm_P(j); the output byte for logical c is
                 // perm_invP(c) = j, so the stores land contiguous (two uvec4-sized runs).
 #define SK(j, bv) { uint c = cg * 32u + perm_P(j); \
-    float uv = quant8(float(sUp[slot * 2u * C + (q & 1u) * C + c]) + float(sUpb[q * C + c])); \
+    float uv = quant8(float(sUp[slot * UP_STRIDE + (q & 1u) * C + c]) + float(sUpb[q * C + c])); \
     out_act[cg * HW * 32u + base * 32u + j] = NR_OPERAND(quant8(uv + e4m3_to_f32(bv))); }
                 GROUP_BYTES(va, vb, SK)
 #undef SK
