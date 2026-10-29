@@ -854,14 +854,16 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
             // the port's mode word at 0x68 (0 = k_sr_l0<0,2>, 1 = k_sr_l0<2,2> - the template
             // parameter has no slot in the oracle's 104-byte args).
             add_pipe("sr_l0", 7, 112);
-            // Preset L's WMMA rewrite (perf mu_l0): the two sr_l0 launches as small specialised
-            // dispatches - sr_l0blk_pad (l0_in -> l0_skip, embedding fused), sr_l0dn
-            // (l0_skip -> t0), sr_l0up (t8 + l0_skip -> U), sr_l0blk (U -> B), sr_l0heads.
-            add_pipe("sr_l0blk_pad", 6, 64);
-            add_pipe("sr_l0blk", 6, 64);
-            add_pipe("sr_l0dn", 4, 56);
-            add_pipe("sr_l0up", 5, 56);
-        add_pipe("sr_l0heads", 5, 24);
+            // Preset L's WMMA rewrite (perf mu_l0): both sr_l0 launches are single dispatches
+            // now. sr_l0blk_pad (l0_in -> l0_skip + t0: fused embedding + step (a)'s dn
+            // projection); sr_l0blk (t8 + l0_skip -> B AND the heads, steps b1+b2). sr_l0dn /
+            // sr_l0up / sr_l0heads are undispatched (pipelines kept so O5 stays green; delete
+            // when srl rebases).
+            add_pipe("sr_l0blk_pad", 7, 64);
+            add_pipe("sr_l0blk", 11, 64);         // +6 l0_skip, +7..10 heads outputs (steps b1/b2)
+            add_pipe("sr_l0dn", 4, 56);           // undispatched since step (a) (kept for O5)
+            add_pipe("sr_l0up", 5, 56);           // undispatched since step (b1)
+            add_pipe("sr_l0heads", 5, 24);        // undispatched since step (b2)
         }
     } else {
         // Bytes per texel of each RR gather format code (tools/verify/texfmt.py RR_BPP).
@@ -1900,9 +1902,11 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                 // C=32 block over the padded (+2) border -> mode-0 down projection -> t0
                 // (t_act[0]); l0_skip = the fp8 block output.  L0Args 0x48.. : (W0,H0) level-0
                 // grid, (sx,sy) window shift (f0 (2,2), f1 (0,2)), (Wr,Hr) render grid.
-                // Perf mu_l0: three WMMA dispatches replace the bit-exact launch (~630 ms).
+                // Perf mu_l0: two WMMA dispatches replace the bit-exact launch (~630 ms).
                 {
-                    // 1+2. block with fused embedding (PAD input): l0_in -> l0_skip
+                    // Step (a): block with fused embedding AND fused down projection
+                    // (PAD input): l0_in -> l0_skip + t0. One wave per 2x2 window group
+                    // (sr_swin64m0's shape); the dn dispatch and its l0_skip DRAM read are gone.
                     const uint32_t eIW = uint32_t(W0 + 8), eIH = uint32_t(H0 + 8);
                     const int l0sx = (p == 0) ? 2 : 0, l0sy = 2;
                     const uint32_t blo = 6272, bvo = 0;
@@ -1912,14 +1916,8 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                     std::memcpy(bpush + 48, &l0sx, 4); std::memcpy(bpush + 52, &l0sy, 4);
                     std::memcpy(bpush + 56, &W0, 4); std::memcpy(bpush + 60, &H0, 4);
                     dispatch(cmd, "sr_l0blk_pad", {&w_enc0, &ue["l0_in"], &ue["l0_skip"],
-                                                   &ue["wL0repE"], &ue["wL0tab"], &ue["wL0T"]},
-                             bpush, 64, (W0 + l0sx + 3) / 4, (H0 + l0sy + 3) / 4, 1);
-                    // 3. down projection: l0_skip -> t0 (t_act[0], stage0's input)
-                    uint8_t dpush[56] = {0};
-                    std::memcpy(dpush + 0, &blo, 4);
-                    std::memcpy(dpush + 40, &W0, 4); std::memcpy(dpush + 44, &H0, 4);
-                    dispatch(cmd, "sr_l0dn", {&w_enc0, &ue["l0_skip"], &t_act[0], &ue["wL0repE"]},
-                             dpush, 56, ((W0 >> 1) + 3) / 4, ((H0 >> 1) + 3) / 4, 1);
+                                                   &ue["wL0repE"], &ue["wL0tab"], &ue["wL0T"], &t_act[0]},
+                             bpush, 64, (W0 + l0sx + 7) / 8, (H0 + l0sy + 7) / 8, 1);
                 }
                 inject_after(cmd, "l0", 3);
             } else {
@@ -2058,32 +2056,28 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                 // Perf mu_l0: three WMMA dispatches replace the bit-exact k_sr_l0<2,2>.
                 const int l2sx = (p != 0) ? 2 : 0;
                 {
-                    // 4. up projection + skip: t8 + l0_skip -> l0_up
+                    // Step (b1): the up projection + skip are folded into sr_l0blk's prologue
+                    // (sr_swin64m2's pass A/pass B) - sr_l0up's dispatch and the l0_up U tensor
+                    // round trip are gone. binding 1 = t8 (the low tensor), binding 6 = l0_skip;
+                    // one wave per 8x8 group like the fused sr_swin*m2 launches.
                     const uint32_t ulo = 0;
-                    uint8_t upush[56] = {0};
-                    std::memcpy(upush + 0, &ulo, 4);
-                    std::memcpy(upush + 40, &W0, 4); std::memcpy(upush + 44, &H0, 4);
-                    dispatch(cmd, "sr_l0up", {&w_dec0, &t_act[8], &ue["l0_skip"], &ue["l0_up"],
-                                              &ue["wL0repD"]},
-                             upush, 56, (W0 + 7) / 8, (H0 + 7) / 8, 1);
-                    // 5. block (reflect input): l0_up -> l0_blk
                     const uint32_t bvo = 16384;
                     const int l2sy = 0;
                     uint8_t bpush[64] = {0};
                     std::memcpy(bpush + 0, &ulo, 4); std::memcpy(bpush + 8, &bvo, 4);
+                    // Step (b2): render crop + aniso scales for the fused heads (offsets 12..27).
+                    std::memcpy(bpush + 12, &W, 4); std::memcpy(bpush + 16, &H, 4);
+                    std::memcpy(bpush + 20, &dec0_s0, 4); std::memcpy(bpush + 24, &dec0_f0, 4);
                     std::memcpy(bpush + 40, &W0, 4); std::memcpy(bpush + 44, &H0, 4);
                     std::memcpy(bpush + 48, &l2sx, 4); std::memcpy(bpush + 52, &l2sy, 4);
                     std::memcpy(bpush + 56, &W0, 4); std::memcpy(bpush + 60, &H0, 4);
-                    dispatch(cmd, "sr_l0blk", {&w_dec0, &ue["l0_up"], &ue["l0_blk"],
-                                               &ue["wL0repD"], &ue["wL0tab"], &ue["wL0T"]},
-                             bpush, 64, (W0 + l2sx + 3) / 4, (H0 + l2sy + 3) / 4, 1);
-                    // 6. heads at the render crop (hidden has no warp: L0Args 0x18/0x20 NULL)
-                    uint8_t hpush[24] = {0};
-                    std::memcpy(hpush + 0, &W0, 4); std::memcpy(hpush + 4, &H0, 4);
-                    std::memcpy(hpush + 8, &W, 4); std::memcpy(hpush + 12, &H, 4);
-                    std::memcpy(hpush + 16, &dec0_s0, 4); std::memcpy(hpush + 20, &dec0_f0, 4);
-                    dispatch(cmd, "sr_l0heads", {&ue["l0_blk"], &gates, &factors, &aniso, &hidden[0]},
-                             hpush, 24, (W * H + 63) / 64, 1, 1);
+                    dispatch(cmd, "sr_l0blk", {&w_dec0, &t_act[8], &ue["l0_blk"],
+                                               &ue["wL0repD"], &ue["wL0tab"], &ue["wL0T"],
+                                               &ue["l0_skip"], &gates, &factors, &aniso, &hidden[0]},
+                             bpush, 64, (W0 + l2sx + 7) / 8, (H0 + l2sy + 7) / 8, 1);
+                    // 6. heads are folded into the block epilogue (step b2); the dispatch above
+                    // writes gates/factors/aniso/hidden0 itself. sr_l0heads stays registered but
+                    // undispatched (kept for O5 until srl rebases).
                 }
                 inject_after(cmd, "dec0", sr_l[12]);
             } else {

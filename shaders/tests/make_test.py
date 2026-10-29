@@ -243,8 +243,15 @@ def make_test(name, out_dir):
                     blob[15744:15744 + 64] = \
                         np.linspace(-0.5, 0.5, 32, dtype=np.float16).tobytes()
             blob[4096:4096 + 2048] = codes(2048).tobytes()
+            # step (a): the dn bias the fused epilogue reads (dn fixture's own values)
+            blob[30336:30336 + 128] = np.linspace(-1, 1, 64, dtype=np.float16).tobytes()
             open(os.path.join(out_dir, "wbuf.bin"), "wb").write(bytes(blob))
-            open(os.path.join(out_dir, "wrep.bin"), "wb").write(bytes(2048))
+            # step (a): the fused epilogue reads the dn matrix from wrep at the chain's
+            # dnW offset (22144 = 6272 + 192 + 7168 + 8448 + 64); the head is the emb weights
+            wrep = bytearray(30336)
+            wrep[0:2048] = codes(2048).tobytes()
+            wrep[22144:22144 + 8192] = codes(8192).tobytes()
+            open(os.path.join(out_dir, "wrep.bin"), "wb").write(bytes(wrep))
             open(os.path.join(out_dir, "wvec.bin"), "wb").write(
                 np.linspace(0.25, 1.75, 4096, dtype=np.float32).tobytes())
             open(os.path.join(out_dir, "wrepT.bin"), "wb").write(codes(131072).tobytes())
@@ -252,7 +259,7 @@ def make_test(name, out_dir):
             push = struct.pack("<3I", 6272, 0, 0) + bytes(28) + \
                 struct.pack("<6i", iw, ih, sx, sy, w0, h0)
             cfg = {
-                "groups": [(w0 + sx + 3) // 4, (h0 + sy + 3) // 4, 1],
+                "groups": [(w0 + sx + 7) // 8, (h0 + sy + 7) // 8, 1],
                 "push": push.hex(),
                 "bindings": [
                     {"binding": 0, "file": "wbuf.bin"},
@@ -261,12 +268,16 @@ def make_test(name, out_dir):
                     {"binding": 3, "file": "wrep.bin"},
                     {"binding": 4, "file": "wvec.bin"},
                     {"binding": 5, "file": "wrepT.bin"},
+                    {"binding": 6, "bytes": (w0 // 2) * (h0 // 2) * 64 * 2,
+                     "output": "t0", "type": "f16"},
                 ]
             }
         elif name == "sr_l0blk":
-            iw, ih = w0, h0
-            open(os.path.join(out_dir, "U.bin"), "wb").write(codes(iw * ih * 32).tobytes())
-            blob = bytearray(24320)
+            # Step (b1): the mode-2 block now fuses the up projection + skip (binding 1 = the
+            # half-res low tensor t8, binding 6 = l0_skip); no U input any more.
+            open(os.path.join(out_dir, "low.bin"), "wb").write(codes((w0 // 2) * (h0 // 2) * 64).tobytes())
+            open(os.path.join(out_dir, "skip.bin"), "wb").write(codes(w0 * h0 * 32).tobytes())
+            blob = bytearray(24320)   # dec0L: up_W [128][64] fp8 at 0, up_b f16 at 8192, gain1 at 8448
             blob[8192:8192 + 256] = np.linspace(-1, 1, 128, dtype=np.float16).tobytes()
             blob[8448:8448 + 64] = np.linspace(0.5, 1.5, 32, dtype=np.float16).tobytes()
             open(os.path.join(out_dir, "wbuf.bin"), "wb").write(bytes(blob))
@@ -275,18 +286,27 @@ def make_test(name, out_dir):
                 np.linspace(0.25, 1.75, 4096, dtype=np.float32).tobytes())
             open(os.path.join(out_dir, "wrepT.bin"), "wb").write(codes(131072).tobytes())
             sx = sy = 0
-            push = struct.pack("<3I", 0, 0, 0) + bytes(28) + \
-                struct.pack("<6i", iw, ih, sx, sy, w0, h0)
+            # push: [0..11] wbuf_lo/hi + vec_off (0: the fixture's wvec holds one table's worth),
+            # [12..27] renW/renH/s0/f0 (step b2's heads), [40..63] dimW/dimH/sx/sy/outW/outH
+            # (bytes 28..39 stay zero padding)
+            push = struct.pack("<3I", 0, 0, 0) + \
+                struct.pack("<2i2f", w0, h0, 8.0, 0.09785986691713333) + bytes(12) + \
+                struct.pack("<6i", w0, h0, sx, sy, w0, h0)
             cfg = {
-                "groups": [(w0 + sx + 3) // 4, (h0 + sy + 3) // 4, 1],
+                "groups": [(w0 + sx + 7) // 8, (h0 + sy + 7) // 8, 1],
                 "push": push.hex(),
                 "bindings": [
                     {"binding": 0, "file": "wbuf.bin"},
-                    {"binding": 1, "file": "U.bin"},
-                    {"binding": 2, "bytes": w0 * h0 * 32, "output": "B", "type": "u8"},
+                    {"binding": 1, "file": "low.bin"},
+                    {"binding": 2, "bytes": w0 * h0 * 32 * 2, "output": "B", "type": "f16"},
                     {"binding": 3, "file": "wrep.bin"},
                     {"binding": 4, "file": "wvec.bin"},
                     {"binding": 5, "file": "wrepT.bin"},
+                    {"binding": 6, "file": "skip.bin"},
+                    {"binding": 7, "bytes": w0 * h0 * 4, "output": "gates", "type": "u8"},
+                    {"binding": 8, "bytes": w0 * h0 * 4, "output": "factors", "type": "u8"},
+                    {"binding": 9, "bytes": w0 * h0 * 8, "output": "aniso", "type": "f16"},
+                    {"binding": 10, "bytes": w0 * h0 * 4, "output": "hidden", "type": "u8"},
                 ]
             }
         elif name == "sr_l0heads":

@@ -71,11 +71,34 @@ layout(set = 0, binding = 4, std430) readonly buffer WVec { uvec4 wv4[]; };
 // is 256 contiguous bytes [n][k], so each cooperative-matrix load is stride 16 (a literal) with
 // the tile index in the address immediate.
 layout(set = 0, binding = 5, std430) readonly buffer WRepT { NR_OPERAND wrepT[]; };
+// Binding 6 is mode-specific (the pipelines are separate): PAD = OutT0 (step (a)'s dn output),
+// mode 2 = InSkip (step (b1)'s encoder skip). Binding 1 likewise: PAD = padded l0_in, mode 2 =
+// the low tensor t8. Both pipelines bind their own full layout; a mode never touches the other's
+// binding 6.
+#if SR_L0_PAD
+layout(set = 0, binding = 6) writeonly buffer OutT0 { NR_OPERAND out_t0[]; };
+#else
+// Step (b1) (sr_swin64m2's pattern): the up projection + skip are folded into this block's
+// prologue - binding 1 carries the low tensor t8 (was the U input), binding 6 the encoder
+// skip l0_skip. The l0up dispatch and the U tensor round trip are gone.
+layout(set = 0, binding = 6) readonly buffer InSkip { uvec4 skip4[]; };
+// Step (b2): the heads (sr_l0heads) folded into this block's epilogue - the render-crop
+// head outputs, written from the staged sOut bytes (the Q8P-through-LDS path, NOT direct
+// fragment reads: that is what F2's parked attempt miscompiled on).
+layout(set = 0, binding = 7) buffer OutGates   { uint8_t gates[]; };
+layout(set = 0, binding = 8) buffer OutFactors { uint8_t factors[]; };
+layout(set = 0, binding = 9) buffer OutAniso   { float16_t aniso[]; };
+layout(set = 0, binding = 10) buffer OutHidden { int8_t hidden[]; };
+#endif
 
 layout(push_constant) uniform StageArgs {
     uint wbuf_lo;
     uint wbuf_hi;
     uint vec_off;                  // this layer's table base (slot * 16384)
+    int renW;                      // step (b2): render crop width/height + aniso scales
+    int renH;                      //   (mode 2 only; 0 in the PAD push, never read there)
+    float s0;
+    float f0;
     layout(offset = 40) int dimW;  // INPUT tensor width (padded IW in PAD mode)
     int dimH;                      // INPUT tensor height
     int shiftX;
@@ -88,6 +111,12 @@ layout(push_constant) uniform StageArgs {
 shared NR_OPERAND sEX[16 * 32];   // fused-emb layer-1 A tile (raw fp8)
 shared NR_OPERAND sEE[16 * 32];   // fused-emb layer-1 output tile (quantised fp8)
 shared float sE2[16 * 32];        // fused-emb layer-2 output (f32 + bias, block input)
+shared NR_OPERAND sCat[16 * 4 * SR_C];   // step (a): [16 low pixels][4C] concat tile, LOGICAL order
+#else
+shared NR_OPERAND sLow[16 * 2 * SR_C];   // step (b1): the group's 16 parents [16][Cn=64]
+shared NR_OPERAND sIn[64 * SR_C];        // step (b1): up+skip fused input [64 group tokens][C];
+                                         //   step (b2) reuses it (after the windows are done) to
+                                         //   stage this group's quantised block output bytes
 #endif
 
 // D1 completed (d4r's token-lane idea, technique only): there is NO LDS and NO barrier left in
@@ -140,6 +169,9 @@ float nh_gelu(float z) {
     return z * (t * (0.412109375 - 0.0810546875 * abs(t)) + 0.5);
 }
 
+// Step (b2): the heads' sigmoid (sr_l0heads' sigm), mode 2 only.
+float l0_sigm(float x) { return 1.0 / (1.0 + exp(-x)); }
+
 void sync_lds() { memoryBarrierShared(); barrier(); }
 
 // The lane's 8 f32 for tile `T` of a [tile][16 f32] vector at byte base (rowh selects its half):
@@ -176,6 +208,22 @@ float e4m3_to_f32(uint b) {
     BYTES_OF(VA.x, 0u, BODY) BYTES_OF(VA.y, 1u, BODY) BYTES_OF(VA.z, 2u, BODY) BYTES_OF(VA.w, 3u, BODY) \
     BYTES_OF(VB.x, 4u, BODY) BYTES_OF(VB.y, 5u, BODY) BYTES_OF(VB.z, 6u, BODY) BYTES_OF(VB.w, 7u, BODY)
 
+// Step (a) epilogue emit (sr_swin64m0's EMIT): one N tile's 16 channels for this lane's
+// 8 parent rows, streamed as bias + clamp(+-6.28125) + E4M3 into the low grid on binding 6.
+// TILE = N-tile index (db[TILE] is this lane's bias channel for it).
+#define EMIT_L0(ACC, TILE) { \
+    uint co_ = 16u * (TILE) + col; \
+    for (uint comp = 0u; comp < 8u; ++comp) { \
+        uint rp = 8u * rowh + comp; \
+        int lx = lowX0 + int(rp & 3u); \
+        int ly = lowY0 + int(rp >> 2u); \
+        if (lx >= 0 && lx < int(W2) && ly >= 0 && ly < int(H2)) { \
+            float y_ = clamp((ACC)[comp] + db[(TILE)], -6.28125, 6.28125); \
+            out_t0[((co_ >> 5u) * HW2 + uint(ly) * W2 + uint(lx)) * 32u + perm_invP(co_ & 31u)] = \
+                NR_OPERAND(y_); \
+        } \
+    } }
+
 
 // (c) Stored-order channels: there is no sX any more. The tensor's stored byte j of a 32-group
 // holds basis channel j (the host's tile/table repack permutes every channel axis to match), so a
@@ -194,23 +242,6 @@ void main() {
 
     int gx = int(gl_WorkGroupID.x);
     int gy = int(gl_WorkGroupID.y);
-    int x0 = gx * 4 - shiftX;
-    int y0 = gy * 4 - shiftY;
-    int dx = int(tok & 3u);
-    int dy = int(tok >> 2u);
-#if SR_L0_PAD
-    // Mode 0: the input is the padded l0_in tensor; every token (even out-of-grid ones)
-    // lands inside it, so there is no reflect and no bounds check. The embedding is fused:
-    // this wave first embeds its 16 tokens (W1s/W2s at baked wrep offsets, b1/b2 at baked
-    // wbuf16 indices), then runs the block on the f32 result (no fp8 E round trip).
-    uint HW = uint(dimH * dimW);
-    uint pos = 0u;                                  // unused in PAD mode (kept for shape)
-#else
-    int px = reflect_coord(x0 + dx, dimW);
-    int py = reflect_coord(y0 + dy, dimH);
-    uint HW = uint(dimH * dimW);
-    uint pos = uint(py * dimW + px);
-#endif
     uint w_off = wbuf_lo & 0x1fffffu;
     // Only used for gain1's offset: mode 2 blobs start with up_W (4C x Cn) + up_b (4C) - the same
     // walk sr_stage uses. Everything else is w_off-relative through this head area.
@@ -228,6 +259,96 @@ void main() {
     uint vt_fc2b  = vt + 3u * SR_C * 4u;
     uint vt_b1    = vt + 4u * SR_C * 4u;
     uint vt_rel   = vt_b1 + NBLK * 32u * 4u;
+    // One wave owns a 2x2 window group (8x8 output pixels, sr_swin's fused shape) and runs
+    // its four windows sequentially; the grid is ceil((out + shift)/8) (host side). outW/outH
+    // are even and the shifts are even, so every group/window bound below is exact.
+    int gx8 = gx * 8 - shiftX;
+    int gy8 = gy * 8 - shiftY;
+    int lowX0 = gx8 >> 1;             // group low origin (arithmetic shift = floor, as sr_swin)
+    int lowY0 = gy8 >> 1;
+    uint HW = uint(dimH * dimW);
+#if !SR_L0_PAD
+    // ---- Step (b1) prologue (sr_swin64m2's pass A/pass B, ported): up = low . Wup^T,
+    // + up_b + skip -> sIn[64 group tokens][C]. Gather the group's 16 parents from t8
+    // (binding 1) with the low-grid reflection, then one streamed M=16 x K=Cn x N=4C GEMM;
+    // element (parent, channel) lands straight in that token's sIn slot, and pass B adds
+    // the encoder skip - the same quantisation chain sr_l0up had (q8(up + up_b), then
+    // q8(+ skip)), so the block input is byte-identical to the folded dispatch's U+skip.
+    {
+        uint CN = 2u * SR_C;                 // L0's Cn = 64
+        uint K4 = 4u * SR_C;                 // upW rows (4C)
+        int W2i = dimW >> 1, H2i = dimH >> 1;
+        uint HW2 = uint(W2i * H2i);
+        uint par = tid & 15u;
+        uint h = tid >> 4u;                  // cg-parity split across both lane halves
+        int qx = reflect_coord(lowX0 + int(par & 3u), W2i);
+        int qy = reflect_coord(lowY0 + int(par >> 2u), H2i);
+        uint lpos = uint(qy) * uint(W2i) + uint(qx);
+        for (uint cg = h; cg < CN / 32u; cg += 2u) {
+            uint grp = (cg * HW2 + lpos) * 32u;
+            uint dst = par * CN + cg * 32u;
+            uvec4 va = in_act4[grp >> 4u];
+            uvec4 vb = in_act4[(grp >> 4u) + 1u];
+#define SLP(j, bv) sLow[dst + perm_P(j)] = NR_OPERAND(e4m3_to_f32(bv));
+            GROUP_BYTES(va, vb, SLP)
+#undef SLP
+        }
+        uint upW = w_off;                    // Wup, row-major [4C][Cn] at the blob head
+        uint upb = w_off + K4 * CN;          // up_b, f16 [4C]
+        for (uint n0 = 0u; n0 < K4 / 16u; ++n0) {
+            NR_FRAG_ACC p0 = NR_ACC_ZERO;
+            for (uint k = 0u; k < CN; k += 32u) {
+                NR_FRAG_A fa0, fa1;
+                NR_LOAD_A(fa0, sLow, k, CN);
+                NR_LOAD_A(fa1, sLow, k + 16u, CN);
+                NR_FRAG_B b0, b1;
+                NR_LOAD_B(b0, wrep, upW + 16u * n0 * CN + k, CN);
+                NR_LOAD_B(b1, wrep, upW + 16u * n0 * CN + k + 16u, CN);
+                NR_MMA(p0, fa0, b0); NR_MMA(p0, fa1, b1);
+            }
+            // pass A: p = E4M3(up + up_b) straight into this (token, channel) slot.
+            uint n  = 16u * n0 + col;        // n = q*C + cc (logical channel)
+            uint q  = n / SR_C;
+            uint cc = n - q * SR_C;
+            uint basis = (cc & ~31u) | perm_invP(cc & 31u);   // stored byte order for sIn
+            float upbv = read_f16(upb + 2u * vidx(n));
+            for (uint comp = 0u; comp < 8u; ++comp) {
+                uint pp = 8u * rowh + comp;
+                uint tk = 8u * (2u * (pp >> 2u) + (q >> 1u)) + 2u * (pp & 3u) + (q & 1u);
+                sIn[tk * SR_C + basis] = NR_OPERAND(quant8(p0[comp] + upbv));
+            }
+        }
+        // pass B: x = E4M3(p + skip), one reflect per TOKEN, skip in 16-byte chunks
+        // (sr_l0up's consume shape; the skip's stored byte order IS sIn's).
+        for (uint st_ = 0u; st_ < 2u; ++st_) {
+            uint tk = tid + st_ * 32u;               // 64 group tokens, 2 a lane
+            int rx = reflect_coord(gx8 + int(tk & 7u), dimW);
+            int ry = reflect_coord(gy8 + int(tk >> 3u), dimH);
+            uint spos = uint(ry) * uint(dimW) + uint(rx);
+            for (uint cg = 0u; cg < SR_C / 32u; ++cg) {
+                uint grp = (cg * HW + spos) * 32u;
+                uvec4 va = skip4[grp >> 4u];
+                uvec4 vb = skip4[(grp >> 4u) + 1u];
+#define SKIP_ADD(j, bv) { uint bi_ = tk * SR_C + cg * 32u + j; \
+    sIn[bi_] = NR_OPERAND(quant8(float(sIn[bi_]) + e4m3_to_f32(bv))); }
+                GROUP_BYTES(va, vb, SKIP_ADD)
+#undef SKIP_ADD
+            }
+        }
+        memoryBarrierShared();
+        barrier();
+    }
+#endif
+    for (uint w = 0u; w < 4u; ++w) {
+        int x0 = gx8 + int(w & 1u) * 4;
+        int y0 = gy8 + int(w >> 1u) * 4;
+        // Fully outside the OUTPUT grid: nothing to store, and no sCat row that is ever
+        // read (an in-image low pixel's four quads are in-image).
+        if (x0 >= outW || x0 + 4 <= 0 || y0 >= outH || y0 + 4 <= 0) continue;
+#if SR_L0_PAD
+        uint pos = 0u;                                  // unused in PAD mode (kept for shape)
+#endif
+
 
     // ---- 1. input: the residual stream in registers (stored-order channels)
     NR_FRAG_ACC st[NT];
@@ -306,12 +427,15 @@ void main() {
         for (uint i = 0u; i < 8u; ++i)
             st[t][i] = sE2[col * 32u + 16u * t + 8u * rowh + i];
 #else
-    for (uint t = 0u; t < NT; ++t) {
-        uint byte = ((t >> 1u) * HW + pos) * 32u + (t & 1u) * 16u + rowh * 8u;
-        uvec4 q = in_act4[byte >> 4u];
-        uvec2 h2 = ((byte & 8u) != 0u) ? q.zw : q.xy;
-        for (uint i = 0u; i < 4u; ++i)  st[t][i]      = e4m3_to_f32(byte_of(h2.x, i));
-        for (uint i = 0u; i < 4u; ++i)  st[t][4u + i] = e4m3_to_f32(byte_of(h2.y, i));
+    // Step (b1): the block's input is the prologue's sIn at this window's group-token slot
+    // (sr_swin64m2's read; the up+skip chain is already embedded there).
+    {
+        uint gtx = uint(x0 + int(col & 3u) - gx8);
+        uint gty = uint(y0 + int(col >> 2u) - gy8);
+        uint gtok = 8u * gty + gtx;
+        for (uint t = 0u; t < NT; ++t)
+            for (uint i = 0u; i < 8u; ++i)
+                st[t][i] = float(sIn[gtok * SR_C + 16u * t + 8u * rowh + i]);
     }
 #endif
 
@@ -477,6 +601,143 @@ void main() {
             }
         }
     }
+#if !SR_L0_PAD
+    // Step (b2): stage this window's 16 tokens' block output into sIn - Q8P into a LOCAL
+    // pair first, then to LDS (the pattern F2's parked attempt needed: never read matrix
+    // fragments directly in the fused heads context). The byte position is the same lbase
+    // the out section stores to global with, so the heads see byte-for-byte what sr_l0heads
+    // read out of the B tensor.
+    {
+        uint gtx = uint(x0 + int(col & 3u) - gx8);
+        uint gty = uint(y0 + int(col >> 2u) - gy8);
+        uint gtok = 8u * gty + gtx;
+        for (uint t = 0u; t < NT; ++t)
+            for (uint i = 0u; i < 8u; i += 2u) {
+                uint lb = 16u * t + 8u * rowh + i;
+                NR_OPERAND o[2];
+                Q8P(o, 0u, st[t][i], st[t][i + 1u])
+                sIn[gtok * SR_C + lb] = o[0];
+                sIn[gtok * SR_C + lb + 1u] = o[1];
+            }
+    }
+#endif
+#if SR_L0_PAD
+    // Step (a): this token's 8 channels into the group's concat tile (sr_swin64m0's sCat:
+    // row = the low pixel, k = quad*C + LOGICAL channel). Ungated like sr_swin's: an
+    // out-of-image token writes a row the epilogue never reads (dims and shifts are even).
+    {
+        int dx = int(col & 3u);
+        int dy = int(col >> 2u);
+        uint qq = uint(dx & 1) + 2u * uint(dy & 1);
+        uint lrow = 4u * (uint((y0 + dy) >> 1) - uint(lowY0))
+                  + (uint((x0 + dx) >> 1) - uint(lowX0));
+        uint K4c = 4u * SR_C;
+        for (uint t = 0u; t < NT; ++t)
+            for (uint i = 0u; i < 8u; ++i) {
+                uint b = 16u * t + 8u * rowh + i;              // stored/basis channel
+                uint logical = (b & ~31u) | perm_P(b & 31u);   // dn_W speaks logical
+                sCat[lrow * K4c + qq * SR_C + logical] = NR_OPERAND(quant8(st[t][i]));
+            }
+    }
+#endif
+    } // ---- end of the four windows (both modes)
+#if !SR_L0_PAD
+    // ---- Step (b2): the render-crop heads (launch 14's last phase), computed from the
+    // staged sIn bytes - sr_l0heads' math verbatim, p[c] = decode(stored byte perm_invP(c)).
+    // One lane per group token; the crop check runs BEFORE any sIn read (tokens of windows
+    // skipped as fully out of grid are never staged, and they are always out of crop).
+    {
+        memoryBarrierShared();
+        barrier();
+        for (uint s = 0u; s < 2u; ++s) {          // 64 group tokens over 32 lanes, 2 a lane
+            uint tk = tid + s * 32u;
+            int hx = gx8 + int(tk & 7u);
+            int hy = gy8 + int(tk >> 3u);
+            if (hx < 0 || hy < 0 || hx >= renW || hy >= renH) continue;
+            uint idx = uint(hy * renW + hx);
+            float p[13];
+            for (uint c = 0u; c < 13u; ++c)
+                p[c] = float(sIn[tk * SR_C + perm_invP(c)]);
+            uint o4 = idx * 4u;
+            gates[o4 + 0u] = uint8_t(uint(roundEven(255.0 * clamp(float16_t(l0_sigm(p[0])), float16_t(0.0), float16_t(1.0)))));
+            gates[o4 + 1u] = uint8_t(uint(roundEven(255.0 * clamp(float16_t(l0_sigm(p[1])), float16_t(0.0), float16_t(1.0)))));
+            gates[o4 + 2u] = uint8_t(uint(roundEven(255.0 * clamp(float16_t(l0_sigm(p[6])), float16_t(0.0), float16_t(1.0)))));
+            gates[o4 + 3u] = uint8_t(0u);
+
+            float xm = max(p[7], max(p[8], p[9]));
+            float ea = exp(p[7] - xm);
+            float eb = exp(p[8] - xm);
+            float ec = exp(p[9] - xm);
+            float esum = (ea + eb) + ec;
+            factors[o4 + 0u] = uint8_t(uint(roundEven(255.0 * clamp(ea / esum, 0.0, 1.0))));
+            factors[o4 + 1u] = uint8_t(uint(roundEven(255.0 * clamp(eb / esum, 0.0, 1.0))));
+            factors[o4 + 2u] = uint8_t(uint(roundEven(255.0 * clamp(ec / esum, 0.0, 1.0))));
+            factors[o4 + 3u] = uint8_t(0u);
+
+            float HA = s0 * float16_t(l0_sigm(clamp(p[10], -20.0, 20.0)));
+            float HB = s0 * float16_t(l0_sigm(clamp(p[11], -20.0, 20.0)));
+            float HT = tanh(f0 * p[12]);
+            aniso[o4 + 0u] = float16_t(HA * HA);
+            aniso[o4 + 1u] = float16_t(HB * HB);
+            aniso[o4 + 2u] = float16_t((HA * HB) * HT);
+            aniso[o4 + 3u] = float16_t(0.0);
+
+            for (uint k = 0u; k < 4u; ++k) {
+                float th = tanh(p[2u + k]);
+                hidden[o4 + k] = int8_t(int(roundEven(127.0 * clamp(th, -1.0, 1.0))));
+            }
+        }
+    }
+#endif
+#if SR_L0_PAD
+    // ---- Step (a) epilogue: the down projection GEMM from sCat, streamed as bias +
+    // clamp(+-6.28125) + E4M3 into the low grid - sr_l0dn's arithmetic (dnW/dnb walk,
+    // K4 staging, N-tile pairs, streamed emit), without its dispatch or its l0_skip
+    // DRAM read. l0_skip stays bit-identical to the split chain (measured, chain scale);
+    // t0 differs from it only by the dropped f16 pre-bias round (0.42% of bytes,
+    // mean |d| 0.008/255 - swin64m0's accepted form, precision policy).
+    {
+        uint ffn = w_off + 6u * SR_C + SR_G * (96u * SR_C + 512u);
+        uint dnW = ffn + (SR_C / 8u) * (64u * SR_C + 64u) + 2u * SR_C;
+        uint dnb = dnW + 4u * SR_C * 64u;
+        uint W2 = uint(outW) >> 1;
+        uint H2 = uint(outH) >> 1;
+        uint HW2 = W2 * H2;
+        float db[4];                         // dn_b, this lane's channels across the N tiles
+        for (uint nt = 0u; nt < 4u; ++nt)
+            db[nt] = read_f16(dnb + 2u * vidx(16u * nt + col));
+        for (uint n0 = 0u; n0 < 4u; n0 += 2u) {
+            NR_FRAG_ACC p0 = NR_ACC_ZERO, p1 = NR_ACC_ZERO;
+            for (uint k = 0u; k < 4u * SR_C; k += 64u) {
+                NR_FRAG_A fa0, fa1, fc0, fc1;
+                NR_LOAD_A(fa0, sCat, k, 4u * SR_C);
+                NR_LOAD_A(fa1, sCat, k + 16u, 4u * SR_C);
+                NR_LOAD_A(fc0, sCat, k + 32u, 4u * SR_C);
+                NR_LOAD_A(fc1, sCat, k + 48u, 4u * SR_C);
+                NR_FRAG_B b0, b1, b2, b3, e0, e1, e2, e3;
+                NR_LOAD_B(b0, wrep, dnW + 16u * n0 * 4u * SR_C + k, 4u * SR_C);
+                NR_LOAD_B(b1, wrep, dnW + 16u * n0 * 4u * SR_C + k + 16u, 4u * SR_C);
+                NR_LOAD_B(b2, wrep, dnW + 16u * (n0 + 1u) * 4u * SR_C + k, 4u * SR_C);
+                NR_LOAD_B(b3, wrep, dnW + 16u * (n0 + 1u) * 4u * SR_C + k + 16u, 4u * SR_C);
+                NR_LOAD_B(e0, wrep, dnW + 16u * n0 * 4u * SR_C + k + 32u, 4u * SR_C);
+                NR_LOAD_B(e1, wrep, dnW + 16u * n0 * 4u * SR_C + k + 48u, 4u * SR_C);
+                NR_LOAD_B(e2, wrep, dnW + 16u * (n0 + 1u) * 4u * SR_C + k + 32u, 4u * SR_C);
+                NR_LOAD_B(e3, wrep, dnW + 16u * (n0 + 1u) * 4u * SR_C + k + 48u, 4u * SR_C);
+                NR_MMA(p0, fa0, b0); NR_MMA(p0, fa1, b1);
+                NR_MMA(p0, fc0, e0); NR_MMA(p0, fc1, e1);
+                NR_MMA(p1, fa0, b2); NR_MMA(p1, fa1, b3);
+                NR_MMA(p1, fc0, e2); NR_MMA(p1, fc1, e3);
+            }
+            // Numerics: the product stays f32 into the bias + clamp + E4M3 (sr_swin64m0's
+            // EMIT form, merged on main with guard PASS). sr_l0dn narrowed to f16 before the
+            // bias (its sR staging); that round is emulation the precision policy drops - and
+            // ACO folds a fragment-level NR_NARROW anyway (measured: it changes 0 t0 bytes),
+            // so a genuine keep-round would need an LDS materialisation like sR's.
+            EMIT_L0(p0, n0)
+            EMIT_L0(p1, n0 + 1u)
+        }
+    }
+#endif
 }
 
 #else
@@ -514,26 +775,118 @@ void main() {
 
     int gx = int(gl_WorkGroupID.x);
     int gy = int(gl_WorkGroupID.y);
-    int x0 = gx * 4 - shiftX;
-    int y0 = gy * 4 - shiftY;
-    int dx = int(tok & 3u);
-    int dy = int(tok >> 2u);
-    int px = reflect_coord(x0 + dx, dimW);
-    int py = reflect_coord(y0 + dy, dimH);
-
-    uint HW = uint(dimH * dimW);
-    uint pos = uint(py * dimW + px);
     uint w_off = wbuf_lo & 0x1fffffu;
     // Only used for gain1's offset: mode 2 blobs start with up_W (4C x Cn) + up_b (4C) - the same
     // walk sr_stage uses. Everything else is w_off-relative through this head area.
     uint gain1b = (w_off >= 1341440u) ? (w_off + 4u * SR_C * ((SR_C == 64) ? 96u : 128u) + 8u * SR_C)
                                       : w_off;
+    // Same 2x2 window-group loop as the RADV build (scalar dataflow) so O7 checks the same
+    // outputs; mode 2 gets the step (b1) up+skip prologue as well.
+    int gx8 = gx * 8 - shiftX;
+    int gy8 = gy * 8 - shiftY;
+    int lowX0 = gx8 >> 1;
+    int lowY0 = gy8 >> 1;
+    uint HW = uint(dimH * dimW);
+#if !SR_L0_PAD
+    // ---- Step (b1) prologue, fallback: same up+skip chain as the RADV build
+    // (q8(up + up_b) per group token, then q8(+ skip)), staged straight into sIn.
+    {
+        uint CN = 2u * SR_C;
+        uint K4 = 4u * SR_C;
+        int W2i = dimW >> 1, H2i = dimH >> 1;
+        uint HW2 = uint(W2i * H2i);
+        uint par = tid & 15u;
+        uint h = tid >> 4u;
+        int qx = reflect_coord(lowX0 + int(par & 3u), W2i);
+        int qy = reflect_coord(lowY0 + int(par >> 2u), H2i);
+        uint lpos = uint(qy) * uint(W2i) + uint(qx);
+        for (uint cg = h; cg < CN / 32u; cg += 2u) {
+            uint grp = (cg * HW2 + lpos) * 32u;
+            uint dst = par * CN + cg * 32u;
+            uvec4 va = in_act4[grp >> 4u];
+            uvec4 vb = in_act4[(grp >> 4u) + 1u];
+#define SLP(j, bv) sLow[dst + perm_P(j)] = NR_OPERAND(e4m3_to_f32(bv));
+            GROUP_BYTES(va, vb, SLP)
+#undef SLP
+        }
+        uint upW = w_off;
+        uint upb = w_off + K4 * CN;
+        for (uint n0 = 0u; n0 < K4 / 16u; ++n0) {
+            NR_FRAG_ACC p0 = NR_ACC_ZERO;
+            for (uint k = 0u; k < CN; k += 32u) {
+                NR_FRAG_A fa0, fa1;
+                NR_LOAD_A(fa0, sLow, k, CN);
+                NR_LOAD_A(fa1, sLow, k + 16u, CN);
+                NR_FRAG_B b0, b1;
+                NR_LOAD_B(b0, wrep, upW + 16u * n0 * CN + k, CN);
+                NR_LOAD_B(b1, wrep, upW + 16u * n0 * CN + k + 16u, CN);
+                NR_MMA(p0, fa0, b0); NR_MMA(p0, fa1, b1);
+            }
+            uint n  = 16u * n0 + col;
+            uint q  = n / SR_C;
+            uint cc = n - q * SR_C;
+            uint basis = (cc & ~31u) | perm_invP(cc & 31u);
+            float upbv = read_f16(upb + 2u * vidx(n));
+            for (uint comp = 0u; comp < 8u; ++comp) {
+                uint pp = 8u * rowh + comp;
+                uint tk = 8u * (2u * (pp >> 2u) + (q >> 1u)) + 2u * (pp & 3u) + (q & 1u);
+                sIn[tk * SR_C + basis] = NR_OPERAND(quant8(p0[comp] + upbv));
+            }
+        }
+        for (uint st_ = 0u; st_ < 2u; ++st_) {
+            uint tk = tid + st_ * 32u;
+            int rx = reflect_coord(gx8 + int(tk & 7u), dimW);
+            int ry = reflect_coord(gy8 + int(tk >> 3u), dimH);
+            uint spos = uint(ry) * uint(dimW) + uint(rx);
+            for (uint cg = 0u; cg < SR_C / 32u; ++cg) {
+                uint grp = (cg * HW + spos) * 32u;
+                uvec4 va = skip4[grp >> 4u];
+                uvec4 vb = skip4[(grp >> 4u) + 1u];
+#define SKIP_ADD(j, bv) { uint bi_ = tk * SR_C + cg * 32u + j; \
+    sIn[bi_] = NR_OPERAND(quant8(float(sIn[bi_]) + e4m3_to_f32(bv))); }
+                GROUP_BYTES(va, vb, SKIP_ADD)
+#undef SKIP_ADD
+            }
+        }
+        memoryBarrierShared();
+        barrier();
+    }
+#endif
+    for (uint w = 0u; w < 4u; ++w) {
+        int x0 = gx8 + int(w & 1u) * 4;
+        int y0 = gy8 + int(w >> 1u) * 4;
+        if (x0 >= outW || x0 + 4 <= 0 || y0 >= outH || y0 + 4 <= 0) continue;
+#if SR_L0_PAD
+        // Fallback stages the padded tensor with a reflect (self-consistent O7 input;
+        // the RADV build reads (x0+dx+2) directly).
+        int dx = int(tok & 3u);
+        int dy = int(tok >> 2u);
+        int px = reflect_coord(x0 + dx, dimW);
+        int py = reflect_coord(y0 + dy, dimH);
+        uint pos = uint(py * dimW + px);
+#endif
 
     // ---- 1. stage the window's input
     {
         uint cg0 = rowh * 2u;
+#if SR_L0_PAD
         if (cg0 < NC)                 stage_cg(cg0, tok, (cg0 * HW + pos) * 32u);
         if (cg0 + 1u < NC)            stage_cg(cg0 + 1u, tok, ((cg0 + 1u) * HW + pos) * 32u);
+#else
+        // Step (b1): the input is the prologue's sIn at this window's group-token slot;
+        // copy it into sX through the exact index convention stage_cg wrote, so everything
+        // downstream sees what it saw when stage_cg read the U tensor (byte-position j of
+        // a pixel == byte-position j of its sIn row).
+        uint gtx = uint(x0 + int(col & 3u) - gx8);
+        uint gty = uint(y0 + int(col >> 2u) - gy8);
+        uint gtok = 8u * gty + gtx;
+        if (cg0 < NC)
+            for (uint j = 0u; j < 32u; ++j)
+                sX[tok * SR_C + cg0 * 32u + perm_P(j)] = sIn[gtok * SR_C + cg0 * 32u + j];
+        if (cg0 + 1u < NC)
+            for (uint j = 0u; j < 32u; ++j)
+                sX[tok * SR_C + (cg0 + 1u) * 32u + perm_P(j)] = sIn[gtok * SR_C + (cg0 + 1u) * 32u + j];
+#endif
     }
     sync_lds();
 
@@ -746,6 +1099,131 @@ void main() {
             }
         }
     }
+#if !SR_L0_PAD
+    // Step (b2), fallback: the same output staging as the RADV build (Q8P -> local -> sIn).
+    {
+        uint gtx = uint(x0 + int(col & 3u) - gx8);
+        uint gty = uint(y0 + int(col >> 2u) - gy8);
+        uint gtok = 8u * gty + gtx;
+        for (uint t = 0u; t < NT; ++t)
+            for (uint i = 0u; i < 8u; i += 2u) {
+                uint lb = 16u * t + 8u * rowh + i;
+                NR_OPERAND o[2];
+                Q8P(o, 0u, st[t][i], st[t][i + 1u])
+                sIn[gtok * SR_C + lb] = o[0];
+                sIn[gtok * SR_C + lb + 1u] = o[1];
+            }
+    }
+#endif
+#if SR_L0_PAD
+    // Step (a), fallback: the same sCat rows as the RADV build (per pixel, per channel).
+    for (uint i = 0u; i < 8u; ++i) {
+        uint row = 8u * rowh + i;
+        int rx = x0 + int(row & 3u);
+        int ry = y0 + int(row >> 2u);
+        uint qq = uint(rx & 1) + 2u * uint(ry & 1);
+        uint lrow = 4u * (uint(ry >> 1) - uint(lowY0))
+                  + (uint(rx >> 1) - uint(lowX0));
+        for (uint t = 0u; t < NT; ++t) {
+            uint b = 16u * t + col;
+            uint logical = (b & ~31u) | perm_P(b & 31u);
+            sCat[lrow * 4u * SR_C + qq * SR_C + logical] = NR_OPERAND(quant8(st[t][i]));
+        }
+    }
+#endif
+    } // ---- end of the four windows (both modes)
+#if !SR_L0_PAD
+    // ---- Step (b2): the render-crop heads (launch 14's last phase), computed from the
+    // staged sIn bytes - sr_l0heads' math verbatim, p[c] = decode(stored byte perm_invP(c)).
+    // One lane per group token; the crop check runs BEFORE any sIn read (tokens of windows
+    // skipped as fully out of grid are never staged, and they are always out of crop).
+    {
+        memoryBarrierShared();
+        barrier();
+        for (uint s = 0u; s < 2u; ++s) {          // 64 group tokens over 32 lanes, 2 a lane
+            uint tk = tid + s * 32u;
+            int hx = gx8 + int(tk & 7u);
+            int hy = gy8 + int(tk >> 3u);
+            if (hx < 0 || hy < 0 || hx >= renW || hy >= renH) continue;
+            uint idx = uint(hy * renW + hx);
+            float p[13];
+            for (uint c = 0u; c < 13u; ++c)
+                p[c] = float(sIn[tk * SR_C + perm_invP(c)]);
+            uint o4 = idx * 4u;
+            gates[o4 + 0u] = uint8_t(uint(roundEven(255.0 * clamp(float16_t(l0_sigm(p[0])), float16_t(0.0), float16_t(1.0)))));
+            gates[o4 + 1u] = uint8_t(uint(roundEven(255.0 * clamp(float16_t(l0_sigm(p[1])), float16_t(0.0), float16_t(1.0)))));
+            gates[o4 + 2u] = uint8_t(uint(roundEven(255.0 * clamp(float16_t(l0_sigm(p[6])), float16_t(0.0), float16_t(1.0)))));
+            gates[o4 + 3u] = uint8_t(0u);
+
+            float xm = max(p[7], max(p[8], p[9]));
+            float ea = exp(p[7] - xm);
+            float eb = exp(p[8] - xm);
+            float ec = exp(p[9] - xm);
+            float esum = (ea + eb) + ec;
+            factors[o4 + 0u] = uint8_t(uint(roundEven(255.0 * clamp(ea / esum, 0.0, 1.0))));
+            factors[o4 + 1u] = uint8_t(uint(roundEven(255.0 * clamp(eb / esum, 0.0, 1.0))));
+            factors[o4 + 2u] = uint8_t(uint(roundEven(255.0 * clamp(ec / esum, 0.0, 1.0))));
+            factors[o4 + 3u] = uint8_t(0u);
+
+            float HA = s0 * float16_t(l0_sigm(clamp(p[10], -20.0, 20.0)));
+            float HB = s0 * float16_t(l0_sigm(clamp(p[11], -20.0, 20.0)));
+            float HT = tanh(f0 * p[12]);
+            aniso[o4 + 0u] = float16_t(HA * HA);
+            aniso[o4 + 1u] = float16_t(HB * HB);
+            aniso[o4 + 2u] = float16_t((HA * HB) * HT);
+            aniso[o4 + 3u] = float16_t(0.0);
+
+            for (uint k = 0u; k < 4u; ++k) {
+                float th = tanh(p[2u + k]);
+                hidden[o4 + k] = int8_t(int(roundEven(127.0 * clamp(th, -1.0, 1.0))));
+            }
+        }
+    }
+#endif
+#if SR_L0_PAD
+    // ---- Step (a) epilogue, fallback: same streamed projection as the RADV build.
+    {
+        uint ffn = w_off + 6u * SR_C + SR_G * (96u * SR_C + 512u);
+        uint dnW = ffn + (SR_C / 8u) * (64u * SR_C + 64u) + 2u * SR_C;
+        uint dnb = dnW + 4u * SR_C * 64u;
+        uint W2 = uint(outW) >> 1;
+        uint H2 = uint(outH) >> 1;
+        uint HW2 = W2 * H2;
+        float db[4];
+        for (uint nt = 0u; nt < 4u; ++nt)
+            db[nt] = read_f16(dnb + 2u * vidx(16u * nt + col));
+        for (uint n0 = 0u; n0 < 4u; n0 += 2u) {
+            NR_FRAG_ACC p0 = NR_ACC_ZERO, p1 = NR_ACC_ZERO;
+            for (uint k = 0u; k < 4u * SR_C; k += 64u) {
+                NR_FRAG_A fa0, fa1, fc0, fc1;
+                NR_LOAD_A(fa0, sCat, k, 4u * SR_C);
+                NR_LOAD_A(fa1, sCat, k + 16u, 4u * SR_C);
+                NR_LOAD_A(fc0, sCat, k + 32u, 4u * SR_C);
+                NR_LOAD_A(fc1, sCat, k + 48u, 4u * SR_C);
+                NR_FRAG_B b0, b1, b2, b3, e0, e1, e2, e3;
+                NR_LOAD_B(b0, wrep, dnW + 16u * n0 * 4u * SR_C + k, 4u * SR_C);
+                NR_LOAD_B(b1, wrep, dnW + 16u * n0 * 4u * SR_C + k + 16u, 4u * SR_C);
+                NR_LOAD_B(b2, wrep, dnW + 16u * (n0 + 1u) * 4u * SR_C + k, 4u * SR_C);
+                NR_LOAD_B(b3, wrep, dnW + 16u * (n0 + 1u) * 4u * SR_C + k + 16u, 4u * SR_C);
+                NR_LOAD_B(e0, wrep, dnW + 16u * n0 * 4u * SR_C + k + 32u, 4u * SR_C);
+                NR_LOAD_B(e1, wrep, dnW + 16u * n0 * 4u * SR_C + k + 48u, 4u * SR_C);
+                NR_LOAD_B(e2, wrep, dnW + 16u * (n0 + 1u) * 4u * SR_C + k + 32u, 4u * SR_C);
+                NR_LOAD_B(e3, wrep, dnW + 16u * (n0 + 1u) * 4u * SR_C + k + 48u, 4u * SR_C);
+                NR_MMA(p0, fa0, b0); NR_MMA(p0, fa1, b1);
+                NR_MMA(p0, fc0, e0); NR_MMA(p0, fc1, e1);
+                NR_MMA(p1, fa0, b2); NR_MMA(p1, fa1, b3);
+                NR_MMA(p1, fc0, e2); NR_MMA(p1, fc1, e3);
+            }
+            // Numerics: the product stays f32 into the bias + clamp + E4M3 (sr_swin64m0's
+            // EMIT form, merged on main with guard PASS). sr_l0dn narrowed to f16 before the
+            // bias (its sR staging); that round is emulation the precision policy drops - and
+            // ACO folds a fragment-level NR_NARROW anyway (measured: it changes 0 t0 bytes),
+            // so a genuine keep-round would need an LDS materialisation like sR's.
+            EMIT_L0(p0, n0)
+            EMIT_L0(p1, n0 + 1u)
+        }
+    }
+#endif
 }
 
 #endif
