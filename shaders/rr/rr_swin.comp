@@ -269,9 +269,10 @@ float rr_q8grid(float x) { return rr_q8dec(rr_q8enc(x)); }
 float rr_q8grid(float x) { return float(NR_OPERAND(clamp(x, -448.0, 448.0))); }
 #endif
 #if RR_PRECISE
-// f16 round of 8 fragment elements. Must be the opaque bit-twiddle: a plain
-// float16_t() round trip is folded away by ACO, silently un-applying the recipe.
-#define RR_RND8(F) { F[0] = nr_round_f16_e4m3(F[0]); F[1] = nr_round_f16_e4m3(F[1]); F[2] = nr_round_f16_e4m3(F[2]); F[3] = nr_round_f16_e4m3(F[3]); F[4] = nr_round_f16_e4m3(F[4]); F[5] = nr_round_f16_e4m3(F[5]); F[6] = nr_round_f16_e4m3(F[6]); F[7] = nr_round_f16_e4m3(F[7]); }
+// f16 round of 8 fragment elements, hardware round trip (NR_ROUND_MODE=1 spell).
+// mu_h1 hw-round probe: validated bit-identical vs oracle by kernel_run fidelity;
+// pipestats confirms the converts (no ACO folding on this path).
+#define RR_RND8(F) { F[0] = nr_round_f16_hw(F[0]); F[1] = nr_round_f16_hw(F[1]); F[2] = nr_round_f16_hw(F[2]); F[3] = nr_round_f16_hw(F[3]); F[4] = nr_round_f16_hw(F[4]); F[5] = nr_round_f16_hw(F[5]); F[6] = nr_round_f16_hw(F[6]); F[7] = nr_round_f16_hw(F[7]); }
 // K=32 chunk pairs (2 kt each) for the Q1/F1 chunk roundings.
 #if RR_C == 160
 #define RR_FOR_PAIR(X) X(0,1) X(2,3) X(4,5) X(6,7) X(8,9)
@@ -391,14 +392,14 @@ void main() {
     // per element here - exact unscaled vectors are a host-table change).
     RR_FOR_NT(RR_DECL_AT)
     #define RR_AT_SEED(t) { \
-        at##t[0] = nr_round_f16_e4m3(wtab[v128o + 16u * uint(t) + 8u * rowh] / s1d2); \
-        at##t[1] = nr_round_f16_e4m3(wtab[v128o + 16u * uint(t) + 8u * rowh + 1u] / s1d2); \
-        at##t[2] = nr_round_f16_e4m3(wtab[v128o + 16u * uint(t) + 8u * rowh + 2u] / s1d2); \
-        at##t[3] = nr_round_f16_e4m3(wtab[v128o + 16u * uint(t) + 8u * rowh + 3u] / s1d2); \
-        at##t[4] = nr_round_f16_e4m3(wtab[v128o + 16u * uint(t) + 8u * rowh + 4u] / s1d2); \
-        at##t[5] = nr_round_f16_e4m3(wtab[v128o + 16u * uint(t) + 8u * rowh + 5u] / s1d2); \
-        at##t[6] = nr_round_f16_e4m3(wtab[v128o + 16u * uint(t) + 8u * rowh + 6u] / s1d2); \
-        at##t[7] = nr_round_f16_e4m3(wtab[v128o + 16u * uint(t) + 8u * rowh + 7u] / s1d2); }
+        at##t[0] = nr_round_f16_hw(wtab[v128o + 16u * uint(t) + 8u * rowh] / s1d2); \
+        at##t[1] = nr_round_f16_hw(wtab[v128o + 16u * uint(t) + 8u * rowh + 1u] / s1d2); \
+        at##t[2] = nr_round_f16_hw(wtab[v128o + 16u * uint(t) + 8u * rowh + 2u] / s1d2); \
+        at##t[3] = nr_round_f16_hw(wtab[v128o + 16u * uint(t) + 8u * rowh + 3u] / s1d2); \
+        at##t[4] = nr_round_f16_hw(wtab[v128o + 16u * uint(t) + 8u * rowh + 4u] / s1d2); \
+        at##t[5] = nr_round_f16_hw(wtab[v128o + 16u * uint(t) + 8u * rowh + 5u] / s1d2); \
+        at##t[6] = nr_round_f16_hw(wtab[v128o + 16u * uint(t) + 8u * rowh + 6u] / s1d2); \
+        at##t[7] = nr_round_f16_hw(wtab[v128o + 16u * uint(t) + 8u * rowh + 7u] / s1d2); }
     RR_FOR_NT(RR_AT_SEED)
 #endif
 
@@ -498,38 +499,38 @@ void main() {
             L[4] = swin_exp(L[4]); L[5] = swin_exp(L[5]); \
             L[6] = swin_exp(L[6]); L[7] = swin_exp(L[7]); }
         RR_EXP_P(lt0) RR_EXP_P(lt1) RR_EXP_P(lt2) RR_EXP_P(lt3)
-        float s1t0 = nr_round_f16_e4m3(nr_round_f16_e4m3(lt0[0] + lt1[0]) + nr_round_f16_e4m3(lt2[0] + lt3[0]));
-        float s1t1 = nr_round_f16_e4m3(nr_round_f16_e4m3(lt0[1] + lt1[1]) + nr_round_f16_e4m3(lt2[1] + lt3[1]));
-        float s1t2 = nr_round_f16_e4m3(nr_round_f16_e4m3(lt0[2] + lt1[2]) + nr_round_f16_e4m3(lt2[2] + lt3[2]));
-        float s1t3 = nr_round_f16_e4m3(nr_round_f16_e4m3(lt0[3] + lt1[3]) + nr_round_f16_e4m3(lt2[3] + lt3[3]));
-        float s1t4 = nr_round_f16_e4m3(nr_round_f16_e4m3(lt0[4] + lt1[4]) + nr_round_f16_e4m3(lt2[4] + lt3[4]));
-        float s1t5 = nr_round_f16_e4m3(nr_round_f16_e4m3(lt0[5] + lt1[5]) + nr_round_f16_e4m3(lt2[5] + lt3[5]));
-        float s1t6 = nr_round_f16_e4m3(nr_round_f16_e4m3(lt0[6] + lt1[6]) + nr_round_f16_e4m3(lt2[6] + lt3[6]));
-        float s1t7 = nr_round_f16_e4m3(nr_round_f16_e4m3(lt0[7] + lt1[7]) + nr_round_f16_e4m3(lt2[7] + lt3[7]));
-        float s1u0 = nr_round_f16_e4m3(s1t0 + subgroupShuffleXor(s1t0, 16u));
-        float s1u1 = nr_round_f16_e4m3(s1t1 + subgroupShuffleXor(s1t1, 16u));
-        float s1u2 = nr_round_f16_e4m3(s1t2 + subgroupShuffleXor(s1t2, 16u));
-        float s1u3 = nr_round_f16_e4m3(s1t3 + subgroupShuffleXor(s1t3, 16u));
-        float s1u4 = nr_round_f16_e4m3(s1t4 + subgroupShuffleXor(s1t4, 16u));
-        float s1u5 = nr_round_f16_e4m3(s1t5 + subgroupShuffleXor(s1t5, 16u));
-        float s1u6 = nr_round_f16_e4m3(s1t6 + subgroupShuffleXor(s1t6, 16u));
-        float s1u7 = nr_round_f16_e4m3(s1t7 + subgroupShuffleXor(s1t7, 16u));
-        float s1v0 = nr_round_f16_e4m3(nr_round_f16_e4m3(s1u0 + s1u2) + nr_round_f16_e4m3(s1u4 + s1u6));
-        float s1v1 = nr_round_f16_e4m3(nr_round_f16_e4m3(s1u1 + s1u3) + nr_round_f16_e4m3(s1u5 + s1u7));
+        float s1t0 = nr_round_f16_hw(nr_round_f16_hw(lt0[0] + lt1[0]) + nr_round_f16_hw(lt2[0] + lt3[0]));
+        float s1t1 = nr_round_f16_hw(nr_round_f16_hw(lt0[1] + lt1[1]) + nr_round_f16_hw(lt2[1] + lt3[1]));
+        float s1t2 = nr_round_f16_hw(nr_round_f16_hw(lt0[2] + lt1[2]) + nr_round_f16_hw(lt2[2] + lt3[2]));
+        float s1t3 = nr_round_f16_hw(nr_round_f16_hw(lt0[3] + lt1[3]) + nr_round_f16_hw(lt2[3] + lt3[3]));
+        float s1t4 = nr_round_f16_hw(nr_round_f16_hw(lt0[4] + lt1[4]) + nr_round_f16_hw(lt2[4] + lt3[4]));
+        float s1t5 = nr_round_f16_hw(nr_round_f16_hw(lt0[5] + lt1[5]) + nr_round_f16_hw(lt2[5] + lt3[5]));
+        float s1t6 = nr_round_f16_hw(nr_round_f16_hw(lt0[6] + lt1[6]) + nr_round_f16_hw(lt2[6] + lt3[6]));
+        float s1t7 = nr_round_f16_hw(nr_round_f16_hw(lt0[7] + lt1[7]) + nr_round_f16_hw(lt2[7] + lt3[7]));
+        float s1u0 = nr_round_f16_hw(s1t0 + subgroupShuffleXor(s1t0, 16u));
+        float s1u1 = nr_round_f16_hw(s1t1 + subgroupShuffleXor(s1t1, 16u));
+        float s1u2 = nr_round_f16_hw(s1t2 + subgroupShuffleXor(s1t2, 16u));
+        float s1u3 = nr_round_f16_hw(s1t3 + subgroupShuffleXor(s1t3, 16u));
+        float s1u4 = nr_round_f16_hw(s1t4 + subgroupShuffleXor(s1t4, 16u));
+        float s1u5 = nr_round_f16_hw(s1t5 + subgroupShuffleXor(s1t5, 16u));
+        float s1u6 = nr_round_f16_hw(s1t6 + subgroupShuffleXor(s1t6, 16u));
+        float s1u7 = nr_round_f16_hw(s1t7 + subgroupShuffleXor(s1t7, 16u));
+        float s1v0 = nr_round_f16_hw(nr_round_f16_hw(s1u0 + s1u2) + nr_round_f16_hw(s1u4 + s1u6));
+        float s1v1 = nr_round_f16_hw(nr_round_f16_hw(s1u1 + s1u3) + nr_round_f16_hw(s1u5 + s1u7));
         float s1tot = lt0[0]+lt0[1]+lt0[2]+lt0[3]+lt0[4]+lt0[5]+lt0[6]+lt0[7]+lt1[0]+lt1[1]+lt1[2]+lt1[3]+lt1[4]+lt1[5]+lt1[6]+lt1[7]+lt2[0]+lt2[1]+lt2[2]+lt2[3]+lt2[4]+lt2[5]+lt2[6]+lt2[7]+lt3[0]+lt3[1]+lt3[2]+lt3[3]+lt3[4]+lt3[5]+lt3[6]+lt3[7];
         s1tot += subgroupShuffleXor(s1tot, 16u);
         // same degenerate-zero guard as the fast path (Recipe A S1)
         float s1inv = (s1tot > 0.0) ? (1.0 / s1tot) : 0.0;
         NR_FRAG_B16 bp0; NR_FRAG_B16 bp1; NR_FRAG_B16 bp2; NR_FRAG_B16 bp3;
         #define RR_PB_LT(P, L) { \
-            P[0] = float16_t(rr_q8grid(nr_round_f16_e4m3(L[0] * s1inv))); \
-            P[1] = float16_t(rr_q8grid(nr_round_f16_e4m3(L[1] * s1inv))); \
-            P[2] = float16_t(rr_q8grid(nr_round_f16_e4m3(L[2] * s1inv))); \
-            P[3] = float16_t(rr_q8grid(nr_round_f16_e4m3(L[3] * s1inv))); \
-            P[4] = float16_t(rr_q8grid(nr_round_f16_e4m3(L[4] * s1inv))); \
-            P[5] = float16_t(rr_q8grid(nr_round_f16_e4m3(L[5] * s1inv))); \
-            P[6] = float16_t(rr_q8grid(nr_round_f16_e4m3(L[6] * s1inv))); \
-            P[7] = float16_t(rr_q8grid(nr_round_f16_e4m3(L[7] * s1inv))); }
+            P[0] = float16_t(rr_q8grid(nr_round_f16_hw(L[0] * s1inv))); \
+            P[1] = float16_t(rr_q8grid(nr_round_f16_hw(L[1] * s1inv))); \
+            P[2] = float16_t(rr_q8grid(nr_round_f16_hw(L[2] * s1inv))); \
+            P[3] = float16_t(rr_q8grid(nr_round_f16_hw(L[3] * s1inv))); \
+            P[4] = float16_t(rr_q8grid(nr_round_f16_hw(L[4] * s1inv))); \
+            P[5] = float16_t(rr_q8grid(nr_round_f16_hw(L[5] * s1inv))); \
+            P[6] = float16_t(rr_q8grid(nr_round_f16_hw(L[6] * s1inv))); \
+            P[7] = float16_t(rr_q8grid(nr_round_f16_hw(L[7] * s1inv))); }
         RR_PB_LT(bp0, lt0) RR_PB_LT(bp1, lt1) RR_PB_LT(bp2, lt2) RR_PB_LT(bp3, lt3)
 #else
         float ss = 0.0;
@@ -626,22 +627,22 @@ void main() {
     // R1: X1 = f16(s + f16(s1d2 * a)) - the single end-scale (at holds the
     // unscaled chain; at is dead after this and reused as the MLP accumulator).
     #define RR_R1_T(t) { \
-        at##t[0] = nr_round_f16_e4m3(s1d2 * at##t[0]); \
-        at##t[1] = nr_round_f16_e4m3(s1d2 * at##t[1]); \
-        at##t[2] = nr_round_f16_e4m3(s1d2 * at##t[2]); \
-        at##t[3] = nr_round_f16_e4m3(s1d2 * at##t[3]); \
-        at##t[4] = nr_round_f16_e4m3(s1d2 * at##t[4]); \
-        at##t[5] = nr_round_f16_e4m3(s1d2 * at##t[5]); \
-        at##t[6] = nr_round_f16_e4m3(s1d2 * at##t[6]); \
-        at##t[7] = nr_round_f16_e4m3(s1d2 * at##t[7]); \
-        st##t[0] = nr_round_f16_e4m3(st##t[0] + at##t[0]); \
-        st##t[1] = nr_round_f16_e4m3(st##t[1] + at##t[1]); \
-        st##t[2] = nr_round_f16_e4m3(st##t[2] + at##t[2]); \
-        st##t[3] = nr_round_f16_e4m3(st##t[3] + at##t[3]); \
-        st##t[4] = nr_round_f16_e4m3(st##t[4] + at##t[4]); \
-        st##t[5] = nr_round_f16_e4m3(st##t[5] + at##t[5]); \
-        st##t[6] = nr_round_f16_e4m3(st##t[6] + at##t[6]); \
-        st##t[7] = nr_round_f16_e4m3(st##t[7] + at##t[7]); }
+        at##t[0] = nr_round_f16_hw(s1d2 * at##t[0]); \
+        at##t[1] = nr_round_f16_hw(s1d2 * at##t[1]); \
+        at##t[2] = nr_round_f16_hw(s1d2 * at##t[2]); \
+        at##t[3] = nr_round_f16_hw(s1d2 * at##t[3]); \
+        at##t[4] = nr_round_f16_hw(s1d2 * at##t[4]); \
+        at##t[5] = nr_round_f16_hw(s1d2 * at##t[5]); \
+        at##t[6] = nr_round_f16_hw(s1d2 * at##t[6]); \
+        at##t[7] = nr_round_f16_hw(s1d2 * at##t[7]); \
+        st##t[0] = nr_round_f16_hw(st##t[0] + at##t[0]); \
+        st##t[1] = nr_round_f16_hw(st##t[1] + at##t[1]); \
+        st##t[2] = nr_round_f16_hw(st##t[2] + at##t[2]); \
+        st##t[3] = nr_round_f16_hw(st##t[3] + at##t[3]); \
+        st##t[4] = nr_round_f16_hw(st##t[4] + at##t[4]); \
+        st##t[5] = nr_round_f16_hw(st##t[5] + at##t[5]); \
+        st##t[6] = nr_round_f16_hw(st##t[6] + at##t[6]); \
+        st##t[7] = nr_round_f16_hw(st##t[7] + at##t[7]); }
     RR_FOR_NT(RR_R1_T)
 #endif
 

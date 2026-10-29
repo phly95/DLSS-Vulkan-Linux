@@ -24,9 +24,9 @@
 #define MUH1_CH(V, ST, I, S) { float _vv = ST[I]; float _oo = subgroupShuffleXor(_vv, 16u); V = (rowh == S) ? _vv : _oo; }
 #define MUH1_SIG(h) (MUH1_RND(1.0 / (1.0 + exp2(-1.4426950216293335 * (h)))))
 #if RR_PRECISE
-// Recipe A head roundings (SIG/OC0/OD0). nr_round_f16_e4m3: the opaque bit-twiddle
-// (a float16_t() round trip would be folded away by ACO, silently dropping this).
-#define MUH1_RND(x) (nr_round_f16_e4m3(x))
+// Recipe A head roundings via hardware f16 round trip (NR_ROUND_MODE=1 spell).
+// mu_h1 hw-round probe 2026-10-29: validated by kernel_run fidelity + pipestats.
+#define MUH1_RND(x) (nr_round_f16_hw(x))
 #else
 #define MUH1_RND(x) (x)
 #endif
