@@ -621,12 +621,22 @@ void main() {
             NR_STORE_ACC(af1, s_h, t0 * 64u + 16u * (kt + 1u), 64u);
         }
         sync_lds();
+        // 2c-1. exp + relpos on ALL 256 threads (4 per query, 16 keys each): the logits are
+        // overwritten in place with the SAME nr_exp values, so the f16 tree below reads bit-
+        // identical inputs to the old one-thread-per-query loop.
+        {
+            const uint rb = wbase(1) + h * 8192u;
+            const uint q = tid & 63u;
+            const uint k0 = (tid >> 6u) * 16u;
+            for (uint k = k0; k < k0 + 16u; ++k)
+                s_h[q * 64u + k] = nr_exp(s_h[q * 64u + k] + wf16(rb + 2u * (q * 64u + k)));
+        }
+        sync_lds();
         if (tid < 64u) {
             const uint q = tid;
-            const uint rb = wbase(1) + h * 8192u;
             float pe[64];
             [[unroll]] for (uint k = 0u; k < 64u; ++k)
-                pe[k] = nr_exp(s_h[q * 64u + k] + wf16(rb + 2u * (q * 64u + k)));
+                pe[k] = s_h[q * 64u + k];
             // the 64-key f16 tree (model smax=isa): key(kb, hh, ip, par) = 16 kb + 8 hh + 2 ip + par;
             // T_hh = f16(f16(k0 + k1) + f16(k2 + k3)), U_ip = f16(T_0 + T_1), V(par) = f16(f16(U0 + U1) + f16(U2 + U3))
             float vs[2];
