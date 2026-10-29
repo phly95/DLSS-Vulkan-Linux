@@ -223,14 +223,23 @@ void main() {
     float scb = SC0 * tm_b;
 
     int N = W0 * H0;
-    int base0 = idx0 * 32;
-    int base1 = N * 32 + idx0 * 32;
     // one dither word for the pixel's sixty-four features (model dq: idx = fc, y, x)
     uint didx = ((fc & 7u) << 8u) | ((uint(y) & 15u) << 4u) | (uint(x) & 15u);
     uint bo = dith_off + 2u * didx;
     uint dw = (uint(dith[bo]) | (uint(dith[bo + 1u]) << 8u)) >> 9u;
 
     // ---- the 64 stored channels (model build_features) ----
+    // E0 COMPACTION (48ch: 35 real + 13 zero pad; 16 always-zero slots dropped):
+    // newpos[old] (0xFF = not stored). Kept zeros {11,14,19,30,31,32,33,34,35,
+    // 38,39,42,43} land at 35..47; dropped {44,46,47,50,51,53..63} never stored.
+    // Layout is [3][H0][W0][16] (was [2][H0][W0][32]); slot is a compile-time
+    // literal at every STS site, so the map + guard fold away completely.
+    const uint E0CP[64] = uint[64](
+        0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u, 10u, 35u, 11u, 12u, 36u, 13u,
+        14u, 15u, 16u, 37u, 17u, 18u, 19u, 20u, 21u, 22u, 23u, 24u, 25u, 26u,
+        38u, 39u, 40u, 41u, 42u, 43u, 27u, 28u, 44u, 45u, 29u, 30u, 46u, 47u,
+        0xFFu, 31u, 0xFFu, 0xFFu, 32u, 33u, 0xFFu, 0xFFu, 34u, 0xFFu, 0xFFu, 0xFFu,
+        0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu);
     // PERF (rr pass 4): this used to build float feat[64] and run dq() over it - 64 quantizers a
     // pixel, 1.62 of the kernel's 1.69 ms (probe: the loop gone = 0.065 ms). Three
     // value-preserving changes, checked byte-for-byte against the old shader on the fixture:
@@ -249,7 +258,7 @@ void main() {
     // its four adjacent byte stores (one buffer_store_b32), so value->store distance is minimal
     // and each write overlaps the next dword's quantizers. One dqt per distinct value still (every
     // value maps into exactly one dword); two uniform sequences, one per frame type.
-    #define STS(slot, v) out_be8[(((slot) < 32) ? base0 : base1) + ((slot) & 31)] = NR_OPERAND(v)
+    #define STS(slot, v) { uint _np = E0CP[slot]; if (_np != 0xFFu) out_be8[int((_np >> 4u) * uint(N) * 16u + uint(idx0) * 16u + (_np & 15u))] = NR_OPERAND(v); }
 
     if (rst != 0u) {
         // reset frame: SC_TM takes SC0*tm(col); NEG0 slots are -0.0 (0x80, 0x00 on the d==0 cell)

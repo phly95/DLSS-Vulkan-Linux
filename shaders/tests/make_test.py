@@ -1076,7 +1076,7 @@ def make_test(name, out_dir):
         push = bytearray(84)
         struct.pack_into("<10i", push, 0, 16, 16, 0, 0, 5, 32, 2, 0, 0, 4)
         struct.pack_into("<4i", push, 40, 16, 16, 0, 0)
-        struct.pack_into("<3i", push, 56, 64, 0, 0)
+        struct.pack_into("<3i", push, 56, 48, 0, 0)
         struct.pack_into("<3i", push, 68, 16, 16, 3)
         cfg = {
             "groups": [2, 2, 1],
@@ -1400,8 +1400,9 @@ def make_test(name, out_dir):
                 {"binding": 15, "file": "in_c12.bin"},
                 {"binding": 16, "file": "in_c02.bin"},
                 # out_be8 is typed NR_OPERAND: 1 byte an element on the RADV build, and the O7
-                # NH_F16 build widens it to f16 (the sr_tube_split convention) - size 2x for both
-                {"binding": 8, "bytes": w0 * h0 * 128, "output": "out_be8", "type": "u8"},
+                # NH_F16 build widens it to f16 (the sr_tube_split convention) - size 2x for both.
+                # E0 compact 48ch: 3 groups x 16 (was 2x32).
+                {"binding": 8, "bytes": w0 * h0 * 96, "output": "out_be8", "type": "u8"},
                 {"binding": 9, "bytes": w0 * h0 * 8, "output": "out_bec", "type": "f16"},
                 {"binding": 10, "bytes": n_pix * 8, "output": "out_bf6", "type": "f16"},
                 {"binding": 11, "bytes": n_pix * 4, "output": "out_bfa", "type": "f16"},

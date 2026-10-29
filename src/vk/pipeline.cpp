@@ -157,7 +157,7 @@ static size_t rrsw_unit_tiles(uint32_t C, uint32_t G, uint32_t Cdown, uint32_t C
     if (meta[8] != 0xFFFFFFFFu) t += size_t(Cdown / 16) * size_t(4 * C / 16);   // mA8
     if (meta[10] != 0xFFFFFFFFu) t += size_t(4) * size_t(128 / 16);             // mC8
     if (meta[12] != 0xFFFFFFFFu) t += size_t(4 * C / 16) * size_t(Cup / 16);    // mE8
-    if (meta[16] != 0xFFFFFFFFu) t += size_t(4) * size_t(64 / 16);              // m1d8
+    if (meta[16] != 0xFFFFFFFFu) t += size_t(4) * size_t(48 / 16);              // m1d8 (E0 compact 48ch)
     if (meta[18] != 0xFFFFFFFFu) t += size_t(2) * size_t(64 / 16);              // m1f8
     return t;
 }
@@ -172,7 +172,8 @@ static bool rrsw_repack_unit(const uint8_t* wblob, size_t size, const uint32_t* 
     const uint32_t NT = C / 16, NBLK = C / 8;
     auto byte_ok = [&](uint32_t rel) { return size_t(rel) < size; };
     auto tile = [&](uint32_t rel, uint32_t row0, uint32_t col0, uint32_t rows, uint32_t cols,
-                    uint32_t scols, size_t tiles_off, bool perm_r, bool perm_c, bool plain) {
+                    uint32_t scols, size_t tiles_off, bool perm_r, bool perm_c, bool plain,
+                    const uint32_t* kmap = nullptr) {
         if (rel == 0xFFFFFFFFu) return true;
         for (uint32_t rt = 0; rt < rows / 16u; ++rt)
             for (uint32_t ct = 0; ct < cols / 16u; ++ct)
@@ -180,7 +181,8 @@ static bool rrsw_repack_unit(const uint8_t* wblob, size_t size, const uint32_t* 
                     for (uint32_t k = 0u; k < 16u; ++k) {
                         uint32_t r = row0 + rt * 16u + n, c = col0 + ct * 16u + k;
                         uint32_t rl = perm_r ? rrsw_basis(r) : r;
-                        uint32_t cl = perm_c ? rrsw_basis(c) : c;
+                        uint32_t lc = kmap ? kmap[c] : c;
+                        uint32_t cl = perm_c ? rrsw_basis(lc) : lc;
                         uint32_t src = plain ? rrsw_frag_u(rl, cl, scols) : rrsw_frag_off(rl, cl, scols);
                         if (!byte_ok(rel + src)) return false;
                         wout[tiles_off + (size_t(rt) * (cols / 16u) + ct) * 256u + n * 16u + k] =
@@ -188,6 +190,11 @@ static bool rrsw_repack_unit(const uint8_t* wblob, size_t size, const uint32_t* 
                     }
         return true;
     };
+    // E0 compaction new-K -> old-slot (35 real ascending, then 13 zero pad).
+    static const uint32_t kE0New2Old[48] = {
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 15, 16, 17,
+        18, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 36, 37, 40, 41, 45,
+        48, 49, 52, 11, 14, 19, 30, 31, 32, 33, 34, 35, 38, 39, 42, 43};
     size_t cur = 0;
     const size_t rHS = size_t(4u) * NT * 256u;
     for (uint32_t h = 0u; h < G; ++h) {
@@ -216,8 +223,8 @@ static bool rrsw_repack_unit(const uint8_t* wblob, size_t size, const uint32_t* 
     if (meta[10] != 0xFFFFFFFFu) cur += size_t(4) * size_t(8) * 256u;
     if (!tile(meta[12], 0, 0, 4 * C, Cup, Cup, cur, true, true, false)) return false;
     if (meta[12] != 0xFFFFFFFFu) cur += size_t(4 * C / 16) * size_t(Cup / 16) * 256u;
-    if (!tile(meta[16], 0, 0, 64, 64, 64, cur, false, true, false)) return false;
-    if (meta[16] != 0xFFFFFFFFu) cur += size_t(4) * size_t(4) * 256u;
+    if (!tile(meta[16], 0, 0, 64, 48, 64, cur, false, true, false, kE0New2Old)) return false;
+    if (meta[16] != 0xFFFFFFFFu) cur += size_t(4) * size_t(3) * 256u;
     if (!tile(meta[18], 0, 0, 32, 64, 64, cur, true, false, false)) return false;
     (void)cur;
     // NOTE: no LayerScale fold on Wo/W2 (it re-quantises the weights and costs ~6 dB):
@@ -706,7 +713,7 @@ enum RrRole { R_IN, R_SKIP, R_O78, R_O80, R_I88, R_I90, R_O98, R_OA0, R_OC0, R_O
 struct RrUnit { int C, g, mode, Cdown, Cup, n, in_ch; const char* role[R_N]; };
 static const int kRrUnitLevel[16] = {0, 1, 2, 3, 4, 5, 4, 4, 3, 3, 2, 2, 1, 1, 0, 0};
 static const RrUnit kRrUnits[16] = {
-    {32, 2, 5, 0, 0, 4, 64,  // unit 0 (launch 5)
+    {32, 2, 5, 0, 0, 4, 48,  // unit 0 (launch 5, E0 compact 48ch)
      {"E0be8", "", "E0b54", "", "E0bec", "", "E0ba8", "E0bc0", "", "", "", ""}},
     {64, 2, 1, 96, 0, 1, 32,  // unit 1 (launch 6)
      {"E0b54", "", "E0b58", "E0b70", "E0bc0", "", "E0bac", "E0bc4", "", "", "", ""}},

@@ -4,12 +4,12 @@
 // Uses: x0/y0/W/H/HW, col/q/rowh, in_act4 (binding 1), wT/wtab, NT/G,
 // m108T (head tiles end), gram (table row gram base). Provides: st0.. (f32 X).
 // Weight tiles (host rrsw order; u0 has no mA8/mC8/mE8, so m1d8 follows m108):
-// m1d8 64x64 (4 row-tiles x 4 K-tiles), m1f8 32x64 (2 row-tiles x 4 K-tiles).
+// m1d8 64x48 (4 row-tiles x 3 K-tiles, E0 compact 48ch), m1f8 32x64 (2 row-tiles x 4 K-tiles).
 // Bias vectors (host appends f32 after gram): v218[64] (hidden, logical order),
 // v230[32] (stored channel order, matching st[]).
 {
     uint m1d8T = m108T + NT * 256u;
-    uint m1f8T = m1d8T + 16u * 256u;
+    uint m1f8T = m1d8T + 12u * 256u;   // m1d8 is 4 row-tiles x 3 K-tiles (E0 compact 48ch)
     uint v218o = gram + G * 4096u;
     uint v230o = v218o + 64u;
     int txl = x0 + int(col & 7u);
@@ -18,15 +18,16 @@
     NR_FRAG_B fb;
     NR_FRAG_ACC hh0 = NR_ACC_ZERO; NR_FRAG_ACC hh1 = NR_ACC_ZERO;
     NR_FRAG_ACC hh2 = NR_ACC_ZERO; NR_FRAG_ACC hh3 = NR_ACC_ZERO;
+    const uint KC_ = uint(C_in) >> 4u;   // E0 K-tiles (64 -> 3 after compaction)
     // GEMM1: hidden rows 16rt.. over F K-tiles (16 stored channels each).
     #define RR_M5_KT(kt) { \
-        uint fbyte = ((uint(kt) >> 1u) * HW + pos) * 32u + (uint(kt) & 1u) * 16u; \
+        uint fbyte = (uint(kt) * HW + pos) * 16u; \
         RR_LD8B(fb, fbyte + 8u * rowh) \
         NR_FRAG_A fa0; NR_LOAD_A(fa0, wT, m1d8T + 256u * (uint(kt)), 16u); NR_MMA(hh0, fa0, fb); \
-        NR_FRAG_A fa1; NR_LOAD_A(fa1, wT, m1d8T + 256u * (4u + uint(kt)), 16u); NR_MMA(hh1, fa1, fb); \
-        NR_FRAG_A fa2; NR_LOAD_A(fa2, wT, m1d8T + 256u * (8u + uint(kt)), 16u); NR_MMA(hh2, fa2, fb); \
-        NR_FRAG_A fa3; NR_LOAD_A(fa3, wT, m1d8T + 256u * (12u + uint(kt)), 16u); NR_MMA(hh3, fa3, fb); }
-    RR_M5_KT(0) RR_M5_KT(1) RR_M5_KT(2) RR_M5_KT(3)
+        NR_FRAG_A fa1; NR_LOAD_A(fa1, wT, m1d8T + 256u * (KC_ + uint(kt)), 16u); NR_MMA(hh1, fa1, fb); \
+        NR_FRAG_A fa2; NR_LOAD_A(fa2, wT, m1d8T + 256u * (2u * KC_ + uint(kt)), 16u); NR_MMA(hh2, fa2, fb); \
+        NR_FRAG_A fa3; NR_LOAD_A(fa3, wT, m1d8T + 256u * (3u * KC_ + uint(kt)), 16u); NR_MMA(hh3, fa3, fb); }
+    RR_M5_KT(0) RR_M5_KT(1) RR_M5_KT(2)
     // Hidden bias + GELU + quantise to second-GEMM B operands.
     NR_FRAG_B hb0; NR_FRAG_B hb1; NR_FRAG_B hb2; NR_FRAG_B hb3;
     #define RR_M5_HB(HB, HH, RT) { \
