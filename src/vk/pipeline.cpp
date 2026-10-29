@@ -641,7 +641,11 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         add_pipe("sr_tube_split", 4, 56);
         // sr_dec0 gained binding 8: t8 bound again as 16-byte vectors for the staging loop
         // (one vector load a half-pixel-plane instead of a byte load a channel).
-        add_pipe("sr_dec0", 10, 160);
+        // sr_dec0 pinned wave32 (mu_srm 2-wave split, local_size 64): the chain's unpinned
+        // pipeline let RADV pick subgroup size 64, where this driver's cooperative-matrix path
+        // computes garbage (same failure mode as sr_stage; kernel_run pins 32, which is why
+        // fixtures passed while the chain failed - build/agents/mu_srm/progress.md).
+        add_pipe("sr_dec0", 10, 160, 32);
         add_pipe("sr_post", 14, 256, 0,
                  // 0-4 SSBO, 5 history SAMPLED image (linear filter, the 5-tap CR's bilinear), 6-8
                  // SSBO, 9 history STORAGE image write, 10-13 SSBO (12 is the unused slot that keeps

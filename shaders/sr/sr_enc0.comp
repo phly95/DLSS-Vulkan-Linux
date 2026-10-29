@@ -607,8 +607,31 @@ void main() {
             t0_store(pos, u); \
         } \
     } }
-    ENC0_EPI(0, acc0)
-    ENC0_EPI(1, acc1)
-    ENC0_EPI(2, acc2)
-    ENC0_EPI(3, acc3)
+#define ENC0_EPI_NC(n, frag) { \
+    uint chan = 16u * (n) + ch0; \
+    float bb = bias_f16(chan); \
+    [[unroll]] for (uint c = 0u; c < 8u; ++c) { \
+        uint cx0 = (tile_x >> 1) + (c & 3u); \
+        uint cy0 = (tile_y >> 1) + 2u * cellrow + (c >> 2u); \
+        float u = min(max((frag)[c] + bb, -6.28125), 6.28125); \
+        uint pos = ((chan >> 5u) * ncell + (cy0 * w_half + cx0)) * 32u + perm_invP(chan & 31u); \
+        t0_store(pos, u); \
+    } }
+    // Per-tile border hoist (mu_srm P5.3): a tile's cells occupy half-cols (tile_x>>1)+0..3 and
+    // half-rows (tile_y>>1)+0..3 (max over both cellrows and all c), so ONE workgroup-uniform
+    // predicate replaces all 32 per-cell divergent checks (which are provably dead on the padded
+    // grid - the tile fits W0 x H0 by construction). The hot path is then branch-free; the
+    // checked path still runs for any unpadded/partial grid, so semantics are unchanged.
+    bool tile_full = ((tile_x >> 1u) + 3u < w_half) && ((tile_y >> 1u) + 3u < h_half);
+    if (tile_full) {
+        ENC0_EPI_NC(0, acc0)
+        ENC0_EPI_NC(1, acc1)
+        ENC0_EPI_NC(2, acc2)
+        ENC0_EPI_NC(3, acc3)
+    } else {
+        ENC0_EPI(0, acc0)
+        ENC0_EPI(1, acc1)
+        ENC0_EPI(2, acc2)
+        ENC0_EPI(3, acc3)
+    }
 }

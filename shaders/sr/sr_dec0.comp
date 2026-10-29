@@ -46,7 +46,7 @@
 // Push constants: the oracle launch's own 160-byte Dec0Args passed verbatim; the block starts at
 // offset 64 (bytes 0..0x3f are the HIP struct's device pointers, not pushed by the port host).
 
-layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 // e4m3 in both builds (the f16-operand build widens it: make_test sizes in_t8 for that).
 layout(set = 0, binding = 0) readonly buffer InT8        { NR_OPERAND in_t8[]; };
@@ -134,6 +134,9 @@ uint perm_invP(uint c) {
 float sigm(float x) {                       // sg: f32 exp, IEEE divide
     return 1.0 / (1.0 + exp(-x));
 }
+float16_t sigm16(float16_t x) {              // f16 sigmoid (aniso path, guard-gated)
+    return float16_t(1.0 / (1.0 + exp(-float(x))));
+}
 
 float copysgn(float mag, float sgn) {        // copysign, incl. the sign of zero
     return ((floatBitsToUint(sgn) & 0x80000000u) != 0u) ? -mag : mag;
@@ -158,6 +161,21 @@ float tanh32(float x) {
         t = (1.0 - e) / (1.0 + e);
     }
     return copysgn(t, x);
+}
+
+// f16 tanh (aniso path only, guard-gated)
+float16_t tanh16(float16_t x) {
+    float16_t a = abs(x);
+    float16_t t;
+    if (a < float16_t(0.3)) {
+        float16_t x2 = a * a;
+        t = a * (float16_t(1.0) + x2 * (float16_t(-1.0 / 3.0) + x2 * (float16_t(2.0 / 15.0)
+              + x2 * (float16_t(-17.0 / 315.0) + x2 * float16_t(62.0 / 2835.0)))));
+    } else {
+        float16_t e = float16_t(exp(float(-2.0) * float(a)));
+        t = (float16_t(1.0) - e) / (float16_t(1.0) + e);
+    }
+    return float16_t(copysgn(float(t), float(x)));
 }
 
 // max(-1, i8 / 127) for channel k of the word-aligned tap at byte index i (i % 4 == k)
@@ -187,6 +205,9 @@ shared float16_t s_p[16 * 128];
 
 void main() {
     uint tid = gl_LocalInvocationIndex;
+    // CLEAN 2-WAVE SPLIT: wave0 = even rows (qq 0,1), wave1 = odd rows (qq 2,3), 1 px/lane.
+    uint wave = tid >> 5u;
+    uint lane = tid & 31u;
     uint tile_x = gl_WorkGroupID.x * 8u;
     uint tile_y = gl_WorkGroupID.y * 8u;
     uint w_half = uint(W0) >> 1;
@@ -197,7 +218,7 @@ void main() {
     // 64 units = 16 pixels x 2 planes x 2 vector halves, two a lane: ONE 16-byte load each,
     // then the P-permute is a register scatter. Replaces 1024 byte loads a wave, each with its own
     // perm_invP + plane/pixel address - the kernel's largest single block (0.87 ms measured).
-    for (uint i = tid; i < 64u; i += 32u) {
+    for (uint i = tid; i < 64u; i += 64u) {
         uint hb = i & 1u;
         uint gp = (i >> 1) & 1u;            // t8 group plane 0..1 (k >> 5)
         uint pix = i >> 2u;                 // local t8 pixel 0..15
@@ -222,13 +243,14 @@ void main() {
     // render pixel of that parity, and the weight rows depend only on q) - 32 WMMAs replace
     // 64 pixels x 18 x 64 scalar fmAs with a frag_off-style walk. Only q*32 + 0..17 of each
     // 32-wide block is ever read back; the model's p = fp8(clamp(u)) is applied in the epilogue.
-    for (uint qq = 0u; qq < 4u; ++qq) {
+    for (uint j = 0u; j < 2u; ++j) {
+        uint qq = wave * 2u + j;
         NR_FRAG_ACC pr0 = NR_ACC_ZERO;
         NR_FRAG_ACC pr1 = NR_ACC_ZERO;
         // The bias is per output column: a lane's column inside a tile is tid & 15, so one value
         // per lane per tile covers all eight of its rows.
-        float bj0 = b_f16(qq * 32u + (tid & 15u));
-        float bj1 = b_f16(qq * 32u + 16u + (tid & 15u));
+        float bj0 = b_f16(qq * 32u + (lane & 15u));
+        float bj1 = b_f16(qq * 32u + 16u + (lane & 15u));
         for (uint k0 = 0u; k0 < 64u; k0 += 16u) {
             NR_FRAG_A fa;
             NR_LOAD_A(fa, s_t8, k0, 64u);
@@ -253,11 +275,11 @@ void main() {
     }
     barrier();   // s_p: fragment stores above, per-lane reads below
 
-    for (uint i = 0u; i < 2u; ++i) {
-        uint pix = tid + i * 32u;
+    {
+        uint pix = lane;
         uint x = tile_x + (pix & 7u);
-        uint y = tile_y + (pix >> 3u);
-        if (x >= uint(W) || y >= uint(H)) continue;
+        uint y = tile_y + 2u * (pix >> 3u) + wave;
+        if (x >= uint(W) || y >= uint(H)) return;
         uint idx = y * uint(W) + x;
 
         // ---- projection: channels q*32 + 0..17 of this pixel's sub-pixel, from the tile product
@@ -277,12 +299,14 @@ void main() {
 
         // ---- factors: REMOVED (dead store + dead softmax; see header) ----
 
-        // ---- aniso: channels 14, 15, 16 ----
-        float A = s0 * sigm(clamp(p[14], -20.0, 20.0));
-        float B = s0 * sigm(clamp(p[15], -20.0, 20.0));
-        float T = tanh32(f0 * p[16]);
-        out_aniso[idx] = f16vec4(float16_t(A * A), float16_t(B * B),
-                                 float16_t((A * B) * T), float16_t(0.0));
+        // ---- aniso: channels 14, 15, 16 (f16 packed: outputs are f16; guard decides) ----
+        float16_t pa14 = float16_t(p[14]);
+        float16_t pa15 = float16_t(p[15]);
+        float16_t pa16 = float16_t(p[16]);
+        float16_t A = float16_t(s0) * sigm16(clamp(pa14, float16_t(-20.0), float16_t(20.0)));
+        float16_t B = float16_t(s0) * sigm16(clamp(pa15, float16_t(-20.0), float16_t(20.0)));
+        float16_t T = tanh16(float16_t(f0) * pa16);
+        out_aniso[idx] = f16vec4(A * A, B * B, (A * B) * T, float16_t(0.0));
 
         // ---- hidden: the reprojected position and its tap grid (shared by the 4 channels) ----
         f16vec2 mv = in_prev_mv[idx];
