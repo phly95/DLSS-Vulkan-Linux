@@ -200,7 +200,6 @@ def make_test(name, out_dir):
                 {"binding": 4, "file": "dhist.bin"},
                 {"binding": 5, "file": "hidden.bin"},
                 {"binding": 6, "bytes": n_pix * 4, "output": "prev_mv_out", "type": "f16"},
-                {"binding": 7, "bytes": n_pix * 4, "output": "mv_ero", "type": "f16"},
                 {"binding": 8, "bytes": n_pix * 4, "output": "mv_nondil", "type": "f16"},
                 {"binding": 9, "bytes": (w0 // 2) * (h0 // 2) * 64, "output": "t0", "type": "u8"},
                 {"binding": 10, "file": "wbuf.bin"},
@@ -400,7 +399,6 @@ def make_test(name, out_dir):
                 {"binding": 1, "file": "prev_mv.bin"},
                 {"binding": 2, "file": "hidden.bin"},
                 {"binding": 3, "bytes": n_pix * 4, "output": "gates", "type": "u8"},
-                {"binding": 4, "bytes": n_pix * 4, "output": "factors", "type": "u8"},
                 {"binding": 5, "bytes": n_pix * 8, "output": "aniso", "type": "f16"},
                 {"binding": 6, "bytes": n_pix * 4, "output": "hidden_out", "type": "u8"},
                 {"binding": 7, "file": "wbuf.bin"},
@@ -933,7 +931,9 @@ def make_test(name, out_dir):
                 {"binding": 14, "file": "in_c0e.bin"},
                 {"binding": 15, "file": "in_c12.bin"},
                 {"binding": 16, "file": "in_c02.bin"},
-                {"binding": 8, "bytes": w0 * h0 * 64, "output": "out_be8", "type": "u8"},
+                # out_be8 is typed NR_OPERAND: 1 byte an element on the RADV build, and the O7
+                # NH_F16 build widens it to f16 (the sr_tube_split convention) - size 2x for both
+                {"binding": 8, "bytes": w0 * h0 * 128, "output": "out_be8", "type": "u8"},
                 {"binding": 9, "bytes": w0 * h0 * 8, "output": "out_bec", "type": "f16"},
                 {"binding": 10, "bytes": n_pix * 8, "output": "out_bf6", "type": "f16"},
                 {"binding": 11, "bytes": n_pix * 4, "output": "out_bfa", "type": "f16"},

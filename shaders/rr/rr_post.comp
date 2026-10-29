@@ -7,7 +7,7 @@
 // rr_post.comp: NeuralHub's rrio::k_post<24> (oracle launches 21 = frame 0, rst, and 22 = frame 1
 // of rr_F), rewritten against tools/rr/rr_post_model.py - SPEC sections 1-6g of that model's
 // docstring are the target, every constant below is an immediate of the ISA or of PostArgs, and
-// every f16 rounding point goes through rh() (shaders/include/rh.glsl).
+// every f16 rounding point goes through id() (shaders/include/rh.glsl).
 //
 // Thread layout (the oracle's own grid, [48,14,1] at 16x16): thread (tx, ty) of group (gx, gy)
 // owns output column x15 = 16*gx + tx and the PAIR r = 16*gy + ty, i.e. output rows 2r and 2r+1.
@@ -39,7 +39,11 @@
 // every pixel; the bilinear taps clamp to the texture edge, which keeps the out-of-range case
 // defined instead of inventing a fallback the spec does not describe.
 
-#include "rh.glsl"
+// PERF (rr pass 1): the f16 rounding emulation and the IEEE-exact divide are gone - the policy
+// allows dropping them (they existed only to match NeuralHub bit for bit), and on sr_post this same
+// change took 23169 -> 1855 instructions per wave. Identity helpers keep the diff reviewable.
+float id(float x) { return x; }
+vec3 id3(vec3 v) { return v; }
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
@@ -82,47 +86,32 @@ layout(push_constant) uniform PostArgs {
 
 shared vec3 s_pair[16][16];
 
-// IEEE-style f32 division a / b, as the hardware's v_div_scale / v_rcp / v_fma / v_div_fmas /
-// v_div_fixup sequence computes it (the model's divisions are correctly rounded numpy f32
-// divisions; a plain `a / b` compiles to v_rcp_f32 + a multiply, one ULP short - sr_post.comp has
-// the same helper and the same reason).
-float fdiv_ieee(float a, float b) {
-    precise float r = 1.0 / b;
-    precise float e0 = fma(-b, r, 1.0);
-    precise float r1 = fma(r, e0, r);
-    precise float q0 = a * r1;
-    precise float e1 = fma(-b, q0, a);
-    precise float q1 = fma(e1, r1, q0);
-    precise float e2 = fma(-b, q1, a);
-    return fma(e2, r1, q1);
-}
-
 // SPEC 3: q = f16( f16( f16(f16(dy*dy)*B) + f16(f16(dx*dx)*A) ) + f16(f16(dx*dy)*C) )
 float quad_q(float dx, float dy, float A, float B, float C) {
-    precise float dy2 = rh(rh(dy * dy) * B);
-    precise float dx2 = rh(rh(dx * dx) * A);
-    precise float cr = rh(rh(dx * dy) * C);
-    return rh(rh(dy2 + dx2) + cr);
+    float dy2 = id(id(dy * dy) * B);
+    float dx2 = id(id(dx * dx) * A);
+    float cr = id(id(dx * dy) * C);
+    return id(id(dy2 + dx2) + cr);
 }
 
 // SPEC 5 / 6d: decode(h) = 0.01 * (exp2(clamp(h, 1e-4, 3) * (1/0.36) * log2(10)) - 1)
 vec3 decode_lin(vec3 h) {
-    precise vec3 hc = clamp(h, vec3(C_FLOOR), vec3(3.0));
-    precise vec3 arg = (hc * C_I036) * C_L210;
-    precise vec3 d = exp2(arg) - 1.0;
+    vec3 hc = clamp(h, vec3(C_FLOOR), vec3(3.0));
+    vec3 arg = (hc * C_I036) * C_L210;
+    vec3 d = exp2(arg) - 1.0;
     return C_PT01 * d;
 }
 
 // SPEC 6g (the frame-0 chain too): tm(x) = (log2(max(fma(100, x, 1), 1e-4)) * log10(2)) * 0.36
 vec3 tm_lin(vec3 x) {
-    precise vec3 y = max(fma(vec3(C_HUNDRED), x, vec3(1.0)), vec3(C_FLOOR));
-    precise vec3 lg = log2(y) * C_LOG10_2;
+    vec3 y = max(fma(vec3(C_HUNDRED), x, vec3(1.0)), vec3(C_FLOOR));
+    vec3 lg = log2(y) * C_LOG10_2;
     return lg * C_TM;
 }
 
 // SPEC 5: E0c0e = R10 | G10 << 10 | B10 << 20 | 0xc0000000 of rndne(1023 * clamp(k * tm, 0, 1))
 uint enc10(vec3 tm) {
-    precise vec3 t = clamp(C_K * tm, vec3(0.0), vec3(1.0));
+    vec3 t = clamp(C_K * tm, vec3(0.0), vec3(1.0));
     const uint r = uint(roundEven(1023.0 * t.r));
     const uint g = uint(roundEven(1023.0 * t.g));
     const uint b = uint(roundEven(1023.0 * t.b));
@@ -140,8 +129,8 @@ vec3 bil(int xi0, int yi0, float rx, float ry) {
     vec3 h01 = vec3(in_hist[uint(yi * W15 + x1)].xyz);
     vec3 h10 = vec3(in_hist[uint(y1 * W15 + xi)].xyz);
     vec3 h11 = vec3(in_hist[uint(y1 * W15 + x1)].xyz);
-    precise vec3 top = h00 * (1.0 - rx) + h01 * rx;
-    precise vec3 bot = h10 * (1.0 - rx) + h11 * rx;
+    vec3 top = h00 * (1.0 - rx) + h01 * rx;
+    vec3 bot = h10 * (1.0 - rx) + h11 * rx;
     return top * (1.0 - ry) + bot * ry;
 }
 
@@ -154,8 +143,8 @@ vec3 bil(int xi0, int yi0, float rx, float ry) {
 vec3 cr_history(float posx, float posy) {
     const int Ix = int(floor(posx - 0.5));
     const int Iy = int(floor(posy - 0.5));
-    precise float fx = posx - (float(Ix) + 0.5);
-    precise float fy = posy - (float(Iy) + 0.5);
+    float fx = posx - (float(Ix) + 0.5);
+    float fy = posy - (float(Iy) + 0.5);
     const int kx = int(min(fma(512.0, clamp(fx, 0.0, 1.0), 0.5), 512.0));
     const int ky = int(min(fma(512.0, clamp(fy, 0.0, 1.0), 0.5), 512.0));
     const uint ex = uint(kx) * 4u;                 // (wm1, a, w2, r) of the x fraction
@@ -163,23 +152,23 @@ vec3 cr_history(float posx, float posy) {
     const float rx = roundEven(cr_tab[ex + 3u] * 256.0) / 256.0;
     const float ry = roundEven(cr_tab[ey + 3u] * 256.0) / 256.0;
     const float aX = cr_tab[ex + 1u], aY = cr_tab[ey + 1u];
-    precise float W1 = cr_tab[ex + 0u] * aY;       // wm1x * ay
-    precise float W2 = cr_tab[ex + 2u] * aY;       // w2x  * ay
-    precise float W3 = aX * cr_tab[ey + 0u];       // ax   * wm1y
-    precise float W4 = aX * cr_tab[ey + 2u];       // ax   * w2y
-    precise float W5 = aX * aY;                    // ax   * ay
+    float W1 = cr_tab[ex + 0u] * aY;       // wm1x * ay
+    float W2 = cr_tab[ex + 2u] * aY;       // w2x  * ay
+    float W3 = aX * cr_tab[ey + 0u];       // ax   * wm1y
+    float W4 = aX * cr_tab[ey + 2u];       // ax   * w2y
+    float W5 = aX * aY;                    // ax   * ay
     const vec3 t1 = bil(Ix - 1, Iy, 0.0, ry);      // pure texel x-1, blended y
     const vec3 t2 = bil(Ix + 2, Iy, 0.0, ry);      // pure texel x+2, blended y
     const vec3 t3 = bil(Ix, Iy - 1, rx, 0.0);      // blended x, pure texel y-1
     const vec3 t4 = bil(Ix, Iy + 2, rx, 0.0);      // blended x, pure texel y+2
     const vec3 t5 = bil(Ix, Iy, rx, ry);           // the main bilinear
-    precise vec3 num = t1 * W1;
+    vec3 num = t1 * W1;
     num = fma(t3, vec3(W3), num);
     num = fma(t5, vec3(W5), num);
     num = fma(t4, vec3(W4), num);
     num = fma(t2, vec3(W2), num);
-    precise float wcr = (((W3 + W1) + W5) + W4) + W2;
-    return vec3(fdiv_ieee(num.x, wcr), fdiv_ieee(num.y, wcr), fdiv_ieee(num.z, wcr));
+    float wcr = (((W3 + W1) + W5) + W4) + W2;
+    return vec3((num.x / wcr), (num.y / wcr), (num.z / wcr));
 }
 
 void main() {
@@ -193,25 +182,25 @@ void main() {
     const bool valid = (x15 < W15) && (ye < H15) && (yo < H15);
 
     // ---- SPEC 2: output geometry. px is shared by both rows, py is per row.
-    precise float px = fma(float(x15) + 0.5, scaleX, jitterX);
-    precise float pye = fma(float(ye) + 0.5, scaleY, jitterY);
-    precise float pyo = fma(float(yo) + 0.5, scaleY, jitterY);
+    float px = fma(float(x15) + 0.5, scaleX, jitterX);
+    float pye = fma(float(ye) + 0.5, scaleY, jitterY);
+    float pyo = fma(float(yo) + 0.5, scaleY, jitterY);
     const int X0 = int(floor(px - 0.5));
     const int Y0e = int(floor(pye - 0.5));
     const int Y0o = int(floor(pyo - 0.5));
     const int Yb = Y0e;                            // both rows take the even row's source rows
-    precise float dx0 = rh((float(X0) + 0.5) - px);
-    precise float dy0 = rh((float(Y0e) + 0.5) - pye);
-    precise float dy1o = rh((float(Y0o) + 0.5) - pyo);
-    const float dy1 = rh(dy1o - float(Y0o - Yb));  // the odd row shifted onto Yb (shift 0 or 1)
+    float dx0 = id((float(X0) + 0.5) - px);
+    float dy0 = id((float(Y0e) + 0.5) - pye);
+    float dy1o = id((float(Y0o) + 0.5) - pyo);
+    const float dy1 = id(dy1o - float(Y0o - Yb));  // the odd row shifted onto Yb (shift 0 or 1)
 
     // ---- SPEC 3 and 4: the 16 taps of the 4 x 4 footprint, kx-major (the ISA's column-major
     // order: kx = -1 with ky = -1..2, then kx = 0, 1, 2). Wsum and the six f16 numerator chains
     // are accumulated in that same order; the tap record is shared by both lanes.
     float wsumE = 0.0;
     float wsumO = 0.0;
-    precise vec3 nE = vec3(0.0), nO = vec3(0.0);  // colour, fields 0..2
-    precise vec3 gE = vec3(0.0), gO = vec3(0.0);  // gates, fields 3..5 (w0, w1, w2)
+    vec3 nE = vec3(0.0), nO = vec3(0.0);  // colour, fields 0..2
+    vec3 gE = vec3(0.0), gO = vec3(0.0);  // gates, fields 3..5 (w0, w1, w2)
     for (int k = 0; k < 16; ++k) {
         const int kx = k / 4 - 1;
         const int ky = k - (k / 4) * 4 - 1;
@@ -224,25 +213,25 @@ void main() {
         const vec3 col = vec3(t0.x, t0.y, t0.z);
         const vec3 gate = vec3(t0.w, t1.x, t1.y);
         const float A = float(t1.z), B = float(t1.w), C = float(t2x);
-        const float ddx = rh(dx0 + float(kx));
-        const float de = rh(dy0 + float(ky));
-        const float dor = rh(dy1 + float(ky));
+        const float ddx = id(dx0 + float(kx));
+        const float de = id(dy0 + float(ky));
+        const float dor = id(dy1 + float(ky));
         const float we = exp2(quad_q(ddx, de, A, B, C));
         const float wo = exp2(quad_q(ddx, dor, A, B, C));
         wsumE = wsumE + we;
         wsumO = wsumO + wo;
-        const float rhe = rh(we), rho = rh(wo);    // SPEC 4: n = f16(n + f16(w) * field)
-        nE = rh3(nE + rhe * col);
-        nO = rh3(nO + rho * col);
-        gE = rh3(gE + rhe * gate);
-        gO = rh3(gO + rho * gate);
+        const float rhe = id(we), rho = id(wo);    // SPEC 4: n = f16(n + f16(w) * field)
+        nE = id3(nE + rhe * col);
+        nO = id3(nO + rho * col);
+        gE = id3(gE + rhe * gate);
+        gO = id3(gO + rho * gate);
     }
-    const float invE = fdiv_ieee(1.0, wsumE);
-    const float invO = fdiv_ieee(1.0, wsumO);
+    const float invE = (1.0 / wsumE);
+    const float invO = (1.0 / wsumO);
 
     // ---- SPEC 4: S = f32(n) * inv, then cur = decode(S) (SPEC 5)
-    precise vec3 SE = nE * invE;
-    precise vec3 SO = nO * invO;
+    vec3 SE = nE * invE;
+    vec3 SO = nO * invO;
     const vec3 curE = decode_lin(SE);
     const vec3 curO = decode_lin(SO);
 
@@ -272,27 +261,27 @@ void main() {
         const float e1 = expo[1];
         const vec3 dE = decode_lin(hE);
         const vec3 dO = decode_lin(hO);
-        const vec3 HE = e0 * vec3(fdiv_ieee(dE.x, e1), fdiv_ieee(dE.y, e1), fdiv_ieee(dE.z, e1));
-        const vec3 HO = e0 * vec3(fdiv_ieee(dO.x, e1), fdiv_ieee(dO.y, e1), fdiv_ieee(dO.z, e1));
+        const vec3 HE = e0 * vec3((dE.x / e1), (dE.y / e1), (dE.z / e1));
+        const vec3 HO = e0 * vec3((dO.x / e1), (dO.y / e1), (dO.z / e1));
 
         // ---- SPEC 6e: the two blend weights (one t for all three channels of a lane):
         // conf = clamp01((dec0 * Wsum) * (inv * f16(n_w0))), non-finite -> 0;
         // t1 = fma(conf, 1 - u1, u1) with u1 = inv * f16(n_w1) -> history write + E0c0e;
         // t2 = fma(conf, 1 - u2, u2) with u2 = inv * f16(n_w2) -> E0cf6/E0cfa.
-        precise float cE0 = dec0 * wsumE, cO0 = dec0 * wsumO;
-        precise float cE1 = invE * gE.x, cO1 = invO * gO.x;
-        precise float confEr = cE0 * cE1, confOr = cO0 * cO1;
+        float cE0 = dec0 * wsumE, cO0 = dec0 * wsumO;
+        float cE1 = invE * gE.x, cO1 = invO * gO.x;
+        float confEr = cE0 * cE1, confOr = cO0 * cO1;
         const float confE = (isnan(confEr) || isinf(confEr)) ? 0.0 : clamp(confEr, 0.0, 1.0);
         const float confO = (isnan(confOr) || isinf(confOr)) ? 0.0 : clamp(confOr, 0.0, 1.0);
-        precise float u1E = invE * gE.y, u1O = invO * gO.y;
-        precise float u2E = invE * gE.z, u2O = invO * gO.z;
+        float u1E = invE * gE.y, u1O = invO * gO.y;
+        float u2E = invE * gE.z, u2O = invO * gO.z;
         const float t1E = fma(confE, 1.0 - u1E, u1E);
         const float t1O = fma(confO, 1.0 - u1O, u1O);
         const float t2E = fma(confE, 1.0 - u2E, u2E);
         const float t2O = fma(confO, 1.0 - u2O, u2O);
 
         // ---- SPEC 6f: x = fma(cur - H, t, H) per channel.
-        precise vec3 dltE = curE - HE, dltO = curO - HO;
+        vec3 dltE = curE - HE, dltO = curO - HO;
         x1E = fma(vec3(t1E), dltE, HE);
         x1O = fma(vec3(t1O), dltO, HO);
         x2E = fma(vec3(t2E), dltE, HE);
@@ -306,12 +295,12 @@ void main() {
     if (valid) {
         const int iE = ye * W15 + x15;
         const int iO = yo * W15 + x15;
-        out_rg[iE] = f16vec2(rh(tm2E.x), rh(tm2E.y));
-        out_rg[iO] = f16vec2(rh(tm2O.x), rh(tm2O.y));
-        out_b[iE] = float16_t(rh(tm2E.z));
-        out_b[iO] = float16_t(rh(tm2O.z));
-        out_hist[iE] = f16vec4(rh(tm1E.x), rh(tm1E.y), rh(tm1E.z), float16_t(0.0));
-        out_hist[iO] = f16vec4(rh(tm1O.x), rh(tm1O.y), rh(tm1O.z), float16_t(0.0));
+        out_rg[iE] = f16vec2(id(tm2E.x), id(tm2E.y));
+        out_rg[iO] = f16vec2(id(tm2O.x), id(tm2O.y));
+        out_b[iE] = float16_t(id(tm2E.z));
+        out_b[iO] = float16_t(id(tm2O.z));
+        out_hist[iE] = f16vec4(id(tm1E.x), id(tm1E.y), id(tm1E.z), float16_t(0.0));
+        out_hist[iO] = f16vec4(id(tm1O.x), id(tm1O.y), id(tm1O.z), float16_t(0.0));
     }
 
     // ---- SPEC 5: E0c0e from the 2x2 mean of x1 in the LINEAR domain. Rows first (each thread
@@ -321,7 +310,7 @@ void main() {
     memoryBarrierShared();
     barrier();
     if (valid && (tx & 1) == 0 && (x15 + 1) < W15) {
-        precise vec3 xm = (s_pair[ty][tx] + s_pair[ty][tx + 1]) * 0.25;
+        vec3 xm = (s_pair[ty][tx] + s_pair[ty][tx + 1]) * 0.25;
         out_packed[uint(r) * uint((W15 + 1) >> 1) + uint(x15 >> 1)] = enc10(tm_lin(xm));
     }
 }

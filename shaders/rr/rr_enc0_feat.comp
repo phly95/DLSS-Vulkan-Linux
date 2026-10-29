@@ -3,6 +3,13 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
 #extension GL_EXT_shader_16bit_storage : enable
 #extension GL_EXT_shader_8bit_storage : enable
+#extension GL_GOOGLE_include_directive : require
+
+// The sanctioned fp8 spelling (sr_stage.comp / sr_enc0.comp): NR_OPERAND comes from the ONE
+// wrapper nh_mm.glsl - the fp8 scalar type on the RADV build (the hardware v_cvt_pk_fp8_f32
+// conversion), plain f16 under the offline f16-operand build (lavapipe has no Float8). R1 lint
+// allows it: my file names neither the fp8 spellings nor the wrapper's internals.
+#include "nh_mm.glsl"
 
 // k_enc0_feat (RR preset F, oracle launches 3/4): the producer of E0be8, the [2][H0][W0][32] fp8
 // feature tensor.  SPEC: tools/rr/rr_enc0feat_model.py (frame0 100.0000% bit-exact vs the oracle;
@@ -39,7 +46,9 @@ layout(set = 0, binding = 5) readonly buffer InSpa   { vec4 g_spa[]; };
 layout(set = 0, binding = 6) readonly buffer InRgh   { float g_rgh[]; };
 layout(set = 0, binding = 7) readonly buffer InExpo  { vec4 in_expo[]; };
 
-layout(set = 0, binding = 8) writeonly buffer OutBe8 { uint8_t out_be8[]; };
+// out_be8: NR_OPERAND is 1 byte an element on the RADV build, so the [2][H0][W0][32] byte layout
+// is unchanged; the f16-operand offline build widens it to f16 and make_test sizes that fixture 2x.
+layout(set = 0, binding = 8) writeonly buffer OutBe8 { NR_OPERAND out_be8[]; };
 layout(set = 0, binding = 9) writeonly buffer OutBec { f16vec4 out_bec[]; };
 layout(set = 0, binding = 10) buffer Bf6RW { f16vec4 bf6_rw[]; };   // E0bf6 = this frame's mv*3
 // (write target); at dispatch time it still holds the PREVIOUS frame's mv-record, which the
@@ -82,87 +91,24 @@ layout(push_constant) uniform RrE0Args {
 
 // ---------------------------------------------------------------- helpers
 
-// f16 rounding with a signbit test (RADV folds float16_t casts - shaders/include/rh.glsl's law;
-// signbit instead of (x < 0.0) because GLSL (-0.0 < 0.0) is false and dq(-0.0) must keep -0
-// through its round trips).
-float rh_s(float x) {
-    uint b = floatBitsToUint(x);
-    uint sgn = b & 0x80000000u;
-    float a = abs(x);
-    if (a >= 6.103515625e-05) {                      // normal f16 (>= 2^-14): 11 significant bits
-        uint ab = b & 0x7fffffffu;
-        uint r = (ab + 0xfffu + ((ab >> 13u) & 1u)) & 0xffffe000u;
-        return uintBitsToFloat(sgn | r);
-    }
-    float q = roundEven(a * 16777216.0) * 5.9604644775390625e-08;   // subnormal f16: multiples of 2^-24
-    return ((b >> 31u) != 0u) ? -q : q;
-}
-
-// f16 bit pattern of a finite f16-representable f32 (after rh_s, so no rounding is left);
-// NaN -> 0x7e00, the pattern np.float16(NaN) produces on the feature path.
-uint f32_to_f16_bits(float x) {
-    uint b = floatBitsToUint(x);
-    uint s = (b >> 16u) & 0x8000u;
-    float a = abs(x);
-    if (a != a) return 0x7E00u;
-    if (a >= 6.103515625e-05) {                      // normal f16
-        uint e32 = (b >> 23u) & 0xffu;
-        uint m = b & 0x7fffffu;
-        return s | ((e32 - 112u) << 10u) | (m >> 13u);
-    }
-    if (a == 0.0) return s;
-    return s | uint(a * 16777216.0);                 // subnormal f16: multiples of 2^-24
-}
-
-// f16 bits -> f32, exact (subnormals, +-inf, NaN).
-float f16_bits_to_f32(uint h) {
-    uint s = (h & 0x8000u) << 16u;
-    uint e = (h >> 10u) & 31u;
-    uint m = h & 0x3FFu;
-    if (e == 0u) {
-        float v = float(m) * 5.9604644775390625e-08;
-        return ((h & 0x8000u) != 0u) ? -v : v;
-    }
-    if (e == 31u) return uintBitsToFloat(s | 0x7F800000u | (m << 13u));
-    return uintBitsToFloat(s | ((e + 112u) << 23u) | (m << 13u));
-}
-
-// The model's q8r (tools/rr/rr_enc0feat_model.py): f32 -> e4m3, RNE saturating at 448; signbit so
-// -0.0 -> 0x80; the subnormal grid is RNE (ties-to-even) - the dq() 3-bit truncation grid lands
-// |t| exactly on (n+0.5)*2^-9 whenever k = 4m+2, and hardware v_cvt_pk_fp8_f32 is even there.
-uint q8r(float x) {
-    uint sign = ((floatBitsToUint(x) >> 31u) != 0u) ? 0x80u : 0u;
-    float a = min(abs(x), 448.0);
-    uint bits = floatBitsToUint(a);
-    if (a < 0.015625) {
-        float s512 = a * 512.0;
-        float nf = floor(s512);
-        uint n = uint(nf);
-        float d = s512 - nf;
-        uint sub = ((d > 0.5) || (d == 0.5 && ((n & 1u) != 0u))) ? n + 1u : n;
-        return sign | sub;
-    }
-    uint norm = (bits + 0x407ffffu + ((bits >> 20u) & 1u)) >> 20u;
-    return sign | (norm & 0x7fu);
-}
-
-// dq(x): the feature quantizer (model SPEC 2, same law as sr_enc0.comp's dq): x16 = f16(min(x,
-// 1024)) with NaN -> 0, dither d = dith[idx] >> 9 folded into the f16 exponent field, two f16
-// round trips, the three high mantissa bits kept (3-bit truncation), clip, q8r.  idx indexes the
-// GRID coordinates (fc&7 row, y&15, x&15).
-uint dq(float x, uint xi, uint yi) {
-    float x16 = rh_s(isnan(x) ? 0.0 : min(x, 1024.0));
-    uint h = f32_to_f16_bits(x16);
-    uint idx = ((fc & 7u) << 8u) | ((yi & 15u) << 4u) | (xi & 15u);
-    uint bo = dith_off + 2u * idx;
-    uint d = (uint(dith[bo]) | (uint(dith[bo + 1u]) << 8u)) >> 9u;
+// dq(x): the feature quantizer (model SPEC 2, same law as sr_enc0.comp's dq), in the NATIVE f16
+// spelling: the old rh_s()/f32_to_f16_bits()/f16_bits_to_f32() chains spent ~15 integer ops per
+// round trip spelling out v_cvt_f16_f32 / v_cvt_f32_f16 (RNE - the same rounding the model's f16
+// has, and every intermediate of the law is exact in f32, so the bit pattern is UNCHANGED: the
+// fixture output is bit-identical before/after this port). The e4m3 code conversion is the store's
+// NR_OPERAND() - the hardware v_cvt_pk_fp8_f32 - see the store section in main().
+// The dither word d comes from the caller (it depends on fc, x, y only - one fetch per pixel for
+// all 64 channels instead of 64, sr_enc0.comp's pattern).
+float dqt(float x, uint d) {
+    float16_t x16 = float16_t(isnan(x) ? 0.0 : min(x, 1024.0));
+    uint h = packHalf2x16(vec2(x16));
     uint E = h & 0xFC00u;
-    float K = f16_bits_to_f32(E | d);
-    float a = rh_s(x16 + K);
-    float b = rh_s(a - f16_bits_to_f32(E));
-    float t = f16_bits_to_f32(f32_to_f16_bits(b) & 0xFF80u);
-    float tc = (t != t) ? t : min(max(t, -448.0), 448.0);
-    return q8r(tc);
+    float16_t K = float16_t(unpackHalf2x16(E | d).x);
+    float16_t a = x16 + K;
+    float16_t b = a - float16_t(unpackHalf2x16(E).x);
+    float16_t t = float16_t(unpackHalf2x16(packHalf2x16(vec2(b)) & 0xFF80u).x);
+    float tc = min(max(float(t), -448.0), 448.0);
+    return tc;
 }
 
 // tm(v) (model SPEC 4/6): 0.36*log10(max(1+100v, 1e-4)) in f32, NaN/inf/negative -> 0,
@@ -265,19 +211,56 @@ void main() {
     float scg = SC0 * tm_g;
     float scb = SC0 * tm_b;
 
-    // The 64 stored channels (model build_features); unmapped slots stay +0.0.
-    float feat[64];
-    for (int i = 0; i < 64; ++i) feat[i] = 0.0;
-    feat[0] = tm_r; feat[1] = tm_g; feat[4] = tm_b;                    // TM_COL
-    feat[2] = a_val.g; feat[3] = a_val.b; feat[29] = a_val.r;          // ALB
-    feat[5] = scr;  feat[12] = scr;  feat[17] = scr;  feat[24] = scr;  feat[37] = scr;
-    feat[8] = scg;  feat[13] = scg;  feat[20] = scg;  feat[25] = scg;  feat[40] = scg;
-    feat[9] = scb;  feat[16] = scb;  feat[21] = scb;  feat[28] = scb;  feat[41] = scb;
-    feat[6] = min(s_val.r, 2.0); feat[7] = min(s_val.g, 2.0); feat[10] = min(s_val.b, 2.0);
-    feat[15] = 1.0;                                   // min(2, const 1.0)
-    feat[18] = min(dep_val, 2.0);                     // min(2, dep)
-    feat[22] = -0.0; feat[23] = -0.0; feat[26] = -0.0; feat[27] = -0.0;   // NEG0 -> dq(-0.0)
-    feat[45] = -0.0; feat[48] = -0.0; feat[49] = -0.0; feat[52] = -0.0;
+    int N = W0 * H0;
+    int base0 = idx0 * 32;
+    int base1 = N * 32 + idx0 * 32;
+    // one dither word for the pixel's sixty-four features (model dq: idx = fc, y, x)
+    uint didx = ((fc & 7u) << 8u) | ((uint(y) & 15u) << 4u) | (uint(x) & 15u);
+    uint bo = dith_off + 2u * didx;
+    uint dw = (uint(dith[bo]) | (uint(dith[bo + 1u]) << 8u)) >> 9u;
+
+    // ---- the 64 stored channels (model build_features) ----
+    // PERF (rr pass 4): this used to build float feat[64] and run dq() over it - 64 quantizers a
+    // pixel, 1.62 of the kernel's 1.69 ms (probe: the loop gone = 0.065 ms). Three
+    // value-preserving changes, checked byte-for-byte against the old shader on the fixture:
+    //  * dq(+0.0, ANY dither word) is 0x00 identically (E = 0 puts the dither word in the
+    //    subnormal mantissa, the 3-bit truncation zeroes it), so the 29 unmapped slots store a
+    //    literal 0 with no quantizer; dq(-0.0) = 0x80 except where dw == 0 (the model's d==0
+    //    cell, where -0 - (-0) turns +0), hence the select;
+    //  * each DISTINCT value is quantized once and stored to its slot group - 22 quantizers on a
+    //    history frame instead of 64 (the 15 SC_TM + 8 NEG0 stores of the reset frame are skipped
+    //    on history frames, where the block below overwrites every one of those slots);
+    //  * the store is NR_OPERAND(tc) = the hardware e4m3 conversion (v_cvt_pk_fp8_f32, RNE, on a
+    //    value dqt already clamps to +-448) instead of software q8r - q8r was written to match
+    //    exactly that op ("hardware v_cvt_pk_fp8_f32 is even there") and sr_enc0's STFEAT ships
+    //    the same substitution.
+    // PERF (rr pass 6): per-DWORD - each output dword's quantizers are computed immediately before
+    // its four adjacent byte stores (one buffer_store_b32), so value->store distance is minimal
+    // and each write overlaps the next dword's quantizers. One dqt per distinct value still (every
+    // value maps into exactly one dword); two uniform sequences, one per frame type.
+    #define STS(slot, v) out_be8[(((slot) < 32) ? base0 : base1) + ((slot) & 31)] = NR_OPERAND(v)
+
+    if (rst != 0u) {
+        // reset frame: SC_TM takes SC0*tm(col); NEG0 slots are -0.0 (0x80, 0x00 on the d==0 cell)
+        float e0 = dqt(scr, dw), e1 = dqt(scg, dw), e2 = dqt(scb, dw);
+        float n0 = (dw == 0u) ? 0.0 : -0.0;
+        float c0 = dqt(tm_r, dw); float c1 = dqt(tm_g, dw); float c2 = dqt(a_val.g, dw); float c3 = dqt(a_val.b, dw); STS(0, c0); STS(1, c1); STS(2, c2); STS(3, c3);
+        float c4 = dqt(tm_b, dw); float c6 = dqt(min(s_val.r, 2.0), dw); float c7 = dqt(min(s_val.g, 2.0), dw); STS(4, c4); STS(5, e0); STS(6, c6); STS(7, c7);
+        float c10 = dqt(min(s_val.b, 2.0), dw); STS(8, e1); STS(9, e2); STS(10, c10); STS(11, 0.0);
+        float c15 = dqt(1.0, dw); STS(12, e0); STS(13, e1); STS(14, 0.0); STS(15, c15);
+        float c18 = dqt(min(dep_val, 2.0), dw); STS(16, e2); STS(17, e0); STS(18, c18); STS(19, 0.0);
+        STS(20, e1); STS(21, e2); STS(22, n0); STS(23, n0);
+        STS(24, e0); STS(25, e1); STS(26, n0); STS(27, n0);
+        float c29 = dqt(a_val.r, dw); STS(28, e2); STS(29, c29); STS(30, 0.0); STS(31, 0.0);
+        STS(32, 0.0); STS(33, 0.0); STS(34, 0.0); STS(35, 0.0);
+        STS(36, 0.0); STS(37, e0); STS(38, 0.0); STS(39, 0.0);
+        STS(40, e1); STS(41, e2); STS(42, 0.0); STS(43, 0.0);
+        STS(44, 0.0); STS(45, n0); STS(46, 0.0); STS(47, 0.0);
+        STS(48, n0); STS(49, n0); STS(50, 0.0); STS(51, 0.0);
+        STS(52, n0); STS(53, 0.0); STS(54, 0.0); STS(55, 0.0);
+        STS(56, 0.0); STS(57, 0.0); STS(58, 0.0); STS(59, 0.0);
+        STS(60, 0.0); STS(61, 0.0); STS(62, 0.0); STS(63, 0.0);
+    }
 
     // History branch (model SPEC 6): gate = rst.  On history frames (rst == 0) the 15 SC_TM
     // slots take SC0*tm(e_cur*h/e_prev) with h = inv_tm(2.45*sample) of the pooled history
@@ -323,14 +306,7 @@ void main() {
             scE0[ci]  = SC0 * tm32(inb ? expo * (inv_tm(s0) / e_prev) : colc[ci]);
             scE12[ci] = SC0 * tm32(inb ? expo * (inv_tm(s1) / e_prev) : colc[ci]);
         }
-        // The 15 SC_TM slots (model SC_TM map): 12 from E0c0e, c17/c20/c21 from E0c12.
-        feat[5] = scE0[0];  feat[12] = scE0[0];  feat[24] = scE0[0];  feat[37] = scE0[0];
-        feat[17] = scE12[0];
-        feat[8] = scE0[1];  feat[13] = scE0[1];  feat[25] = scE0[1];  feat[40] = scE0[1];
-        feat[20] = scE12[1];
-        feat[9] = scE0[2];  feat[16] = scE0[2];  feat[28] = scE0[2];  feat[41] = scE0[2];
-        feat[21] = scE12[2];
-        feat[36] = -0.001953125;               // c36 = s1 = -2^-9 (VERIFIED on oracle frame1)
+        float f0, f1, f2, f3;      // c22-family quantizers (assigned inside the block below)
         // c22-family (model SPEC 6b): SC1 * bilinear(E0c02 ch / 127) at C/3 + pj_prev - 0.5.
         // E0c02 (binding 16, render-grid i8x4) texel offset is the PREVIOUS frame's jitter.
         {
@@ -354,18 +330,29 @@ void main() {
                 fam[ch4] = SC1 * (inb ? bil : 0.0);
             }
             // c22=c45=ch0, c23=c48=ch1, c26=c49=ch2, c27=c52=ch3 (model SC1_FAM map).
-            feat[22] = fam[0]; feat[45] = fam[0];
-            feat[23] = fam[1]; feat[48] = fam[1];
-            feat[26] = fam[2]; feat[49] = fam[2];
-            feat[27] = fam[3]; feat[52] = fam[3];
+            f0 = dqt(fam[0], dw); f1 = dqt(fam[1], dw);
+            f2 = dqt(fam[2], dw); f3 = dqt(fam[3], dw);
         }
+        // per-dword sequence: each dword's quantizers right before its four adjacent stores
+        float p00, p01, p02, p10, p11, p12, p36;
+        float c0 = dqt(tm_r, dw); float c1 = dqt(tm_g, dw); float c2 = dqt(a_val.g, dw); float c3 = dqt(a_val.b, dw); STS(0, c0); STS(1, c1); STS(2, c2); STS(3, c3);
+        float c4 = dqt(tm_b, dw); p00 = dqt(scE0[0], dw); float c6 = dqt(min(s_val.r, 2.0), dw); float c7 = dqt(min(s_val.g, 2.0), dw); STS(4, c4); STS(5, p00); STS(6, c6); STS(7, c7);
+        p01 = dqt(scE0[1], dw); p02 = dqt(scE0[2], dw); float c10 = dqt(min(s_val.b, 2.0), dw); STS(8, p01); STS(9, p02); STS(10, c10); STS(11, 0.0);
+        float c15 = dqt(1.0, dw); STS(12, p00); STS(13, p01); STS(14, 0.0); STS(15, c15);
+        p10 = dqt(scE12[0], dw); float c18 = dqt(min(dep_val, 2.0), dw); STS(16, p02); STS(17, p10); STS(18, c18); STS(19, 0.0);
+        p11 = dqt(scE12[1], dw); p12 = dqt(scE12[2], dw); STS(20, p11); STS(21, p12); STS(22, f0); STS(23, f1);
+        STS(24, p00); STS(25, p01); STS(26, f2); STS(27, f3);
+        float c29 = dqt(a_val.r, dw); STS(28, p02); STS(29, c29); STS(30, 0.0); STS(31, 0.0);
+        STS(32, 0.0); STS(33, 0.0); STS(34, 0.0); STS(35, 0.0);
+        p36 = dqt(-0.001953125, dw); STS(36, p36); STS(37, p00); STS(38, 0.0); STS(39, 0.0);
+        STS(40, p01); STS(41, p02); STS(42, 0.0); STS(43, 0.0);
+        STS(44, 0.0); STS(45, f0); STS(46, 0.0); STS(47, 0.0);
+        STS(48, f1); STS(49, f2); STS(50, 0.0); STS(51, 0.0);
+        STS(52, f3); STS(53, 0.0); STS(54, 0.0); STS(55, 0.0);
+        STS(56, 0.0); STS(57, 0.0); STS(58, 0.0); STS(59, 0.0);
+        STS(60, 0.0); STS(61, 0.0); STS(62, 0.0); STS(63, 0.0);
+
     }
 
-    int N = W0 * H0;
-    int base0 = idx0 * 32;
-    int base1 = N * 32 + idx0 * 32;
-    for (int i = 0; i < 64; ++i) {
-        uint b = dq(feat[i], uint(x), uint(y));
-        out_be8[((i < 32) ? base0 : base1) + (i & 31)] = uint8_t(b);
-    }
+
 }
