@@ -194,8 +194,13 @@ int reflect_coord(int p, int dim) {
 float swin_exp(float x) {
     float y = clamp(x * 0.017181396484375, -0.55615234375, 0.55615234375);
     float p = y * (-y * y + 0.92724609375) + 1.375;
-    uint h = packHalf2x16(vec2(p, 0.0)) & 0xffffu;
-    return unpackHalf2x16(((h << 5u) + 0x8000u) & 0xffffu).x;
+    // opus_impl4: the same value without the f16 round trip. p is in [1.0313, 1.7186] (the clamp
+    // bounds y), so its RTZ f16 bits are 0x3C00 | m10 with m10 = the f32 mantissa >> 13 (the
+    // pack is v_cvt_pkrtz on RADV), and ((h << 5) + 0x8000) & 0xffff = m10 << 5: an f16 with
+    // exponent m10 >> 5 (>= 1 because p >= 1.03125) and mantissa (m10 & 31) << 5. As an f32 that
+    // is (m10 << 18) + (112 << 23) - two instructions instead of ~six (pkrtz, mask, shift, add,
+    // mask, cvt), bit-identical on RADV.
+    return uintBitsToFloat((bitfieldExtract(floatBitsToUint(p), 13, 10) << 18u) + 0x38000000u);
 }
 
 // NeuralHub's spline GELU, f32 arithmetic (as in sr_swin).
@@ -219,7 +224,15 @@ uint f16_enc(float x) {
 void sync_lds() { memoryBarrierShared(); barrier(); }
 
 // Cross-quarter Q/V exchange (f16 LDS; Q values stay on the fp8 grid).
-shared float16_t s_QT[32 * 64];
+// opus_impl4: Q is exchanged as fp8 [token][dim] (its values are on the fp8 grid already) and the
+// logits run as fp8 WMMAs: half the LDS bytes, contiguous 8-byte A loads instead of 8 strided
+// 16-bit loads per fragment, and fp8 instead of f16 WMMA (the products are exact either way).
+shared NR_OPERAND s_QT[64 * 32];
+#ifdef NR_OPERAND_F16
+#define RR_QSTFRAG NR_FRAG_ACC16
+#else
+#define RR_QSTFRAG NR_FRAG_E4M3
+#endif
 shared float16_t s_VB[64 * 32];
 #if RR_DOWN
 // Down-projection merge buffer (enc0's design): [merge j = 0..4C-1][16 down pixels].
@@ -431,11 +444,11 @@ void main() {
         Q8P(qf0, 4u, qa0[4], qa0[5]) Q8P(qf0, 6u, qa0[6], qa0[7])
         Q8P(qf1, 0u, qa1[0], qa1[1]) Q8P(qf1, 2u, qa1[2], qa1[3])
         Q8P(qf1, 4u, qa1[4], qa1[5]) Q8P(qf1, 6u, qa1[6], qa1[7])
-        NR_FRAG_ACC16 e0; NR_FRAG_ACC16 e1;
-        #define RR_EPACK(i) { e0[i] = float16_t(qf0[i]); e1[i] = float16_t(qf1[i]); }
+        RR_QSTFRAG e0; RR_QSTFRAG e1;
+        #define RR_EPACK(i) { e0[i] = qf0[i]; e1[i] = qf1[i]; }
         RR_UNROLL8(RR_EPACK)
-        NR_STORE_ACC(e0, s_QT, 16u * q, 64u);
-        NR_STORE_ACC(e1, s_QT, 16u * 64u + 16u * q, 64u);
+        NR_STORE_ACC_COL(e0, s_QT, (16u * q) * 32u, 32u);         // [token][dim 0..15]
+        NR_STORE_ACC_COL(e1, s_QT, (16u * q) * 32u + 16u, 32u);   // [token][dim 16..31]
         // V exchange through LDS as plain V[token][dim] (scalar stores: a cooperative
         // matrix store cannot transpose, and the A-copy below transposes once to V^T).
 #if RR_PRECISE
@@ -454,37 +467,31 @@ void main() {
 
         // 3b. logits^T = Q_all x Q_q^T (lane = query). A16 from QT (direct),
         // B16 from Q_q regs (direct); f16 MMA. 4 key tiles, 2 dim tiles.
-        NR_FRAG_ACC lt0 = NR_ACC_ZERO; NR_FRAG_ACC lt1 = NR_ACC_ZERO;
-        NR_FRAG_ACC lt2 = NR_ACC_ZERO; NR_FRAG_ACC lt3 = NR_ACC_ZERO;
+        // opus_impl4: the relpos tiles seed the logit accumulators (WMMA C operand) instead of
+        // being added afterwards (-32 adds a lane a head). The host stores each head's tile
+        // transposed (T[q][k] = G[k][q]), so the [key][query] fragments load column-major,
+        // contiguous per lane.
+        NR_FRAG_ACC lt0; NR_FRAG_ACC lt1; NR_FRAG_ACC lt2; NR_FRAG_ACC lt3;
+        {
+            uint rqb = gram + h * 4096u + (16u * q) * 64u;
+            NR_LOAD_ACC_COL(lt0, wtab, rqb, 64u);
+            NR_LOAD_ACC_COL(lt1, wtab, rqb + 16u, 64u);
+            NR_LOAD_ACC_COL(lt2, wtab, rqb + 32u, 64u);
+            NR_LOAD_ACC_COL(lt3, wtab, rqb + 48u, 64u);
+        }
         #define RR_QB16(QF, WB) { \
-            WB[0] = float16_t(QF[0]); WB[1] = float16_t(QF[1]); \
-            WB[2] = float16_t(QF[2]); WB[3] = float16_t(QF[3]); \
-            WB[4] = float16_t(QF[4]); WB[5] = float16_t(QF[5]); \
-            WB[6] = float16_t(QF[6]); WB[7] = float16_t(QF[7]); }
+            WB[0] = QF[0]; WB[1] = QF[1]; WB[2] = QF[2]; WB[3] = QF[3]; \
+            WB[4] = QF[4]; WB[5] = QF[5]; WB[6] = QF[6]; WB[7] = QF[7]; }
         #define RR_LOG_DT(dt, WB) for (uint kk = 0u; kk < 4u; ++kk) { \
-            NR_FRAG_ACC16 _qa; NR_LOAD_ACC(_qa, s_QT, (16u * uint(dt)) * 64u + 16u * kk, 64u); \
-            NR_FRAG_A16 _wa; \
-            _wa[0] = _qa[0]; _wa[1] = _qa[1]; _wa[2] = _qa[2]; _wa[3] = _qa[3]; \
-            _wa[4] = _qa[4]; _wa[5] = _qa[5]; _wa[6] = _qa[6]; _wa[7] = _qa[7]; \
+            NR_FRAG_A _wa; NR_LOAD_A(_wa, s_QT, (16u * kk) * 32u + 16u * uint(dt), 32u); \
             if (kk == 0u) { NR_MMA(lt0, _wa, WB); } \
             else if (kk == 1u) { NR_MMA(lt1, _wa, WB); } \
             else if (kk == 2u) { NR_MMA(lt2, _wa, WB); } \
             else { NR_MMA(lt3, _wa, WB); } }
-        NR_FRAG_B16 wb0; RR_QB16(qf0, wb0)
+        NR_FRAG_B wb0; RR_QB16(qf0, wb0)
         RR_LOG_DT(0, wb0)
-        NR_FRAG_B16 wb1; RR_QB16(qf1, wb1)
+        NR_FRAG_B wb1; RR_QB16(qf1, wb1)
         RR_LOG_DT(1, wb1)
-        // relpos bias (gram symmetric: [key-block][query-block] tiles)
-        {
-            uint rqb = gram + h * 4096u + 16u * q;
-            NR_FRAG_ACC r0; NR_LOAD_ACC(r0, wtab, rqb, 64u);
-            NR_FRAG_ACC r1; NR_LOAD_ACC(r1, wtab, rqb + 16u * 64u, 64u);
-            NR_FRAG_ACC r2; NR_LOAD_ACC(r2, wtab, rqb + 32u * 64u, 64u);
-            NR_FRAG_ACC r3; NR_LOAD_ACC(r3, wtab, rqb + 48u * 64u, 64u);
-            #define RR_REL_ADD(i) { lt0[i] = lt0[i] + r0[i]; lt1[i] = lt1[i] + r1[i]; \
-                                      lt2[i] = lt2[i] + r2[i]; lt3[i] = lt3[i] + r3[i]; }
-            RR_UNROLL8(RR_REL_ADD)
-        }
 
         // 3c. softmax over keys (rows): exp, in-lane key sums + one xor-16,
         // rcp, P^T directly as f16 B operands (lane = query throughout).

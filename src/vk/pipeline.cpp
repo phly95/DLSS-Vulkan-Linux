@@ -261,7 +261,13 @@ static bool rrsw_repack_unit(const uint8_t* wblob, size_t size, const uint32_t* 
     tout[6 * C + 18] = rrsw_f16_to_f32(meta[21] & 0xFFFFu);   // s1d2 (unfolded scale)
     tout[6 * C + 19] = rrsw_f16_to_f32(meta[22] & 0xFFFFu);   // s1d4 (unfolded scale)
     if (meta[1] != 0xFFFFFFFFu)
-        for (uint32_t j = 0u; j < G * 4096u; ++j) tout[6 * C + 20 + j] = f16at(meta[1], j);
+        // opus_impl4: each head's 64x64 relpos tile is stored TRANSPOSED, so rr_swin loads its
+        // [key][query] fragments column-major = 8 contiguous floats a lane (2 b128 instead of
+        // 8 strided b32). Same values.
+        for (uint32_t j = 0u; j < G * 4096u; ++j) {
+            const uint32_t hh = j >> 12u, a = (j >> 6u) & 63u, b = j & 63u;
+            tout[6 * C + 20 + j] = f16at(meta[1], (hh << 12u) | (b << 6u) | a);
+        }
     // Per-mode extras (uniform offsets from the gram end; activation axes stored
     // raw = blob order, hidden axes de-permuted to logical order).
     {
