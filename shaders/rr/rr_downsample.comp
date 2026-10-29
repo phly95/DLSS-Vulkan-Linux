@@ -1,9 +1,23 @@
 #version 460
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
 #extension GL_EXT_shader_16bit_storage : enable
-#extension GL_GOOGLE_include_directive : require
 
-#include "rh.glsl"
+// rr_downsample (RR launch 22, k_downsample): E0cf6/E0cfa (the rr_post pair output) -> the final
+// output image, a 5x5 separable FIR at 2/3 of the output pitch, firefly-clamped to the tap min/max
+// per axis, then the inverse tonemap and alpha 1.
+//
+// PERF (rr pass 2, ported from sr_downsample's pass 9+10, which the SR guard verified):
+//  - the rh()/rh3() chain after every FIR tap existed only to match NeuralHub's rounding bit for
+//    bit; the policy drops it, and native f16 FMA (v_pk_fma_f16 - what the oracle's ISA runs) both
+//    matches the oracle's rounding more closely than f32-then-round and packs two channels per
+//    instruction,
+//  - the three Newton "remainder" pairs (c/0.36, e/100, m/expo) emulated exactly rounded IEEE
+//    divides (v_div_scale/fmas/fixup); plain multiplies are allowed now (sr_downsample's guard
+//    passes with them gone),
+//  - TRUE two-pass separable FIR: a 16x16 output tile spans exactly 28 source rows, so the 5-tap
+//    row filter runs ONCE per (source row, output column) = 448 times per tile instead of 5x per
+//    output pixel (1280). The vertical pass reads 5 of them. Same arithmetic, same order: the row
+//    sum and its Karis clamp are computed identically, only hoisted.
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
@@ -20,29 +34,18 @@ layout(push_constant) uniform DownArgs {
 };
 
 shared f16vec3 s_patch[28][28];
+// The hoisted row filters: pass 1 fills s_row[source row][output column], pass 2 reads 5 per output.
+shared f16vec3 s_row[28][16];
 
-float inv_tonemap(float v, float inv_expo) {
-    float c = clamp(v, 0.00010000000475, 3.0);
-    const float kInv036 = uintBitsToFloat(0x4031c71cu);
-    const float kNeg036 = uintBitsToFloat(0xbeb851ecu);
-    const float kLog2_10 = uintBitsToFloat(0x40549a78u);
-    const float k001 = uintBitsToFloat(0x3c23d70au);
-    const float kNeg100 = uintBitsToFloat(0xc2c80000u);
+float inv_tonemap(float16_t v0, float inv_e) {
+    float c = clamp(float(v0), 0.00010000000475, 3.0);
+    const float kInv036 = uintBitsToFloat(0x4031c71cu);   // 1/0.36
+    const float kLog2_10 = uintBitsToFloat(0x40549a78u);  // log2(10): exp2 is 2^x
+    const float k001 = uintBitsToFloat(0x3c23d70au);      // 0.01
 
-    float t = c * kInv036;
-    float rem1 = fma(t, kNeg036, c);
-    t = fma(rem1, kInv036, t);
-
-    float p = t * kLog2_10;
+    float p = (c * kInv036) * kLog2_10;
     float e = exp2(p) - 1.0;
-
-    float m = e * k001;
-    float rem2 = fma(m, kNeg100, e);
-    m = fma(rem2, k001, m);
-
-    float q = m * inv_expo;
-    float rem3 = fma(-q, in_expo.x, m);
-    return fma(rem3, inv_expo, q);
+    return e * k001 * inv_e;
 }
 
 void main() {
@@ -52,7 +55,7 @@ void main() {
     uint tid = gl_LocalInvocationIndex;
     for (uint i = tid; i < 784u; i += 256u) {
         int py = int(i / 28u);
-        int px = int(i % 28u);
+        int px = int(int(i) % 28);
         int gx = clamp(tile_x0 + px, 0, inW - 1);
         int gy = clamp(tile_y0 + py, 0, inH - 1);
         int idx = gy * inW + gx;
@@ -61,75 +64,84 @@ void main() {
 
     barrier();
 
+    // The two 5-tap sets are the even/odd halves of the same symmetric kernel
+    const float16_t wA0 = float16_t(-0.0413513), wA1 = float16_t(0.0872803), wA2 = float16_t(0.6201172);
+    const float16_t wA3 = float16_t(0.3720703),  wA4 = float16_t(-0.0382996);
+    const float16_t wB0 = float16_t(-0.0382996), wB1 = float16_t(0.3720703), wB2 = float16_t(0.6201172);
+    const float16_t wB3 = float16_t(0.0872803),  wB4 = float16_t(-0.0413513);
+
+    // ---- pass 1 (horizontal): one row filter per (source row, output column) ----
+    for (uint i = gl_LocalInvocationIndex; i < 28u * 16u; i += 256u) {
+        int py = int(i / 16u);
+        int lx = int(int(i) % 16);
+        int oxl = 16 * int(gl_WorkGroupID.x) + lx;
+        int bxl = int(floor((float(oxl) + 0.5) * 1.5)) - tile_x0;
+        f16vec3 t0 = s_patch[py][bxl - 2];
+        f16vec3 t1 = s_patch[py][bxl - 1];
+        f16vec3 t2 = s_patch[py][bxl + 0];
+        f16vec3 t3 = s_patch[py][bxl + 1];
+        f16vec3 t4 = s_patch[py][bxl + 2];
+        // the x weights are set by the OUTPUT column's parity (16*gx is even, so lx's parity)
+        bool odd = (lx & 1) != 0;
+        f16vec2 r = t0.xy * f16vec2(odd ? wB0 : wA0);
+        r = fma(t1.xy, f16vec2(odd ? wB1 : wA1), r);
+        r = fma(t2.xy, f16vec2(odd ? wB2 : wA2), r);
+        r = fma(t3.xy, f16vec2(odd ? wB3 : wA3), r);
+        r = fma(t4.xy, f16vec2(odd ? wB4 : wA4), r);
+        float16_t rb = t0.z * (odd ? wB0 : wA0);
+        rb = fma(t1.z, odd ? wB1 : wA1, rb);
+        rb = fma(t2.z, odd ? wB2 : wA2, rb);
+        rb = fma(t3.z, odd ? wB3 : wA3, rb);
+        rb = fma(t4.z, odd ? wB4 : wA4, rb);
+        f16vec2 mn = min(min(min(t0.xy, t1.xy), min(t2.xy, t3.xy)), t4.xy);
+        f16vec2 mx = max(max(max(t0.xy, t1.xy), max(t2.xy, t3.xy)), t4.xy);
+        r = clamp(r, mn, mx);
+        float16_t bmn = min(min(min(t0.z, t1.z), min(t2.z, t3.z)), t4.z);
+        float16_t bmx = max(max(max(t0.z, t1.z), max(t2.z, t3.z)), t4.z);
+        rb = clamp(rb, bmn, bmx);
+        s_row[py][lx] = f16vec3(r.x, r.y, rb);
+    }
+    barrier();
+
     int ox = int(gl_GlobalInvocationID.x);
     int oy = int(gl_GlobalInvocationID.y);
-    if (ox >= oW || oy >= oH) return;
+    if (ox >= oW || oy >= oH) {
+        return;
+    }
 
     int bx = int(floor((float(ox) + 0.5) * 1.5)) - tile_x0;
     int by = int(floor((float(oy) + 0.5) * 1.5)) - tile_y0;
+    int lx = ox - 16 * int(gl_WorkGroupID.x);
 
-    float wx[5], wy[5];
-    if ((ox & 1) != 0) {
-        wx[0] = rh(-0.0382996);
-        wx[1] = rh(0.3720703);
-        wx[2] = rh(0.6201172);
-        wx[3] = rh(0.0872803);
-        wx[4] = rh(-0.0413513);
-    } else {
-        wx[0] = rh(-0.0413513);
-        wx[1] = rh(0.0872803);
-        wx[2] = rh(0.6201172);
-        wx[3] = rh(0.3720703);
-        wx[4] = rh(-0.0382996);
-    }
-
+    float16_t wy[5];
     if ((oy & 1) != 0) {
-        wy[0] = rh(-0.0382996);
-        wy[1] = rh(0.3720703);
-        wy[2] = rh(0.6201172);
-        wy[3] = rh(0.0872803);
-        wy[4] = rh(-0.0413513);
+        wy[0] = wB0; wy[1] = wB1; wy[2] = wB2; wy[3] = wB3; wy[4] = wB4;
     } else {
-        wy[0] = rh(-0.0413513);
-        wy[1] = rh(0.0872803);
-        wy[2] = rh(0.6201172);
-        wy[3] = rh(0.3720703);
-        wy[4] = rh(-0.0382996);
+        wy[0] = wA0; wy[1] = wA1; wy[2] = wA2; wy[3] = wA3; wy[4] = wA4;
     }
 
-    // f16 FIR as in NeuralHub's ISA (v_pk_fma_f16 / v_fmac_f16): taps 0..4 in order, each an f16 FMA
-    // whose result is rounded before the next tap (rh()); the f16 weights are rh() constants.
-    vec3 row[5];
-    for (int k = 0; k < 5; ++k) {
-        int yk = by - 2 + k;
-        vec3 s0 = vec3(s_patch[yk][bx - 2]);
-        vec3 s1 = vec3(s_patch[yk][bx - 1]);
-        vec3 s2 = vec3(s_patch[yk][bx]);
-        vec3 s3 = vec3(s_patch[yk][bx + 1]);
-        vec3 s4 = vec3(s_patch[yk][bx + 2]);
+    // ---- pass 2 (vertical): ONE tap per source row - the horizontal sum is already in s_row ----
+    f16vec2 colrg = f16vec2(0.0);
+    float16_t colb = float16_t(0.0);
+    f16vec2 colmn = f16vec2(65504.0), colmx = f16vec2(-65504.0);
+    float16_t colbn = float16_t(65504.0), colbx = float16_t(-65504.0);
 
-        vec3 r = rh3(s0 * wx[0]);
-        r = rh3(r + s1 * wx[1]);
-        r = rh3(r + s2 * wx[2]);
-        r = rh3(r + s3 * wx[3]);
-        r = rh3(r + s4 * wx[4]);
-        vec3 min_val = min(min(min(s0, s1), min(s2, s3)), s4);
-        vec3 max_val = max(max(max(s0, s1), max(s2, s3)), s4);
-        row[k] = clamp(r, min_val, max_val);
+    for (int j = 0; j < 5; ++j) {
+        f16vec3 t = s_row[by - 2 + j][lx];
+        colrg = fma(t.xy, f16vec2(wy[j]), colrg);
+        colb = fma(t.z, wy[j], colb);
+        colmn = min(colmn, t.xy);
+        colmx = max(colmx, t.xy);
+        colbn = min(colbn, t.z);
+        colbx = max(colbx, t.z);
     }
+    colrg = clamp(colrg, colmn, colmx);
+    colb = clamp(colb, colbn, colbx);
 
-    vec3 res = rh3(row[0] * wy[0]);
-    res = rh3(res + row[1] * wy[1]);
-    res = rh3(res + row[2] * wy[2]);
-    res = rh3(res + row[3] * wy[3]);
-    res = rh3(res + row[4] * wy[4]);
-    vec3 min_row = min(min(min(row[0], row[1]), min(row[2], row[3])), row[4]);
-    vec3 max_row = max(max(max(row[0], row[1]), max(row[2], row[3])), row[4]);
-    res = clamp(res, min_row, max_row);
+    float inv_e = 1.0 / in_expo.x;
+    vec3 final_rgb = vec3(inv_tonemap(colrg.x, inv_e),
+                          inv_tonemap(colrg.y, inv_e),
+                          inv_tonemap(colb, inv_e));
 
-    float inv_expo = 1.0 / in_expo.x;
-    out_color[oy * oW + ox] = vec4(inv_tonemap(res.r, inv_expo),
-                                  inv_tonemap(res.g, inv_expo),
-                                  inv_tonemap(res.b, inv_expo),
-                                  1.0);
+    out_color[oy * oW + ox] = vec4(final_rgb, 1.0);
 }
