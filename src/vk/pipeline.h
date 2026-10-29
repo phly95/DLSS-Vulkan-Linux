@@ -29,8 +29,15 @@ int jint(const std::string& txt, const std::string& key);
 // Field names and defaults mirror params_i.json / ngx_client's parameter set.
 struct FrameParams {
     int fmt_col = 0;   // colour format code  (0 = f16)
-    int fmt_mv = 0;    // motion-vector format code
-    int fmt_dep = 0;   // depth format code
+    int fmt_mv = 0;    // motion-vector format code (SR default 0; RR default 2 = RG16F)
+    int fmt_dep = 0;   // depth format code (SR default 0; RR default 3 = R32F)
+    // RR-only extra gather slots (rrref.cpp Slot table defaults: nrm/alb/spa 0, rgh 3).
+    // Unused by the SR chain; the runner fills RR defaults when the key is absent.
+    int fmt_nrm = 0;   // normals format code
+    int fmt_alb = 0;   // diffuse albedo format code
+    int fmt_spa = 0;   // specular albedo format code
+    int fmt_rgh = 3;   // roughness format code
+    int normals_unorm = 0;  // RR: UNORM normals (xyz = 2v - 1)
     int mvhi = 0;      // motion vectors are at output resolution
     int ldr = 0;       // LDR input
     float exposure = 1.0f;

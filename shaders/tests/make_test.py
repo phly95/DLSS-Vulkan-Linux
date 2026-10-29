@@ -807,8 +807,13 @@ def make_test(name, out_dir):
         open(os.path.join(out_dir, "in_alb.bin"), "wb").write(col)
         open(os.path.join(out_dir, "in_spa.bin"), "wb").write(col)
         open(os.path.join(out_dir, "in_rough.bin"), "wb").write(dep)
-        push = bytearray(8)
-        struct.pack_into("<2i", push, 0, w, h)
+        # 68-byte RrGatherArgs: 7 row pitches (W * bpp of the ACTUAL format), 7 format codes,
+        # normals_unorm, W, H. The fixture uses the default formats (col/nrm/alb/spa 0 = f16x4,
+        # mv 2 = RG16F, dep/rgh 3 = R32F), so the outputs must equal the inputs bit for bit.
+        push = bytearray(68)
+        struct.pack_into("<7I", push, 0, w * 8, w * 4, w * 4, w * 8, w * 8, w * 8, w * 4)
+        struct.pack_into("<7i", push, 28, 0, 2, 3, 0, 0, 0, 3)
+        struct.pack_into("<3i", push, 56, 0, w, h)
         cfg = {
             "groups": [(w + 15) // 16, (h + 15) // 16, 1],
             "push": push.hex(),

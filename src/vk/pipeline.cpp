@@ -606,7 +606,10 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
             add_pipe("sr_l0heads", 5, 24);
         }
     } else {
-        add_pipe("rr_gather", 14, 8);
+        // Bytes per texel of each RR gather format code (tools/verify/texfmt.py RR_BPP).
+        // rr_gather's row pitch is width * bpp of the ACTUAL format (rrref.cpp); the old
+        // code passed only W/H and the shader read every slot as its default format.
+        add_pipe("rr_gather", 14, 68);
         add_pipe("rr_ae_block", 2, 16);
         // rr_ae_final.comp declares bindings 0..3 (Accumulator, PreviousAE, NextAE, Exposure); with
         // only 2 in the set layout, bindings 2/3 had no descriptor and the shader addressed garbage
@@ -661,7 +664,8 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
     // Allocate Buffers
     c->in_col = create_buffer(dev, phys, size_t(W) * H * 16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->in_dep = create_buffer(dev, phys, size_t(W) * H * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    c->in_mv_ = create_buffer(dev, phys, size_t(std::max(W, oW)) * std::max(H, oH) * 8, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    // 16 B/px: RR's code 11 (RGBA32F) motion vectors need the full texel (rrref slots).
+    c->in_mv_ = create_buffer(dev, phys, size_t(std::max(W, oW)) * std::max(H, oH) * 16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->in_norm = create_buffer(dev, phys, size_t(W) * H * 8, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->in_rough_ = create_buffer(dev, phys, size_t(W) * H * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->in_alb = create_buffer(dev, phys, size_t(W) * H * 8, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
@@ -1398,6 +1402,7 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
     inj_frame = (fp.frame_index >= 0) ? fp.frame_index : fc;   // injection's true frame key
     int reset = fp.reset;
     int fmt_col = fp.fmt_col, fmt_mv = fp.fmt_mv, fmt_dep = fp.fmt_dep;
+    int fmt_nrm = fp.fmt_nrm, fmt_alb = fp.fmt_alb, fmt_spa = fp.fmt_spa, fmt_rgh = fp.fmt_rgh;
     int mvhi = fp.mvhi, ldr = fp.ldr;
     float exposure_val = fp.exposure, pre_val = fp.pre_exposure;
     float jx = fp.jx, jy = fp.jy, jpx = fp.jpx, jpy = fp.jpy;
@@ -1917,9 +1922,19 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
         // 1. Gather (launch 0)
         trace_label = "launch 0 k_rr_gather";
         {
-            uint8_t push[8] = {0};
-            std::memcpy(push + 0, &W, 4); std::memcpy(push + 4, &H, 4);
-            dispatch(cmd, "rr_gather", {&in_col, &in_mv_, &in_dep, &in_norm, &in_alb, &in_spa, &in_rough_, &g_col, &g_dep, &g_mv, &out_norm, &out_alb, &out_spa, &out_rough_}, push, 8, (W + 15) / 16, (H + 15) / 16, 1);
+            // RR_BPP bytes per texel (tools/verify/texfmt.py); pitch = W * bpp(code).
+            static const int kRrBpp[24] = {8,4,4,4,2,4,4,4,1,2,8,16,4,4,8,8,4,4,4,4,2,2,2,1};
+            auto pitch = [&](int code) { return uint32_t(W) * uint32_t(kRrBpp[code]); };
+            uint8_t push[68] = {0};
+            uint32_t pval[7] = {pitch(fmt_col), pitch(fmt_mv), pitch(fmt_dep), pitch(fmt_nrm),
+                                pitch(fmt_alb), pitch(fmt_spa), pitch(fmt_rgh)};
+            std::memcpy(push + 0, pval, sizeof pval);
+            int32_t fval[7] = {fmt_col, fmt_mv, fmt_dep, fmt_nrm, fmt_alb, fmt_spa, fmt_rgh};
+            std::memcpy(push + 28, fval, sizeof fval);
+            int32_t nu = fp.normals_unorm;
+            std::memcpy(push + 56, &nu, 4);
+            std::memcpy(push + 60, &W, 4); std::memcpy(push + 64, &H, 4);
+            dispatch(cmd, "rr_gather", {&in_col, &in_mv_, &in_dep, &in_norm, &in_alb, &in_spa, &in_rough_, &g_col, &g_dep, &g_mv, &out_norm, &out_alb, &out_spa, &out_rough_}, push, 68, (W + 15) / 16, (H + 15) / 16, 1);
             inject_after(cmd, "gather", 0);
         }
         // 1b. History pooling (launch 1, not on reset): c0e (E0c0e) -> E0c12

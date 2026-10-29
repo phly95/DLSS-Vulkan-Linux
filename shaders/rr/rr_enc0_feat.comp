@@ -41,7 +41,11 @@ layout(set = 0, binding = 7) readonly buffer InExpo  { vec4 in_expo[]; };
 
 layout(set = 0, binding = 8) writeonly buffer OutBe8 { uint8_t out_be8[]; };
 layout(set = 0, binding = 9) writeonly buffer OutBec { f16vec4 out_bec[]; };
-layout(set = 0, binding = 10) writeonly buffer OutBf6 { f16vec4 out_bf6[]; };
+layout(set = 0, binding = 10) buffer Bf6RW { f16vec4 bf6_rw[]; };   // E0bf6 = this frame's mv*3
+// (write target); at dispatch time it still holds the PREVIOUS frame's mv-record, which the
+// history branch below reads per-pixel (the oracle's own addressing: base + thread-pixel offset,
+// global_load_b96/b32 off s[44:45]+v[15:16] - NOT a constant [0,0] read; uniform pan made the two
+// indistinguishable, varied Blender motion does not).
 layout(set = 0, binding = 11) writeonly buffer OutBfa { f16vec2 out_bfa[]; };
 layout(set = 0, binding = 12) writeonly buffer OutBfe { f16vec2 out_bfe[]; };
 // dq()'s dither table (oracle E0Args +0x198 wbuf = blob0 + meta[20] = blob0 + 37984; u16[2048]).
@@ -67,8 +71,8 @@ layout(push_constant) uniform RrE0Args {
     float SC0;            // +0x1c E0Args +0x200: the blob's f16 scalar (params.json enc0_s2598)
     float pjx;            // +0x20 E0Args +0x1a0: this frame's subpixel jitter (history position)
     float pjy;            // +0x24 E0Args +0x1a4
-    float bev_x;          // +0x28 E0Args +0x160 bev_prev: the PREVIOUS frame's mv-record [0,0].xy
-    float bev_y;          // +0x2c (the port's bf6 at dispatch time; constant global motion mv*3)
+    float bev_x;          // +0x28 E0Args +0x160 (UNUSED now: kept for push-layout parity;
+    float bev_y;          // +0x2c the oracle reads this buffer per-pixel, see bf6_rw above)
     int W15;              // +0x30 the history C-grid (oracle E: 768x432 = 3x render); E0c0e is
     int H15;              // +0x34 ((W15+1)/2) x ((H15+1)/2) words, E0c12 one level below
     float SC1;            // +0x38 E0Args +0x204: the c22-family coefficient (-0.2198486328125)
@@ -224,16 +228,25 @@ void main() {
     int y_src = (y < H) ? y : (2 * (H - 1) - y);
     int in_idx = y_src * W + x;
 
+    // The previous frame's mv-record at THIS pixel (read before the write below: same thread,
+    // same texel, program-ordered). The oracle addresses it per-pixel, not [0,0].
+    f16vec4 bev_prev = ((x < W) ? bf6_rw[in_idx] : f16vec4(0.0));
+
     f16vec4 c = g_col[in_idx];
     out_bec[idx0] = f16vec4(float16_t(float(c.r) * expo), float16_t(float(c.g) * expo), float16_t(float(c.b) * expo), float16_t(0.0));
 
     if (x < W && y < H) {
         int idx = y * W + x;
         f16vec2 mv = g_mv[idx];
-        f16vec2 mv3 = f16vec2(float16_t(float(mv.x) * 3.0), float16_t(float(mv.y) * 3.0));
+        // E0bf6/E0bfa/E0bfe store the motion in C-grid texels (the history grids' units):
+        // mv * (W15/W) - 3.0 where the C-grid is 3x the render grid (verified), 1.5 on the
+        // native cell (output == render). A hardcoded 3.0 breaks every native history frame
+        // while reset frames stay exact.
+        float mvk = float(W15) / float(W);
+        f16vec2 mv3 = f16vec2(float16_t(float(mv.x) * mvk), float16_t(float(mv.y) * mvk));
         out_bfa[idx] = mv3;
         out_bfe[idx] = mv3;
-        out_bf6[idx] = f16vec4(mv3.x, mv3.y, mv3.x, mv3.y);
+        bf6_rw[idx] = f16vec4(mv3.x, mv3.y, mv3.x, mv3.y);
     }
 
     // Feature encoding for out_be8 in [2][H0][W0][32] layout (model SPEC 3/4)
@@ -272,9 +285,10 @@ void main() {
     if (rst == 0u) {
         // Motion-compensated position in the W15xH15 C-grid (model SPEC 6): the render-to-C
         // scale is W15/W (== the oracle's 3.0 at the verified 256x144 / 768x432 geometry).
+        // bev is the PREVIOUS frame's mv-record at this pixel (mv*3, per the oracle's addressing).
         int xs = min(x, W - 1);                       // model: xs = min(xx, W - 1)
-        float Cx = (float(W15) / float(W)) * ((float(xs) + 0.5) - pjx) + bev_x;
-        float Cy = (float(H15) / float(H)) * ((float(y_src) + 0.5) - pjy) + bev_y;
+        float Cx = (float(W15) / float(W)) * ((float(xs) + 0.5) - pjx) + float(bev_prev.x);
+        float Cy = (float(H15) / float(H)) * ((float(y_src) + 0.5) - pjy) + float(bev_prev.y);
         bool inb = Cx >= 0.0 && Cx <= float(W15) && Cy >= 0.0 && Cy <= float(H15);
 
         int wE = (W15 + 1) / 2, hE = (H15 + 1) / 2;   // E0c0e grid (the chain's c0e)

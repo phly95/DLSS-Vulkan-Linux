@@ -205,6 +205,20 @@ int main(int argc, char** argv) {
         fp.fmt_col = jint(pf, "fmt_col");
         fp.fmt_mv = jint(pf, "fmt_mv");
         fp.fmt_dep = jint(pf, "fmt_dep");
+        // RR gather slots (rrref.cpp Slot table): mv default 2, dep 3, nrm/alb/spa 0,
+        // rgh 3. jint returns 0 for an absent key, so the RR defaults apply only in
+        // RR mode and only when the key is missing; an explicit code always wins.
+        auto rr_fmt = [&](const char* key, int dflt) {
+            auto v = jget(pf, key);
+            return v.empty() ? (mode == "rr" ? dflt : 0) : int(v[0]);
+        };
+        fp.fmt_mv = rr_fmt("fmt_mv", 2);
+        fp.fmt_dep = rr_fmt("fmt_dep", 3);
+        fp.fmt_nrm = rr_fmt("fmt_nrm", 0);
+        fp.fmt_alb = rr_fmt("fmt_alb", 0);
+        fp.fmt_spa = rr_fmt("fmt_spa", 0);
+        fp.fmt_rgh = rr_fmt("fmt_rgh", 3);
+        fp.normals_unorm = jint(pf, "normals_unorm");
         fp.mvhi = jint(pf, "mvhi");
         fp.ldr = jint(pf, "ldr");
         fp.exposure = float(jget(pf, "exposure").empty() ? 1.0 : jget(pf, "exposure")[0]);
@@ -218,10 +232,17 @@ int main(int argc, char** argv) {
         fp.jpy = float(jitp.size() > 1 ? jitp[1] : 0.0);
         fp.frame_index = fi;      // monotonic sequence index (injection dump dir; pipeline.h)
 
-        // Load frame textures
-        std::string c_ext = (fp.fmt_col == 0) ? ".f16" : (".c" + std::to_string(fp.fmt_col));
-        std::string m_ext = (fp.fmt_mv == 0) ? ".f16" : (".c" + std::to_string(fp.fmt_mv));
-        std::string d_ext = (fp.fmt_dep == 0) ? ".f32" : (".c" + std::to_string(fp.fmt_dep));
+        // Load frame textures. RR slots follow the same rule as the oracle (rrref.cpp):
+        // <name>_<i>.<ext0> when the code is the slot default, else <name>_<i>.c<code>.
+        auto rr_ext = [&](int code, int dflt, const char* ext0) {
+            return (code == dflt) ? std::string(".") + ext0 : (".c" + std::to_string(code));
+        };
+        std::string c_ext = (mode == "rr") ? rr_ext(fp.fmt_col, 0, "f16")
+            : ((fp.fmt_col == 0) ? ".f16" : (".c" + std::to_string(fp.fmt_col)));
+        std::string m_ext = (mode == "rr") ? rr_ext(fp.fmt_mv, 2, "f16")
+            : ((fp.fmt_mv == 0) ? ".f16" : (".c" + std::to_string(fp.fmt_mv)));
+        std::string d_ext = (mode == "rr") ? rr_ext(fp.fmt_dep, 3, "f32")
+            : ((fp.fmt_dep == 0) ? ".f32" : (".c" + std::to_string(fp.fmt_dep)));
 
         auto c_raw = slurp(fdir + "/col" + sfx + c_ext);
         auto m_raw = slurp(fdir + "/mv" + sfx + m_ext);
@@ -232,11 +253,15 @@ int main(int argc, char** argv) {
         chain->fill_depth(d_raw.data(), d_raw.size());
 
         if (mode == "rr") {
-            auto n_raw = slurp(fdir + "/nrm" + sfx + ".f16");
-            if (n_raw.empty()) n_raw = slurp(fdir + "/norm" + sfx + ".f16");
-            auto r_raw = slurp(fdir + "/rgh" + sfx + ".f32");
-            auto a_raw = slurp(fdir + "/alb" + sfx + ".f16");
-            auto s_raw = slurp(fdir + "/spa" + sfx + ".f16");
+            std::string n_ext = rr_ext(fp.fmt_nrm, 0, "f16");
+            std::string r_ext = rr_ext(fp.fmt_rgh, 3, "f32");
+            std::string a_ext = rr_ext(fp.fmt_alb, 0, "f16");
+            std::string s_ext = rr_ext(fp.fmt_spa, 0, "f16");
+            auto n_raw = slurp(fdir + "/nrm" + sfx + n_ext);
+            if (n_raw.empty()) n_raw = slurp(fdir + "/norm" + sfx + n_ext);
+            auto r_raw = slurp(fdir + "/rgh" + sfx + r_ext);
+            auto a_raw = slurp(fdir + "/alb" + sfx + a_ext);
+            auto s_raw = slurp(fdir + "/spa" + sfx + s_ext);
             chain->fill_normal(n_raw.data(), n_raw.size());
             chain->fill_rough(r_raw.data(), r_raw.size());
             chain->fill_albedo(a_raw.data(), a_raw.size());
