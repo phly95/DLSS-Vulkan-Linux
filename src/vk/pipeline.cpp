@@ -65,6 +65,7 @@ static bool rr_table_from_params(const std::string& pj, uint32_t* tab) {
             if (e == pj.c_str() + c) return false;
             tab[k * 32 + slot[s]] = uint32_t(v) & 0xFFFFu;
         }
+
         float dec0[2] = {0.0f, 0.0f};
         size_t dq = pj.find("\"dec0_scalars\"", base);
         if (dq != std::string::npos && (next == std::string::npos || dq < next)) {
@@ -483,7 +484,74 @@ void sr_repack_l0emb(const uint8_t* blob, uint8_t* dst) {
             dst[1024 + size_t(s) * 32 + t] = blob[5184 + sr_frag_off(perm_P(s), perm_P(t), 32)];
         }
 }
+
+// rr_level phase 3a: item 0's per-head Q/V matrices are in NeuralHub's frag_rr order (the byte map
+// tools/rr/rr_layout.py checks: FRAG(r, c) with permute_rows); the WMMA B operand wants
+// [head][out][k] row-major at the same offsets, so element (r, c) is copied to r*C + c - the
+// sr_repack_stage rule.  rr_frag_off mirrors rr_level.comp's frag_off exactly.
+static uint32_t rr_frag_off(uint32_t r, uint32_t c, uint32_t cols) {
+    uint32_t u = ((r & 0x7FFFFFE1u) | ((r >> 3u) & 2u)) + (r & 0xEu) * 2u;
+    return 16u * (u & 15u) + 256u * ((c >> 2u) & 1u) + 8u * ((c >> 3u) & 1u) + 4u * ((c >> 1u) & 1u)
+         + 2u * ((c >> 4u) & 1u) + (c & 1u) + 512u * (c >> 5u) + 16u * cols * (u >> 4u);
+}
+static void rr_repack_mat(const uint8_t* src, uint8_t* dst, size_t base, size_t extent, int rows, int cols) {
+    if (rows <= 0 || cols <= 0 || base + size_t(rows) * size_t(cols) > extent) return;
+    for (int r = 0; r < rows; ++r)
+        for (int c = 0; c < cols; ++c)
+            dst[base + size_t(r) * cols + c] = src[base + rr_frag_off(uint32_t(r), uint32_t(c), uint32_t(cols))];
+}
+// item 0: G per-head [64 x C] Q/V blocks (each head block carries its own fragment layout).
+static void rr_repack_qkv(const uint8_t* src, uint8_t* dst, size_t base, size_t extent, int C, int G) {
+    if (C <= 0 || G <= 0 || base + size_t(G) * 64u * size_t(C) > extent) return;
+    for (int h = 0; h < G; ++h)
+        rr_repack_mat(src, dst, base + size_t(h) * 64u * size_t(C), extent, 64, C);
+}
 } // namespace
+
+// ---- RR U-Net (preset F): the 16 k_level launches -----------------------------------------------
+// Frame 1 has them at launches 5..20 (frame 0 at 4..19).  Template ints, in_ch and the buffer roles
+// are decoded from the oracle's launches.jsonl (identical in both frames) and agree with
+// tools/rr/rrref/rrref.cpp's level().  Role names are oracle buffer names; "" = the argument is null.
+// Args offsets: in +0x10, skip +0x18, out +0x78, out +0x80, in +0x88, in +0x90, out +0x98,
+// out +0xa0, out +0xc0 / +0xc8 / +0xd0 / +0xd8.  rr_level binding 2 takes +0x78 (fp8 out; a dummy for
+// unit 15, which has none); the heads go to bindings 7..12 (+0x98, +0xa0, +0xc0..+0xd8).
+enum RrRole { R_IN, R_SKIP, R_O78, R_O80, R_I88, R_I90, R_O98, R_OA0, R_OC0, R_OC8, R_OD0, R_OD8, R_N };
+struct RrUnit { int C, g, mode, Cdown, Cup, n, in_ch; const char* role[R_N]; };
+static const int kRrUnitLevel[16] = {0, 1, 2, 3, 4, 5, 4, 4, 3, 3, 2, 2, 1, 1, 0, 0};
+static const RrUnit kRrUnits[16] = {
+    {32, 2, 5, 0, 0, 4, 64,  // unit 0 (launch 5)
+     {"E0be8", "", "E0b54", "", "E0bec", "", "E0ba8", "E0bc0", "", "", "", ""}},
+    {64, 2, 1, 96, 0, 1, 32,  // unit 1 (launch 6)
+     {"E0b54", "", "E0b58", "E0b70", "E0bc0", "", "E0bac", "E0bc4", "", "", "", ""}},
+    {96, 4, 0, 128, 0, 1, 96,  // unit 2 (launch 7)
+     {"E0b70", "", "E0b5c", "E0b74", "E0bc4", "", "E0bb0", "E0bc8", "", "", "", ""}},
+    {128, 4, 0, 160, 0, 1, 128,  // unit 3 (launch 8)
+     {"E0b74", "", "E0b60", "E0b78", "E0bc8", "", "E0bb4", "E0bcc", "", "", "", ""}},
+    {160, 8, 0, 160, 0, 1, 160,  // unit 4 (launch 9)
+     {"E0b78", "", "E0b64", "E0b7c", "E0bcc", "", "E0bb8", "E0bd0", "", "", "", ""}},
+    {160, 8, 0, 0, 0, 1, 160,  // unit 5 (launch 10)
+     {"E0b7c", "", "E0b68", "", "E0bd0", "", "E0bbc", "", "", "", "", ""}},
+    {160, 8, 2, 0, 160, 1, 160,  // unit 6 (launch 11)
+     {"E0b68", "E0b64", "E0b90", "", "", "", "", "", "", "", "", ""}},
+    {160, 8, 3, 0, 0, 1, 160,  // unit 7 (launch 12)
+     {"E0b90", "", "E0ba4", "", "E0bb8", "E0bbc", "E0be4", "", "", "", "", ""}},
+    {128, 4, 2, 0, 160, 1, 160,  // unit 8 (launch 13)
+     {"E0ba4", "E0b60", "E0b8c", "", "", "", "", "", "", "", "", ""}},
+    {128, 4, 3, 0, 0, 1, 128,  // unit 9 (launch 14)
+     {"E0b8c", "", "E0ba0", "", "E0bb4", "E0be4", "E0be0", "", "", "", "", ""}},
+    {96, 4, 2, 0, 128, 1, 128,  // unit 10 (launch 15)
+     {"E0ba0", "E0b5c", "E0b88", "", "", "", "", "", "", "", "", ""}},
+    {96, 4, 3, 0, 0, 1, 96,  // unit 11 (launch 16)
+     {"E0b88", "", "E0b9c", "", "E0bb0", "E0be0", "E0bdc", "", "", "", "", ""}},
+    {64, 2, 2, 0, 96, 1, 96,  // unit 12 (launch 17)
+     {"E0b9c", "E0b58", "E0b84", "", "", "", "", "", "", "", "", ""}},
+    {64, 2, 3, 0, 0, 1, 64,  // unit 13 (launch 18)
+     {"E0b84", "", "E0b98", "", "E0bac", "E0bdc", "E0bd8", "", "", "", "", ""}},
+    {32, 2, 2, 0, 64, 4, 64,  // unit 14 (launch 19)
+     {"E0b98", "E0b54", "E0b80", "", "", "", "", "", "", "", "", ""}},
+    {32, 2, 4, 0, 0, 4, 32,  // unit 15 (launch 20)
+     {"E0b80", "", "", "", "E0ba8", "E0bd8", "E0bd4", "", "E0c02", "E0c16", "E0c1a", "E0c1e"}},
+};
 
 FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
                                const std::string& mode, const std::string& preset,
@@ -623,7 +691,10 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         // SC0) plus the history words +0x20/+0x24 pj, +0x28/+0x2c bev, +0x30/+0x34 W15/H15,
         // +0x38 SC1, +0x3c/+0x40 pj_prev (the c22-family E0c02 texel offset).
         add_pipe("rr_enc0_feat", 17, 68);
-        add_pipe("rr_level", 14, 80);
+        add_pipe("rr_level", 15, 80, 32);   // +binding 14 = wrep (item 0 row-major); pin wave32:
+                                             // 4 waves of the 128-thread WMMA path, and ACO may pick
+                                             // wave64 at this VGPR pressure (sr_stage's lesson)
+
         add_pipe("rr_post_prep", 4, 40);
         add_pipe("rr_post", 12, 184);
         add_pipe("rr_downsample", 4, 48);
@@ -863,7 +934,7 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
     c->w_enc0 = create_buffer(dev, phys, 65536, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     // enc0's 64x128 tile repacked [N][K] row-major for sr_enc0's fp8 WMMA (8192 B).
     c->w_enc0r = create_buffer(dev, phys, 8192, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    if (mode == "sr") c->wrep = create_buffer(dev, phys, 16 * 1024 * 1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    if (mode == "sr" || mode == "rr") c->wrep = create_buffer(dev, phys, 16 * 1024 * 1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     if (mode == "sr") c->wvec = create_buffer(dev, phys, 10 * 16384, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     if (mode == "sr") c->wrepT = create_buffer(dev, phys, 10 * 131072, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->w_dec0 = create_buffer(dev, phys, 65536, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
@@ -1038,6 +1109,30 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
                 uint32_t* tab = static_cast<uint32_t*>(c->rr_tab.mapped);
                 if (!sc.empty()) { tab[27] = uint32_t(sc[0]) & 0xFFFFu; tab[28] = (uint32_t(sc[0]) >> 16) & 0xFFFFu; }
                 else std::fprintf(stderr, "rr_enc0_feat: params.json has no enc0_s2598 (SC0/SC1)\n");
+            }
+            // wrep (rr_level binding 14) = the rr blob copy with the WMMA B operands rewritten
+            // [row][col] row-major at the same wbase offsets (frag_rr -> logical).  Item meanings
+            // are mode-dependent, so gate on kRrUnits; rr_repack_mat's extent guard skips the -1
+            // items params.json marks absent.
+            if (c->wrep.mapped && offset > 0) {
+                std::memcpy(c->wrep.mapped, c->wbuf.mapped, offset);
+                const uint32_t* tabw = static_cast<const uint32_t*>(c->rr_tab.mapped);
+                if (tabw) for (int u = 0; u < 16; ++u) {
+                    const RrUnit& U = kRrUnits[u];
+                    const uint8_t* src = static_cast<const uint8_t*>(c->wbuf.mapped);
+                    uint8_t* dst = static_cast<uint8_t*>(c->wrep.mapped);
+                    const size_t ub = c->rr_blob_off[u];
+                    rr_repack_qkv(src, dst, ub + tabw[u * 32], offset, U.C, U.g);        // item 0: QKV
+                    rr_repack_mat(src, dst, ub + tabw[u * 32 + 4], offset, 4 * U.C, U.C); // item 4: fc1
+                    if (U.mode == 5) {
+                        rr_repack_mat(src, dst, ub + tabw[u * 32 + 16], offset, 64, 64);  // GEMM1
+                        rr_repack_mat(src, dst, ub + tabw[u * 32 + 18], offset, U.C, 64); // GEMM2
+                    } else if (U.mode == 1) {
+                        rr_repack_mat(src, dst, ub + tabw[u * 32 + 10], offset, U.C, 4 * U.in_ch);
+                    } else if (U.mode == 2) {
+                        rr_repack_mat(src, dst, ub + tabw[u * 32 + 12], offset, 4 * U.C, U.Cup);
+                    }
+                }
             }
             auto bc = slurp(wdir + "/bicubic.bin");
             Buffer& e0d02 = c->ue["E0d02"];
@@ -1329,51 +1424,6 @@ void FrameChain::dispatch(VkCommandBuffer cmd, const std::string& name,
     mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0, nullptr, 0, nullptr);
 }
-
-// ---- RR U-Net (preset F): the 16 k_level launches -----------------------------------------------
-// Frame 1 has them at launches 5..20 (frame 0 at 4..19).  Template ints, in_ch and the buffer roles
-// are decoded from the oracle's launches.jsonl (identical in both frames) and agree with
-// tools/rr/rrref/rrref.cpp's level().  Role names are oracle buffer names; "" = the argument is null.
-// Args offsets: in +0x10, skip +0x18, out +0x78, out +0x80, in +0x88, in +0x90, out +0x98,
-// out +0xa0, out +0xc0 / +0xc8 / +0xd0 / +0xd8.  rr_level binding 2 takes +0x78 (fp8 out; a dummy for
-// unit 15, which has none); the heads go to bindings 7..12 (+0x98, +0xa0, +0xc0..+0xd8).
-enum RrRole { R_IN, R_SKIP, R_O78, R_O80, R_I88, R_I90, R_O98, R_OA0, R_OC0, R_OC8, R_OD0, R_OD8, R_N };
-struct RrUnit { int C, g, mode, Cdown, Cup, n, in_ch; const char* role[R_N]; };
-static const int kRrUnitLevel[16] = {0, 1, 2, 3, 4, 5, 4, 4, 3, 3, 2, 2, 1, 1, 0, 0};
-static const RrUnit kRrUnits[16] = {
-    {32, 2, 5, 0, 0, 4, 64,  // unit 0 (launch 5)
-     {"E0be8", "", "E0b54", "", "E0bec", "", "E0ba8", "E0bc0", "", "", "", ""}},
-    {64, 2, 1, 96, 0, 1, 32,  // unit 1 (launch 6)
-     {"E0b54", "", "E0b58", "E0b70", "E0bc0", "", "E0bac", "E0bc4", "", "", "", ""}},
-    {96, 4, 0, 128, 0, 1, 96,  // unit 2 (launch 7)
-     {"E0b70", "", "E0b5c", "E0b74", "E0bc4", "", "E0bb0", "E0bc8", "", "", "", ""}},
-    {128, 4, 0, 160, 0, 1, 128,  // unit 3 (launch 8)
-     {"E0b74", "", "E0b60", "E0b78", "E0bc8", "", "E0bb4", "E0bcc", "", "", "", ""}},
-    {160, 8, 0, 160, 0, 1, 160,  // unit 4 (launch 9)
-     {"E0b78", "", "E0b64", "E0b7c", "E0bcc", "", "E0bb8", "E0bd0", "", "", "", ""}},
-    {160, 8, 0, 0, 0, 1, 160,  // unit 5 (launch 10)
-     {"E0b7c", "", "E0b68", "", "E0bd0", "", "E0bbc", "", "", "", "", ""}},
-    {160, 8, 2, 0, 160, 1, 160,  // unit 6 (launch 11)
-     {"E0b68", "E0b64", "E0b90", "", "", "", "", "", "", "", "", ""}},
-    {160, 8, 3, 0, 0, 1, 160,  // unit 7 (launch 12)
-     {"E0b90", "", "E0ba4", "", "E0bb8", "E0bbc", "E0be4", "", "", "", "", ""}},
-    {128, 4, 2, 0, 160, 1, 160,  // unit 8 (launch 13)
-     {"E0ba4", "E0b60", "E0b8c", "", "", "", "", "", "", "", "", ""}},
-    {128, 4, 3, 0, 0, 1, 128,  // unit 9 (launch 14)
-     {"E0b8c", "", "E0ba0", "", "E0bb4", "E0be4", "E0be0", "", "", "", "", ""}},
-    {96, 4, 2, 0, 128, 1, 128,  // unit 10 (launch 15)
-     {"E0ba0", "E0b5c", "E0b88", "", "", "", "", "", "", "", "", ""}},
-    {96, 4, 3, 0, 0, 1, 96,  // unit 11 (launch 16)
-     {"E0b88", "", "E0b9c", "", "E0bb0", "E0be0", "E0bdc", "", "", "", "", ""}},
-    {64, 2, 2, 0, 96, 1, 96,  // unit 12 (launch 17)
-     {"E0b9c", "E0b58", "E0b84", "", "", "", "", "", "", "", "", ""}},
-    {64, 2, 3, 0, 0, 1, 64,  // unit 13 (launch 18)
-     {"E0b84", "", "E0b98", "", "E0bac", "E0bdc", "E0bd8", "", "", "", "", ""}},
-    {32, 2, 2, 0, 64, 4, 64,  // unit 14 (launch 19)
-     {"E0b98", "E0b54", "E0b80", "", "", "", "", "", "", "", "", ""}},
-    {32, 2, 4, 0, 0, 4, 32,  // unit 15 (launch 20)
-     {"E0b80", "", "", "", "E0ba8", "E0bd8", "E0bd4", "", "E0c02", "E0c16", "E0c1a", "E0c1e"}},
-};
 
 Buffer* FrameChain::rr_buf(const std::string& n) {
     if (n.empty()) return nullptr;
@@ -2081,7 +2131,7 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                 or_dummy(o98), or_dummy(rr_buf(U.role[R_OA0])),
                 or_dummy(rr_buf(U.role[R_OC0])), or_dummy(rr_buf(U.role[R_OC8])),
                 or_dummy(rr_buf(U.role[R_OD0])), or_dummy(rr_buf(U.role[R_OD8])),
-                &rr_tab,
+                &rr_tab, &wrep,
             };
             char lbl[96];
             std::snprintf(lbl, sizeof lbl, "launch %d k_level<%d,%d,%d,%d,%d,%d>", u + 4 + roff,

@@ -636,13 +636,16 @@ def make_test(name, out_dir):
         # One k_level unit, mode 0 ("the input is the unit's own level"), C = 32 (a 0 template int
         # falls back to 32), g = 1 head so the attention path runs, Cdown = Cup = 0 (no down or up
         # projection): 2 x 2 workgroups of one 8x8 window over the 16x16 level. Every binding the
-        # shader declares (0..13) must be bound. Weights (0) and the item table are zero except s1d0 (unit 0,
+        # shader declares (0..14) must be bound. Weights (0) and the item table are zero except s1d0 (unit 0,
         # table word 24 = f16 2.0), so every projection is zero: the block output is the input level through
         # the residual path (neither constant nor empty), and the encoder head (flags 3: o98 and oa0) gives
         # o98 = x88 in lanes 0..2 (gate sigmoid(0) = 0.5) and oa0 = the 2 x 2 averages of o98. The push reaches
         # offset 84 (render grid and head flags).
+        # Bytes 1..120 only: offline O7 also runs the NH_F16 build, which reads this buffer as
+        # f16 - byte pairs must avoid the f16 Inf/NaN range (u16 & 0x7c00 == 0x7c00 needs a byte
+        # >= 124), and 0x7f/0xff would be e4m3 NaN codes.  1..120 is finite under both readings.
         open(os.path.join(out_dir, "in_act.bin"), "wb").write(
-            np.tile(np.linspace(1, 250, 4096, dtype=np.uint8), 2).tobytes())   # [C/32][16][16][32]
+            np.tile(np.linspace(1, 120, 4096, dtype=np.uint8), 2).tobytes())   # [C/32][16][16][32]
         open(os.path.join(out_dir, "wbuf.bin"), "wb").write(np.zeros(4096, dtype=np.uint8).tobytes())
         open(os.path.join(out_dir, "x88.bin"), "wb").write(
             np.linspace(-2.0, 3.0, 16 * 16 * 4, dtype=np.float32).astype(np.float16).tobytes())   # [16][16][4] f16
@@ -671,7 +674,8 @@ def make_test(name, out_dir):
                 {"binding": 10, "bytes": 256},
                 {"binding": 11, "bytes": 256},
                 {"binding": 12, "bytes": 256},
-                {"binding": 13, "file": "tab.bin", "bytes": 256}
+                {"binding": 13, "file": "tab.bin", "bytes": 256},
+                {"binding": 14, "file": "wbuf.bin", "bytes": 16384}
             ]
         }
     elif name == "sr_enc0L_in":

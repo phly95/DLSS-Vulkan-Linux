@@ -8,6 +8,15 @@
 
 #include "rh.glsl"
 
+// Pass 6 phase 1 (orchestrator 2026-10-28): drop the R9b bit-exact closure for THIS kernel -
+// f32 accumulation everywhere and no explicit f16 rounding points. The quantisation POINTS stay
+// (q8f at Q/ctx/hidden/out, probabilities stored f16), the f16 storage stores still round. The
+// shared rh.glsl is untouched: rr_post/rr_ae_final/rr_downsample/sr_enc0/sr_l0 include it too.
+#define rh(x)  (x)
+#define rh3(x) (x)
+
+#include "nh_mm.glsl"     // hardware E4M3 (phase 1b): typed fp8 views of the byte buffers
+
 // rr_level: one rrk::k_level launch of DLSS-RR's U-Net (preset F). The spec is tools/rr/rr_level_model.py
 // (DEFAULT configuration, block_v2): one 8 x 8 window (64 tokens, token = dy*8 + dx) per workgroup, grid
 // ((W+sx+7)/8, (H+sy+7)/8), reflected coordinates at the borders. Per head: Q = q8(clamp(X Wq^T)), V = q8(f16(
@@ -43,7 +52,11 @@
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) readonly buffer InW     { uint8_t w[]; };
+layout(set = 0, binding = 0) readonly buffer InW8    { NR_OPERAND w8[]; };   // fp8 matrices (same bytes)
+layout(set = 0, binding = 14) readonly buffer WRep    { NR_OPERAND wr[]; };   // phase 3a: item 0 [head][out][k] row-major
 layout(set = 0, binding = 1) readonly buffer InAct   { uint8_t in_act[]; };
+layout(set = 0, binding = 1) readonly buffer InAct8  { NR_OPERAND in_a8[]; };
+layout(set = 0, binding = 3) readonly buffer InSkip8 { NR_OPERAND skip_a8[]; };
 layout(set = 0, binding = 2) writeonly buffer OutAct { uint8_t out_act[]; };   // +0x78 (fp8 out)
 layout(set = 0, binding = 3) readonly buffer InSkip  { uint8_t skip_act[]; };  // +0x18
 layout(set = 0, binding = 4) writeonly buffer OutB   { uint8_t out_b[]; };     // +0x80 (down)
@@ -87,11 +100,20 @@ layout(push_constant) uniform RrUnitArgs {
 const uint CM = 160u;                   // LDS row stride: C <= 160 in every unit
 const uint TS = 32u;                    // uints per unit in binding 13
 shared float16_t s_a[64 * 160];         // residual stream X (f16 values; q8 values after the block)
-shared uint8_t   s_n[64 * 160];         // fp8 codes of the normalised stream (q8 of X)
-shared float16_t s_h[64 * 64];          // MLP hidden chunk (q8 values); mode 5 hidden
-shared float16_t s_p[64 * 64];          // fp8 probabilities of the current head
-shared float16_t s_q[64 * 32];          // Q of the current head, then its context
-shared float16_t s_v[64 * 32];          // V of the current head (fp8 values)
+shared NR_OPERAND s_n[64 * 160];        // normalised stream (q8 of X): hardware e4m3, or the
+                                        // same values as f16 in the f16 build (e4m3 is a subset
+                                        // of f16, so both builds hold identical numbers)
+#define SNI(i) (float(s_n[i]))
+#ifdef NR_OPERAND_F16
+#define SNO(i, x) s_n[i] = NR_OPERAND(q8f(x))    // explicit rounding: the e4m3 ctor does it
+#else
+#define SNO(i, x) s_n[i] = NR_OPERAND(x)
+#endif
+shared float s_h[64 * 64];              // MLP hidden (q8 values) / mode 5 hidden / raw f32 logits (3a)
+shared NR_OPERAND s_hh[64 * 32];         // fc1 hidden of the current 32-block (e4m3, phase 3b)
+shared NR_OPERAND s_p[64 * 64];         // fp8 probabilities of the current head (WMMA A operand)
+shared NR_OPERAND s_q[64 * 32];         // Q of the current head, then its context (WMMA operand)
+shared NR_OPERAND s_v[64 * 32];         // V of the current head (fp8 values, WMMA B operand)
 shared float16_t s_g[64 * 4];           // head gates per token (lanes 0..3)
 shared float16_t s_o[64 * 4];           // head o98 per token (lanes 0..3), read by the oa0 step
 
@@ -161,7 +183,7 @@ uint frag_off(uint r, uint c, uint cols) {
     return frag_u(u, c, cols);
 }
 
-float wfp8(uint boff) { return e4m3_dec(uint(w[boff])); }
+float wfp8(uint boff) { return float(w8[boff]); }
 float wf16(uint boff) { return f16_dec(uint(w[boff]) | (uint(w[boff + 1u]) << 8u)); }
 
 uint wbase(int item) { return uint(blob_off + int(tab[uint(unit_in) * TS + uint(item)])); }
@@ -331,6 +353,30 @@ float sm_e(float prod) {
     return (f16_enc(prod) == 0x11C5u) ? f16_dec(0x3C01u) : e;
 }
 
+void sync_lds() { memoryBarrierShared(); barrier(); }
+
+// Phase 3a: store an f32 accumulator tile into an NR_OPERAND array with q8f's semantics (clamp to
+// +-448 + RNE e4m3; NR_E4M3's constructor is that rounding, and the values read back as
+// e4m3_dec(byte) == float16_t(q8f(x)) because e4m3 is a subset of f16).
+#ifdef NR_OPERAND_F16
+#define RRQ_STORE(f, a, o, st) { \
+    NR_FRAG_ACC16 _sq; \
+    for (uint _i = 0u; _i < 8u; ++_i) _sq[_i] = float16_t(q8f((f)[_i])); \
+    NR_STORE_ACC(_sq, a, o, st); }
+#else
+#define RRQ_STORE(f, a, o, st) { \
+    NR_FRAG_E4M3 _sq; \
+    for (uint _i = 0u; _i < 8u; ++_i) _sq[_i] = NR_E4M3(clamp((f)[_i], -448.0, 448.0)); \
+    NR_STORE_ACC(_sq, a, o, st); }
+#endif
+
+// Store into the f16 arrays (s_a): the value is q8f'd on-grid or rounded by the f16 store itself
+// (sr_swin's softmax stores f16 the same way).
+#define RRS_STORE(f, a, o, st) { \
+    NR_FRAG_ACC16 _ss; \
+    for (uint _i = 0u; _i < 8u; ++_i) _ss[_i] = float16_t((f)[_i]); \
+    NR_STORE_ACC(_ss, a, o, st); }
+
 void main() {
     const uint tid = gl_LocalInvocationIndex;
     const int W = (W_in > 0) ? W_in : ((W_test > 0) ? W_test : 16);
@@ -347,82 +393,134 @@ void main() {
     const uint npair = C / 4u;      // (token, channel) pairs owned by each thread: 64 C / 256
     float acc[40];                  // per-thread accumulators of the owned pairs (attention, then the MLP)
     [[unroll]] for (uint i = 0u; i < 40u; ++i) acc[i] = 0.0;
+    const uint wv = tid >> 5u;              // wave 0..7 (local_size 256, pinned wave32)
+    const uint qh = wv >> 1u;               // 16-token quarter: two waves role-split across it
+    const uint role = wv & 1u;              // 0: first 16-col tile of every pair, 1: second
+    const uint t0 = 16u * qh;
 
     // ---- 1. entry: the residual stream of the 64 tokens (at their reflected pixels)
     if (mode == 5) {
-        // enc0: h = q8(nhgelu(m1d8 F + v218)) (64 hidden), X = q8(clamp(m1f8 h + v230)) (C = 32); both GEMMs are
-        // bias-first K = 32 chains through f16 (the model's chain_mm)
+        // enc0, phase 3c (WMMA): stage F (logical channels, stride 64) into s_n - free until the
+        // SNO loop rewrites it - GEMM1 (64 hidden, items 16/17) into s_p, GEMM2 (C, items 18/19)
+        // into s_a.  s_p is free until section 2.  Role split: two 16-col tiles per role.
         for (uint i = 0u; i < 16u; ++i) {
             uint p = tid + 256u * i;
-            uint t = p >> 6u, j = p & 63u;
+            uint t = p >> 6u, k = p & 63u;
             uint px = uint(refl(ox + int(t & 7u), W)), py = uint(refl(oy + int(t >> 3u), H));
-            float z = vec16(17, j);
-            uint mb = wbase(16);
-            for (uint k0 = 0u; k0 < 64u; k0 += 32u) {
-                float d = 0.0;
-                for (uint k = k0; k < k0 + 32u; ++k)
-                    d += wfp8(mb + frag_off(j, k, 64u)) * e4m3_dec(uint(in_act[pidx(k, px, py, Wu, Hu)]));
-                z = rh(z + d);
-            }
-            s_h[t * 64u + j] = float16_t(q8f(nh_gelu(z)));
+            s_n[t * 64u + k] = in_a8[pidx(k, px, py, Wu, Hu)];
         }
-        barrier();
-        for (uint i = 0u; i < npair; ++i) {
-            uint p = tid + 256u * i;
-            uint t = p / C, c = p % C;
-            float z = vec16(19, c);
-            uint mb = wbase(18);
-            for (uint j0 = 0u; j0 < 64u; j0 += 32u) {
-                float d = 0.0;
-                for (uint j = j0; j < j0 + 32u; ++j) d += wfp8(mb + frag_off(c, j, 64u)) * float(s_h[t * 64u + j]);
-                z = rh(z + d);
+        sync_lds();
+        {
+            const uint jt = 2u * role;
+            NR_FRAG_ACC af0, af1;
+            af0 = NR_ACC_ZERO; af1 = NR_ACC_ZERO;
+            for (uint k0 = 0u; k0 < 64u; k0 += 16u) {
+                NR_FRAG_A fa;
+                NR_LOAD_A(fa, s_n, t0 * 64u + k0, 64u);
+                NR_FRAG_B fb;
+                NR_LOAD_B(fb, wr, wbase(16) + 16u * jt * 64u + k0, 64u);         NR_MMA(af0, fa, fb);
+                NR_LOAD_B(fb, wr, wbase(16) + 16u * (jt + 1u) * 64u + k0, 64u); NR_MMA(af1, fa, fb);
             }
-            s_a[t * CM + c] = float16_t(q8f(clamp(z, -448.0, 448.0)));
+            const uint col = gl_SubgroupInvocationID & 15u;
+            const float b0 = vec16(17, 16u * jt + col);
+            const float b1 = vec16(17, 16u * (jt + 1u) + col);
+            for (uint i = 0u; i < 8u; ++i) {
+                af0[i] = q8f(nh_gelu(af0[i] + b0));
+                af1[i] = q8f(nh_gelu(af1[i] + b1));
+            }
+            RRQ_STORE(af0, s_p, t0 * 64u + 16u * jt, 64u);
+            RRQ_STORE(af1, s_p, t0 * 64u + 16u * (jt + 1u), 64u);
+        }
+        sync_lds();
+        for (uint c0 = 16u * role; c0 < C; c0 += 32u) {
+            NR_FRAG_ACC af;
+            af = NR_ACC_ZERO;
+            for (uint k0 = 0u; k0 < 64u; k0 += 16u) {
+                NR_FRAG_A fa;
+                NR_LOAD_A(fa, s_p, t0 * 64u + k0, 64u);
+                NR_FRAG_B fb;
+                NR_LOAD_B(fb, wr, wbase(18) + c0 * 64u + k0, 64u);
+                NR_MMA(af, fa, fb);
+            }
+            const float bv = vec16(19, c0 + (gl_SubgroupInvocationID & 15u));
+            for (uint i = 0u; i < 8u; ++i) af[i] = q8f(clamp(af[i] + bv, -448.0, 448.0));
+            RRS_STORE(af, s_a, t0 * CM + c0, CM);
         }
     } else if (mode == 1) {
-        // level 0 -> level 1: X = q8(clamp(mC8 . merge2x2(in) + v188)), bias-first K = 32 chains through f16; the
-        // concatenation index q * Cin + ci, q = dx + 2 dy (Cin = 32: each chunk is one tap)
-        for (uint i = 0u; i < npair; ++i) {
+        // level 0 -> level 1 (phase 3c, WMMA): stage merge2x2(in) [token x 4Cin] into s_n
+        // (stride 4Cin, free until SNO), then A = s_n, B = item 10 [C x 4Cin] -> s_a.
+        for (uint i = 0u; i < Cin; ++i) {
             uint p = tid + 256u * i;
-            uint t = p / C, c = p % C;
+            uint t = p / (4u * Cin), j = p % (4u * Cin);
             uint px = uint(refl(ox + int(t & 7u), W)), py = uint(refl(oy + int(t >> 3u), H));
-            float z = vec16(11, c);
-            uint mb = wbase(10);
-            for (uint j0 = 0u; j0 < 4u * Cin; j0 += 32u) {
-                float d = 0.0;
-                for (uint j = j0; j < j0 + 32u; ++j) {
-                    uint q = j / Cin, ci = j % Cin;
-                    uint x0 = 2u * px + (q & 1u), y0 = 2u * py + (q >> 1u);
-                    d += wfp8(mb + frag_off(c, j, 4u * Cin)) * e4m3_dec(uint(in_act[pidx(ci, x0, y0, 2u * Wu, 2u * Hu)]));
-                }
-                z = rh(z + d);
+            uint q = j / Cin, ci = j % Cin;
+            uint x0 = 2u * px + (q & 1u), y0 = 2u * py + (q >> 1u);
+            s_n[t * 4u * Cin + j] = in_a8[pidx(ci, x0, y0, 2u * Wu, 2u * Hu)];
+        }
+        sync_lds();
+        for (uint c0 = 16u * role; c0 < C; c0 += 32u) {
+            NR_FRAG_ACC af;
+            af = NR_ACC_ZERO;
+            for (uint k0 = 0u; k0 < 4u * Cin; k0 += 16u) {
+                NR_FRAG_A fa;
+                NR_LOAD_A(fa, s_n, t0 * 4u * Cin + k0, 4u * Cin);
+                NR_FRAG_B fb;
+                NR_LOAD_B(fb, wr, wbase(10) + c0 * 4u * Cin + k0, 4u * Cin);
+                NR_MMA(af, fa, fb);
             }
-            s_a[t * CM + c] = float16_t(q8f(clamp(z, -448.0, 448.0)));
+            const float bv = vec16(11, c0 + (gl_SubgroupInvocationID & 15u));
+            for (uint i = 0u; i < 8u; ++i) af[i] = q8f(clamp(af[i] + bv, -448.0, 448.0));
+            RRS_STORE(af, s_a, t0 * CM + c0, CM);
         }
     } else if (mode == 2) {
         // decoder: x = f16(up + f16(s1d6 * skip)), up = q8(clamp(f16(mE8 . low + v1a0))), row q * C + c, q = dx + 2 dy.
         // Border tokens reflect in low-res space (model upref=low): the up value of the unreflected full-res token
         // (tx, ty) comes from low-res pixel reflect(t >> 1) with parity t & 1; the skip is read at the reflected token.
         const float s6 = s1d(2);
-        for (uint i = 0u; i < npair; ++i) {
+        // phase 3c (WMMA): the up-projection is NOT a plain GEMM - each token t selects weight
+        // rows [q(t)*C, q(t)*C + C) with q(t) = (tx&1) + 2*(ty&1) its pixel parity: 4 block-
+        // diagonal [16 tokens x Cup] . [Cup x C] GEMMs over the q-groups.  Stage s_n in q-GROUP
+        // order - v = 16*q + 4*f + s for t = 16*f + 8*d + a + 2*s (a = t&1, d = (t>>3)&1, both
+        // XOR the origin parity to give q; staging is scalar anyway so the permutation is free) -
+        // so each GEMM's M rows are CONSECUTIVE; one wave per (q, 16-column tile), and the
+        // epilogue inverts t = 16*(m>>2) + 8*d + a + 2*(m&3) for the scattered s_a stores
+        // (same accumulator component map as everywhere: lane l, comp i = element (8*(l/16)+i)).
+        for (uint i = 0u; i < Cup / 4u; ++i) {
             uint p = tid + 256u * i;
-            uint t = p / C, c = p % C;
+            uint t = p / Cup, k = p % Cup;
             int tx = ox + int(t & 7u), ty = oy + int(t >> 3u);
             uint lx = uint(refl(tx >> 1, W / 2)), ly = uint(refl(ty >> 1, H / 2));
             uint q = uint(tx & 1) + 2u * uint(ty & 1);
-            uint row = q * C + c;
-            float u = vec16(13, row);
-            uint mb = wbase(12);
-            for (uint k0 = 0u; k0 < Cup; k0 += 32u) {
-                float d = 0.0;
-                for (uint k = k0; k < k0 + 32u; ++k)
-                    d += wfp8(mb + frag_off(row, k, Cup)) * e4m3_dec(uint(in_act[pidx(k, lx, ly, Wu / 2u, Hu / 2u)]));
-                u = rh(u + d);
+            uint v = 16u * q + 4u * ((t >> 4) & 3u) + ((t >> 1) & 3u);
+            s_n[v * Cup + k] = in_a8[pidx(k, lx, ly, Wu / 2u, Hu / 2u)];
+        }
+        sync_lds();
+        const uint nt = C / 16u;                  // 16-column tiles per q-group (C % 16 == 0)
+        for (uint tt = wv; tt < 4u * nt; tt += 8u) {
+            const uint q = tt / nt, c0 = 16u * (tt % nt);
+            NR_FRAG_ACC af;
+            af = NR_ACC_ZERO;
+            for (uint k0 = 0u; k0 < Cup; k0 += 16u) {
+                NR_FRAG_A fa;
+                NR_LOAD_A(fa, s_n, 16u * q * Cup + k0, Cup);
+                NR_FRAG_B fb;
+                NR_LOAD_B(fb, wr, wbase(12) + (q * C + c0) * Cup + k0, Cup);
+                NR_MMA(af, fa, fb);
             }
-            float upv = q8f(clamp(rh(u), -448.0, 448.0));
-            uint px = uint(refl(tx, W)), py = uint(refl(ty, H));
-            float sk = e4m3_dec(uint(skip_act[pidx(c, px, py, Wu, Hu)]));
-            s_a[t * CM + c] = float16_t(rh(upv + rh(s6 * sk)));
+            const uint lane = gl_SubgroupInvocationID;
+            const float bv = vec16(13, q * C + c0 + (lane & 15u));
+            const uint ab = (q & 1u) ^ uint(ox & 1);   // the group's t&1 / (t>>3)&1 bits
+            const uint db = ((q >> 1u) & 1u) ^ uint(oy & 1);
+            for (uint i = 0u; i < 8u; ++i) {
+                const uint m = 8u * (lane >> 4u) + i;
+                const uint t = 16u * (m >> 2u) + 8u * db + ab + 2u * (m & 3u);
+                const uint c = c0 + (lane & 15u);
+                int tx = ox + int(t & 7u), ty = oy + int(t >> 3u);
+                uint px = uint(refl(tx, W)), py = uint(refl(ty, H));
+                float upv = q8f(clamp(af[i] + bv, -448.0, 448.0));
+                float sk = float(skip_a8[pidx(c, px, py, Wu, Hu)]);
+                s_a[t * CM + c] = float16_t(rh(upv + rh(s6 * sk)));
+            }
         }
     } else {
         // 0, 3, 4: the input is the unit's own level
@@ -430,14 +528,15 @@ void main() {
             uint p = tid + 256u * i;
             uint t = p / C, c = p % C;
             uint px = uint(refl(ox + int(t & 7u), W)), py = uint(refl(oy + int(t >> 3u), H));
-            s_a[t * CM + c] = float16_t(e4m3_dec(uint(in_act[pidx(c, px, py, Wu, Hu)])));
+            s_a[t * CM + c] = float16_t(float(in_a8[pidx(c, px, py, Wu, Hu)]));
         }
     }
-    barrier();
+    sync_lds();    // modes 5/1/2 wrote s_a with matrix stores: a bare barrier() is not the
+                   // proven boundary (3a/3b always used sync_lds after matrix writes)
     for (uint i = 0u; i < npair; ++i) {
         uint p = tid + 256u * i;
         uint t = p / C, c = p % C;
-        s_n[t * CM + c] = uint8_t(e4m3_enc(float(s_a[t * CM + c])));
+        SNO(t * CM + c, float(s_a[t * CM + c]));
     }
     barrier();
 
@@ -448,29 +547,50 @@ void main() {
     }
     for (uint h = 0u; h < G; ++h) {
         const uint gb = wbase(0) + h * 64u * C;
-        for (uint i = 0u; i < 16u; ++i) {
-            uint p = tid + 256u * i;
-            uint t = p >> 6u, j = p & 63u;
-            float z = 0.0;
-            for (uint k0 = 0u; k0 < C; k0 += 32u) {             // K = 32 chunks, each added through f16
-                float d = 0.0;
-                for (uint k = k0; k < k0 + 32u; ++k) d += e4m3_dec(uint(s_n[t * CM + k])) * wfp8(gb + frag_off(j, k, C));
-                z = rh(z + d);
+        // 2a. Q/V projections (WMMA, phase 3a): A = s_n [token x C], B = wr [out x C] row-major
+        // (item 0 repacked in pipeline.cpp), acc [token x out]; Q = out rows 0..31, V = 32..63.
+        {
+            const uint jt = 2u * role;      // role 0 -> Q (out rows 0/16), role 1 -> V (rows 32/48)
+            NR_FRAG_ACC af0, af1;
+            af0 = NR_ACC_ZERO; af1 = NR_ACC_ZERO;
+            for (uint k0 = 0u; k0 < C; k0 += 16u) {
+                NR_FRAG_A fa;
+                NR_LOAD_A(fa, s_n, t0 * CM + k0, CM);
+                NR_FRAG_B fb;
+                NR_LOAD_B(fb, wr, gb + 16u * jt * C + k0, C);        NR_MMA(af0, fa, fb);
+                NR_LOAD_B(fb, wr, gb + 16u * (jt + 1u) * C + k0, C); NR_MMA(af1, fa, fb);
             }
-            z = clamp(z, -448.0, 448.0);
-            if (j < 32u) s_q[t * 32u + j] = float16_t(q8f(z));
-            else s_v[t * 32u + (j - 32u)] = float16_t(q8f(z));
+            if (role == 0u) {
+                RRQ_STORE(af0, s_q, t0 * 32u, 32u);
+                RRQ_STORE(af1, s_q, t0 * 32u + 16u, 32u);
+            } else {
+                RRQ_STORE(af0, s_v, t0 * 32u, 32u);
+                RRQ_STORE(af1, s_v, t0 * 32u + 16u, 32u);
+            }
         }
-        barrier();
+        sync_lds();
+        // 2b. logits = Q Q^T (16 queries per wave x 4 key tiles), raw f32 into s_h for the scalar softmax
+        {
+            const uint kt = 2u * role;      // role 0 -> keys 0/16, role 1 -> keys 32/48
+            NR_FRAG_ACC af0, af1;
+            af0 = NR_ACC_ZERO; af1 = NR_ACC_ZERO;
+            for (uint j0 = 0u; j0 < 32u; j0 += 16u) {
+                NR_FRAG_A fa;
+                NR_LOAD_A(fa, s_q, t0 * 32u + j0, 32u);
+                NR_FRAG_B fb;
+                NR_LOAD_B(fb, s_q, 16u * kt * 32u + j0, 32u);        NR_MMA(af0, fa, fb);
+                NR_LOAD_B(fb, s_q, 16u * (kt + 1u) * 32u + j0, 32u); NR_MMA(af1, fa, fb);
+            }
+            NR_STORE_ACC(af0, s_h, t0 * 64u + 16u * kt, 64u);
+            NR_STORE_ACC(af1, s_h, t0 * 64u + 16u * (kt + 1u), 64u);
+        }
+        sync_lds();
         if (tid < 64u) {
             const uint q = tid;
             const uint rb = wbase(1) + h * 8192u;
             float pe[64];
-            [[unroll]] for (uint k = 0u; k < 64u; ++k) {
-                float d = 0.0;
-                for (uint j = 0u; j < 32u; ++j) d += float(s_q[q * 32u + j]) * float(s_q[k * 32u + j]);
-                pe[k] = nr_exp(d + wf16(rb + 2u * (q * 64u + k)));
-            }
+            [[unroll]] for (uint k = 0u; k < 64u; ++k)
+                pe[k] = nr_exp(s_h[q * 64u + k] + wf16(rb + 2u * (q * 64u + k)));
             // the 64-key f16 tree (model smax=isa): key(kb, hh, ip, par) = 16 kb + 8 hh + 2 ip + par;
             // T_hh = f16(f16(k0 + k1) + f16(k2 + k3)), U_ip = f16(T_0 + T_1), V(par) = f16(f16(U0 + U1) + f16(U2 + U3))
             float vs[2];
@@ -485,19 +605,24 @@ void main() {
                 vs[par] = rh(rh(U[0] + U[1]) + rh(U[2] + U[3]));
             }
             const float inv = rh(1.0 / rh(vs[0] + vs[1]));              // f16 reciprocal of the f16 total
-            [[unroll]] for (uint k = 0u; k < 64u; ++k) s_p[q * 64u + k] = float16_t(q8f(rh(pe[k] * inv)));
+            [[unroll]] for (uint k = 0u; k < 64u; ++k) s_p[q * 64u + k] = NR_OPERAND(pe[k] * inv);
         }
-        barrier();
-        for (uint i = 0u; i < 8u; ++i) {
-            uint p = tid + 256u * i;
-            uint t = p >> 5u, j = p & 31u;
-            // ctx = q8(f16(f16(P[:, :32] V[:32]) + P[:, 32:] V[32:])): two K = 32 key chains
-            float z1 = 0.0, z2 = 0.0;
-            for (uint k = 0u; k < 32u; ++k) z1 += float(s_p[t * 64u + k]) * float(s_v[k * 32u + j]);
-            for (uint k = 32u; k < 64u; ++k) z2 += float(s_p[t * 64u + k]) * float(s_v[k * 32u + j]);
-            s_q[t * 32u + j] = float16_t(q8f(rh(rh(z1) + z2)));
+        sync_lds();
+        // 2d. ctx = P V (WMMA): A = s_p [token x 64], B = s_v [key x dim] row-major -> ctx in s_q
+        {
+            NR_FRAG_ACC af;
+            af = NR_ACC_ZERO;
+            for (uint k0 = 0u; k0 < 64u; k0 += 16u) {
+                NR_FRAG_A fa;
+                NR_LOAD_A(fa, s_p, t0 * 64u + k0, 64u);
+                NR_FRAG_B fb;
+                NR_LOAD_B_ROW(fb, s_v, k0 * 32u + 16u * role, 32u);
+                NR_MMA(af, fa, fb);
+            }
+            RRQ_STORE(af, s_q, t0 * 32u + 16u * role, 32u);
         }
-        barrier();
+        sync_lds();
+        // 2e. Wo (scalar): acc = acc + ctx . Wo_h over this thread's own (token, channel) pairs
         const uint wo = wbase(2);
         [[unroll]] for (uint i = 0u; i < 40u; ++i) {
             if (i < npair) {
@@ -509,7 +634,7 @@ void main() {
                 acc[i] = rh(acc[i] + d);
             }
         }
-        barrier();
+        sync_lds();
     }
 
     // ---- 3. X1 = f16(X + f16(s1d2 * a)), a = the head chain; the MLP accumulator starts at f16(b2)
@@ -520,7 +645,7 @@ void main() {
             uint t = p / C, c = p % C;
             float x1 = rh(float(s_a[t * CM + c]) + rh(ls1 * acc[i]));
             s_a[t * CM + c] = float16_t(x1);
-            s_n[t * CM + c] = uint8_t(e4m3_enc(x1));
+            SNO(t * CM + c, x1);
             acc[i] = rh(vec16(7, c));
         }
     }
@@ -530,26 +655,34 @@ void main() {
     {
         const uint mb = wbase(4), mb2 = wbase(6);
         for (uint jb = 0u; jb < 4u * C / 32u; ++jb) {
-            for (uint i = 0u; i < 8u; ++i) {
-                uint p = tid + 256u * i;
-                uint t = p >> 5u, jj = p & 31u;
-                uint j = jb * 32u + jj;
-                float z = vec16(5, j);
-                for (uint k0 = 0u; k0 < C; k0 += 32u) {
-                    float d = 0.0;
-                    for (uint k = k0; k < k0 + 32u; ++k) d += e4m3_dec(uint(s_n[t * CM + k])) * wfp8(mb + frag_off(j, k, C));
-                    z = rh(z + d);
+            // fc1 (WMMA, phase 3b): A = s_n [token x C], B = wr [j x C] (item 4 repacked into
+            // wrep), one 16-wide j-tile per role of this 32-hidden block; epilogue b1 + nh_gelu
+            // into s_hh.  The column bias comes from the accumulator fragment's documented
+            // component map (component i of lane l = element (8*(l/16)+i, l%16)) -> col = lane&15;
+            // the store's e4m3 rounding is q8f's (RRQ_STORE = clamp + RNE, idempotent on-grid).
+            {
+                const uint j0 = jb * 32u + 16u * role;
+                NR_FRAG_ACC zf;
+                zf = NR_ACC_ZERO;
+                for (uint k0 = 0u; k0 < C; k0 += 16u) {
+                    NR_FRAG_A fa;
+                    NR_LOAD_A(fa, s_n, t0 * CM + k0, CM);
+                    NR_FRAG_B fb;
+                    NR_LOAD_B(fb, wr, mb + j0 * C + k0, C);
+                    NR_MMA(zf, fa, fb);
                 }
-                s_h[t * 32u + jj] = float16_t(q8f(nh_gelu(z)));
+                const float bv = vec16(5, j0 + (gl_SubgroupInvocationID & 15u));
+                for (uint i = 0u; i < 8u; ++i) zf[i] = nh_gelu(zf[i] + bv);
+                RRQ_STORE(zf, s_hh, t0 * 32u + 16u * role, 32u);
             }
-            barrier();
+            sync_lds();
             [[unroll]] for (uint i = 0u; i < 40u; ++i) {
                 if (i < npair) {
                     uint p = tid + 256u * i;
                     uint t = p / C, c = p % C;
                     float d = 0.0;
                     for (uint jj = 0u; jj < 32u; ++jj)
-                        d += float(s_h[t * 32u + jj]) * wfp8(mb2 + frag_off(c, jb * 32u + jj, 4u * C));
+                        d += float(s_hh[t * 32u + jj]) * wfp8(mb2 + frag_off(c, jb * 32u + jj, 4u * C));
                     acc[i] = rh(acc[i] + d);
                 }
             }
