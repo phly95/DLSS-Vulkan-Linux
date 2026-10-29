@@ -76,6 +76,28 @@ struct DispatchImage {
     VkImageLayout layout = VK_IMAGE_LAYOUT_GENERAL;
 };
 
+// M2 (Opus MALL re-check): the final `out` buffer as RGBA16F (8 B/px) instead of vec4 f32
+// (16 B/px, 127 MiB at 4K) - est -0.10 ms SR M/L, -0.03 RR on the downsample write stream.
+// THE format switch for this process: default 1. Pair it with OUT_F16 for the shaders (both
+// default to 1 too; src/vk/build.sh propagates the env) and tools/verify/ngx_client/build.sh
+// (the harness side of the app-Output format contract). ALL THREE must agree; 0 = the old f32
+// path everywhere (app Output RGBA32F, raw f32 dumps).
+#ifndef DLSS5_AMD_OUT_F16
+#define DLSS5_AMD_OUT_F16 1
+#endif
+#define DLSS5_AMD_OUT_BPP (DLSS5_AMD_OUT_F16 ? 8u : 16u)
+
+// half <-> float for the bridge edges (runner's out_<i>.f32 dump, nvngx's CPU probe, inject)
+static inline float dlss_half_to_float(uint16_t h) {
+    uint32_t s = (uint32_t)(h & 0x8000u) << 16, e = (h >> 10) & 31u, m = h & 0x3FFu;
+    float v;
+    if (e == 0u) v = (float)m * 5.9604644775390625e-08f;
+    else if (e == 31u) { uint32_t b = s | 0x7F800000u | (m << 13); memcpy(&v, &b, 4); return v; }
+    else { uint32_t b = s | ((e + 112u) << 23) | (m << 13); memcpy(&v, &b, 4); }
+    return (h & 0x8000u) ? -v : v;
+}
+
+
 class FrameChain {
 public:
     // mode: "sr" | "rr"; preset: "M" | "L" (sr) | "F" (rr).
@@ -93,7 +115,8 @@ public:
     FrameChain& operator=(const FrameChain&) = delete;
 
     // Host-visible staging memory the caller fills (memcpy) before record().
-    // Sizes are W*H * 16/4/4/8/4/8/8 bytes respectively; out_color() is oW*oH*16.
+    // Sizes are W*H * 16/4/4/8/4/8/8 bytes respectively; out_color() is oW*oH*DLSS5_AMD_OUT_BPP
+    // (8 with DLSS5_AMD_OUT_F16=1 - M2 - else 16).
     void* in_color()    { return in_col.mapped; }
     void* in_depth()    { return in_dep.mapped; }
     void* in_mv()       { return in_mv_.mapped; }

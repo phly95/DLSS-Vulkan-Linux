@@ -932,7 +932,7 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
     c->t_act[7] = create_buffer(dev, phys, size_t(L2w) * L2h * 96, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->t_act[8] = create_buffer(dev, phys, size_t(L1w) * L1h * 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
-    c->out = create_buffer(dev, phys, size_t(oW) * oH * 16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    c->out = create_buffer(dev, phys, size_t(oW) * oH * DLSS5_AMD_OUT_BPP, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->wbuf = create_buffer(dev, phys, 16 * 1024 * 1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->w_enc0 = create_buffer(dev, phys, 65536, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     // enc0's 64x128 tile repacked [N][K] row-major for sr_enc0's fp8 WMMA (8192 B).
@@ -1307,6 +1307,22 @@ void FrameChain::inject_after(VkCommandBuffer cmd, const char* point, int launch
         auto bytes = slurp(base + name + ".bin");
         if (bytes.empty()) continue;          // this launch did not write that buffer
         Buffer* target = kv.second;
+#if DLSS5_AMD_OUT_F16
+        // M2: `out` is f16 now. An f32 SOURCE dump (an old 16 B/px dump or an oracle-format one)
+        // arrives at twice the target's width -> convert; an f16 source dump is width-matched.
+        std::vector<uint8_t> conv;
+        if (target == &out && bytes.size() == size_t(target->size) * 2) {
+            const uint32_t* f = reinterpret_cast<const uint32_t*>(bytes.data());
+            size_t n = size_t(target->size) / 2;
+            conv.resize(size_t(target->size));
+            uint16_t* h = reinterpret_cast<uint16_t*>(conv.data());
+            for (size_t i = 0; i < n; ++i) {
+                float v; std::memcpy(&v, &f[i], 4);
+                h[i] = f32_to_f16_rne(v);
+            }
+            bytes.swap(conv);
+        }
+#endif
         std::string key = std::to_string(fc) + "/" + point + "/" + name;
         auto it = inj_shadow.find(key);
         if (it == inj_shadow.end()) {

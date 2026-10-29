@@ -6,7 +6,8 @@
 //                  [--ngx-dll NAME] [--test-cycles] [--expect-create-fail]
 //
 // Every frame's inputs are uploaded into real textures (D3D12 resources or Vulkan images), the feature
-// is evaluated into an RGBA32F output and the output is copied back and written as out_<i>.f32.
+// is evaluated into an RGBA16F (OUT_F16=1; RGBA32F with 0) output and the output is copied
+// back, widened to f32 and written as out_<i>.f32 (the f32 contract every reader keeps).
 // --test-cycles also releases the feature, creates it again at half size, evaluates one frame there and
 // releases it. --expect-create-fail inverts the result: success only if CreateFeature refuses (the
 // package must refuse when the game has no, or the wrong, NVIDIA DLL). Exit 0 = success.
@@ -24,6 +25,22 @@
 #include <vector>
 
 #include "ngx_abi.h"
+// M2: the app-side Output format of the contract - 1 (default) = RGBA16F (what NGX's output
+// resource normally is), 0 = the old RGBA32F. Must match OUT_F16 in src/vk/build.sh (named FMT16
+// here because this binary's build script substitutes the token OUT).
+#ifndef FMT16
+#define FMT16 1
+#endif
+
+static inline float h2f_(uint16_t h) {
+    uint32_t s = (uint32_t)(h & 0x8000u) << 16, e = (h >> 10) & 31u, m = h & 0x3FFu;
+    float v;
+    if (e == 0u) v = (float)m * 5.9604644775390625e-08f;
+    else if (e == 31u) { uint32_t b = s | 0x7F800000u | (m << 13); memcpy(&v, &b, 4); return v; }
+    else { uint32_t b = s | ((e + 112u) << 23) | (m << 13); memcpy(&v, &b, 4); }
+    return (h & 0x8000u) ? -v : v;
+}
+
 
 #define FAIL(...) do { std::fprintf(stderr, "[ngx_client] FAIL: " __VA_ARGS__); std::fprintf(stderr, "\n"); return 1; } while (0)
 #define HR(x) do { HRESULT hr_ = (x); if (FAILED(hr_)) FAIL("%s:%d %s = 0x%08lx", __FILE__, __LINE__, #x, (unsigned long)hr_); } while (0)
@@ -256,8 +273,14 @@ static int run_d3d12(Run& r) {
             up.push_back(d3d_buffer(dev, UINT64(pitch256(rw * in.bpp)) * rh, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ));
             if (!tex.back() || !up.back()) FAIL("cannot create the %s texture", in.file);
         }
-        ID3D12Resource* out = d3d_texture(dev, ow, oh, DXGI_FORMAT_R32G32B32A32_FLOAT, true, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        const UINT opitch = pitch256(ow * 16);
+        ID3D12Resource* out = d3d_texture(dev, ow, oh,
+#if FMT16
+            DXGI_FORMAT_R16G16B16A16_FLOAT,
+#else
+            DXGI_FORMAT_R32G32B32A32_FLOAT,
+#endif
+            true, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        const UINT opitch = pitch256(ow * (FMT16 ? 8 : 16));
         ID3D12Resource* rb = d3d_buffer(dev, UINT64(opitch) * oh, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST);
         if (!out || !rb) FAIL("cannot create the output");
         std::vector<float> host(size_t(ow) * oh * 4);
@@ -289,14 +312,28 @@ static int run_d3d12(Run& r) {
             D3D12_TEXTURE_COPY_LOCATION src{}, dst{};
             src.pResource = out; src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
             dst.pResource = rb; dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-            dst.PlacedFootprint.Footprint = {DXGI_FORMAT_R32G32B32A32_FLOAT, ow, oh, 1, opitch};
+            dst.PlacedFootprint.Footprint = {
+#if FMT16
+                DXGI_FORMAT_R16G16B16A16_FLOAT,
+#else
+                DXGI_FORMAT_R32G32B32A32_FLOAT,
+#endif
+                ow, oh, 1, opitch};
             cl->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
             d3d_barrier(cl, out, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             if (!submit()) FAIL("device lost in frame %d", i);
             void* m = nullptr;
             D3D12_RANGE range{0, size_t(opitch) * oh};
             HR(rb->Map(0, &range, &m));
+#if FMT16
+            for (unsigned y = 0; y < oh; ++y) {
+                const uint16_t* row = reinterpret_cast<const uint16_t*>(static_cast<uint8_t*>(m) + size_t(y) * opitch);
+                float* dstrow = host.data() + size_t(y) * ow * 4;
+                for (unsigned x = 0; x < ow; ++x) dstrow[x] = h2f_(row[x]);   // widen: out_<i>.f32 stays f32
+            }
+#else
             for (unsigned y = 0; y < oh; ++y) std::memcpy(host.data() + size_t(y) * ow * 4, static_cast<uint8_t*>(m) + size_t(y) * opitch, ow * 16);
+#endif
             rb->Unmap(0, nullptr);
             if (write && !write_file(r.odir + "/out_" + std::to_string(i) + ".f32", host.data(), host.size() * 4))
                 FAIL("cannot write %s/out_%d.f32", r.odir.c_str(), i);
@@ -529,8 +566,14 @@ static int run_vulkan(Run& r) {
             if (!make_img(rw, rh, r.inputs[k].vk, false, tex[k]) ||
                 !make_buf(VkDeviceSize(rw) * rh * r.inputs[k].bpp, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, up[k]))
                 FAIL("cannot create the %s image", r.inputs[k].file);
-        if (!make_img(ow, oh, VK_FORMAT_R32G32B32A32_SFLOAT, true, out) ||
-            !make_buf(VkDeviceSize(ow) * oh * 16, VK_BUFFER_USAGE_TRANSFER_DST_BIT, rb))
+        if (!make_img(ow, oh,
+#if FMT16
+                      VK_FORMAT_R16G16B16A16_SFLOAT,
+#else
+                      VK_FORMAT_R32G32B32A32_SFLOAT,
+#endif
+                      true, out) ||
+            !make_buf(VkDeviceSize(ow) * oh * (FMT16 ? 8 : 16), VK_BUFFER_USAGE_TRANSFER_DST_BIT, rb))
             FAIL("cannot create the output image");
         VK(begin());
         for (auto& t : tex) barrier(t.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
@@ -568,7 +611,14 @@ static int run_vulkan(Run& r) {
             VK(submit());
             void* m = nullptr;
             VK(f.vkMapMemory(dev, rb.mem, 0, VK_WHOLE_SIZE, 0, &m));
+#if FMT16
+            {
+                const uint16_t* hp = static_cast<const uint16_t*>(m);
+                for (size_t i = 0; i < host.size(); ++i) host[i] = h2f_(hp[i]);
+            }
+#else
             std::memcpy(host.data(), m, host.size() * 4);
+#endif
             f.vkUnmapMemory(dev, rb.mem);
             if (write && !write_file(r.odir + "/out_" + std::to_string(i) + ".f32", host.data(), host.size() * 4))
                 FAIL("cannot write %s/out_%d.f32", r.odir.c_str(), i);

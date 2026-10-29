@@ -12,7 +12,9 @@ mkdir -p "$(dirname -- "$out")"
 out=$(cd -- "$(dirname -- "$out")" && pwd)/$(basename -- "$out")
 vkh=reference-nr-vulkan/toolchain/Vulkan-Headers/include
 [[ -f "$root/$vkh/vulkan/vulkan.h" ]] || { echo "missing $vkh: run reference-nr-vulkan/fetch_deps.sh" >&2; exit 1; }
-cmd=(x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -I"$vkh" tools/verify/ngx_client/main.cpp
+# M2: FMT16=1 (default) = app Output RGBA16F, matching OUT_F16=1 in src/vk/build.sh.
+# (Named FMT16, not OUT_F16: this script substitutes the literal token OUT with the output path.)
+cmd=(x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -DFMT16=${FMT16:-1} -I"$vkh" tools/verify/ngx_client/main.cpp
      -o OUT -ld3d12 -ldxgi -lole32 -static -static-libgcc -static-libstdc++)
 if command -v x86_64-w64-mingw32-g++ >/dev/null; then
     (cd "$root" && "${cmd[@]/OUT/$out}")

@@ -321,7 +321,18 @@ int main(int argc, char** argv) {
             std::string out_path = odir + "/out_" + std::to_string(fi) + ".f32";
             std::ofstream fout(out_path, std::ios::binary);
             if (fout) {
+#if DLSS5_AMD_OUT_F16
+                // M2: the chain stores RGBA16F; the out_<i>.f32 contract of eval_verify /
+                // quality_guard / eval_sr / eval_rr stays f32 - widen here so no reader changes.
+                static std::vector<float> wid;
+                size_t n = size_t(oW) * oH * 4;
+                wid.resize(n);
+                const uint16_t* hp = static_cast<const uint16_t*>(chain->out_color());
+                for (size_t i = 0; i < n; ++i) wid[i] = dlss_half_to_float(hp[i]);
+                fout.write(reinterpret_cast<const char*>(wid.data()), n * 4);
+#else
                 fout.write(static_cast<const char*>(chain->out_color()), size_t(oW) * oH * 16);
+#endif
             }
         }
 

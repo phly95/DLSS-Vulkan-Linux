@@ -489,14 +489,27 @@ static NVSDK_NGX_Result record_bridge(VkCommandBuffer cmd, FeatureState* s, cons
     // write it?).  Both are zeroes on a freshly created chain, so only frames > 0 say anything.
     if (s->frame_idx > 0) {
         const float* in = static_cast<const float*>(c->in_color());
-        const float* o = static_cast<const float*>(c->out_color());
         long nz_in = 0, nz_out = 0;
         const int N = 1 << 20;
         for (int i = 0; i < N && i < int(c->out_width()) * c->out_height() * 4; ++i) nz_in += (in[i] != 0.0f);
+#if DLSS5_AMD_OUT_F16
+        // out is RGBA16F now: count non-zero halfwords (0x8000 = -0 is zero too) and widen the
+        // first four for the log.
+        const uint16_t* oh = static_cast<const uint16_t*>(c->out_color());
+        for (int i = 0; i < N && i < int(c->out_width()) * c->out_height() * 4; ++i)
+            nz_out += (oh[i] != 0 && oh[i] != 0x8000);
+        ngx_log("%s frame %d probe: previous input %ld/%d non-zero in the first %d floats, previous chain "
+                "output %ld/%d, out[0..3] = %g %g %g %g",
+                feature_name(s), s->frame_idx, nz_in, N, N, nz_out, N,
+                ngxd::dlss_half_to_float(oh[0]), ngxd::dlss_half_to_float(oh[1]),
+                ngxd::dlss_half_to_float(oh[2]), ngxd::dlss_half_to_float(oh[3]));
+#else
+        const float* o = static_cast<const float*>(c->out_color());
         for (int i = 0; i < N; ++i) nz_out += (o[i] != 0.0f);
         ngx_log("%s frame %d probe: previous input %ld/%d non-zero in the first %d floats, previous chain "
                 "output %ld/%d, out[0..3] = %g %g %g %g",
                 feature_name(s), s->frame_idx, nz_in, N, N, nz_out, N, o[0], o[1], o[2], o[3]);
+#endif
     }
     for (size_t k = 0; k < n; ++k) {
         image_barrier(cmd, ins[k].image, ins[k].layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readable,
@@ -676,7 +689,15 @@ static NVSDK_NGX_Result collect_frame(NVSDK_NGX_Parameter* p, FeatureState* s, b
         }
     }
 
-    if (!fetch_image(p, s, vulkan, "Output", "Output", VK_FORMAT_R32G32B32A32_SFLOAT, c->out_color_buf(),
+    // M2: the app's Output must match the chain's out buffer element format (the buffer->image
+    // copy does no conversion; bufferRowLength=0 packs in IMAGE texels). NGX's output resource is
+    // normally R16G16B16A16_FLOAT - that is the f16 contract; 0 keeps the old RGBA32F contract.
+#if DLSS5_AMD_OUT_F16
+    const VkFormat out_fmt = VK_FORMAT_R16G16B16A16_SFLOAT;
+#else
+    const VkFormat out_fmt = VK_FORMAT_R32G32B32A32_SFLOAT;
+#endif
+    if (!fetch_image(p, s, vulkan, "Output", "Output", out_fmt, c->out_color_buf(),
                      D3D12_RESOURCE_STATE_UNORDERED_ACCESS, out))
         return NVSDK_NGX_Result_Fail;
     if (out.w != unsigned(c->out_width()) || out.h != unsigned(c->out_height())) {

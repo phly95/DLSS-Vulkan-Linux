@@ -127,7 +127,7 @@ def make_test(name, out_dir):
                 {"binding": 0, "file": "full15.bin"},
                 {"binding": 1, "file": "g_col.bin"},
                 {"binding": 2, "file": "expo.bin"},
-                {"binding": 3, "bytes": 32 * 32 * 16, "output": "out", "type": "f32"}
+                {"binding": 3, "bytes": 32 * 32 * 8, "output": "out", "type": "f16"}
             ]
         }
     elif name == "sr_enc0":
@@ -1055,7 +1055,7 @@ def make_test(name, out_dir):
                 {"binding": 0, "file": "in_rg.bin"},
                 {"binding": 1, "file": "in_b.bin"},
                 {"binding": 2, "file": "in_expo.bin"},
-                {"binding": 3, "bytes": n_pix * 16, "output": "out_img", "type": "f32"}
+                {"binding": 3, "bytes": n_pix * 8, "output": "out_img", "type": "f16"}
             ]
         }
     else:
