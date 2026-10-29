@@ -1,0 +1,21 @@
+// rr_entry_mode0: residual-stream entry for modes 0/3/4 (input = the unit's own level).
+// Contract: fills st[] (f32 residual, stored-order channels) for this lane's token.
+// Uses: x0/y0 (window origin), col (token in quarter), q (quarter), rowh, W/H/HW,
+// in_act4 (binding 1). Provides: st0.. (declared by caller via RR_FOR_NT), pos.
+    // ---- 1. entry (mode 0): the quarter's pixels, reflected, into registers
+    {
+        int txl = x0 + int(col & 7u);
+        int tyr = y0 + int(q * 2u) + int(col >> 3u);
+        // The lane's token is (txl, tyr): txl strides over the 8 columns,
+        // tyr over this quarter's two rows.
+        uint pos = uint(reflect_coord(tyr, H) * W + reflect_coord(txl, W));
+        #define RR_ENTRY_T(t) { \
+            uint byte = ((uint(t) >> 1u) * HW + pos) * 32u + (uint(t) & 1u) * 16u + rowh * 8u; \
+            uvec4 eq = in_act4[byte >> 4u]; \
+            uvec2 eh = ((byte & 8u) != 0u) ? eq.zw : eq.xy; \
+            st##t[0] = e4m3_to_f32(byte_of(eh.x, 0u)); st##t[1] = e4m3_to_f32(byte_of(eh.x, 1u)); \
+            st##t[2] = e4m3_to_f32(byte_of(eh.x, 2u)); st##t[3] = e4m3_to_f32(byte_of(eh.x, 3u)); \
+            st##t[4] = e4m3_to_f32(byte_of(eh.y, 0u)); st##t[5] = e4m3_to_f32(byte_of(eh.y, 1u)); \
+            st##t[6] = e4m3_to_f32(byte_of(eh.y, 2u)); st##t[7] = e4m3_to_f32(byte_of(eh.y, 3u)); }
+        RR_FOR_NT(RR_ENTRY_T)
+    }

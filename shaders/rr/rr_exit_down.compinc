@@ -1,0 +1,94 @@
+// rr_exit_down: u1-u4 down projection (HANDOFF.md; spec tools/rr/rr_level_model.py and the
+// bit-exact rr_level.comp section 7).  out_down = mA8 . merge2x2(q8(out)) + v170, clamp
+// +-6.28125, e4m3, written for the window's 16 down pixels at [0,W/2)x[0,H/2).
+//
+// Dataflow (rr_swin token-lane conventions; merge2x2 needs all four tokens of a down pixel,
+// which are four lanes of one wave - a wave owns window rows 2w..2q+1 = down row w, so a
+// pixel never crosses a wave and only the staging needs a barrier):
+//   1. STAGE: wave w writes its four pixels (ix 0..3 -> pixel cols 4w..4w+3) into MergeT:
+//      s_MT[j * 16 + p], j = q*C + chan with q = dx + 2*dy (model merge order), chan from
+//      the ofp fragments (16t + 8*rowh + i), p = pixel column.
+//   2. sync_lds(); every wave then reads all 16 pixel columns as its B operand.
+//   3. GEMM, M-split across waves (wave w takes d-tiles w, w+4, ...): M = Cdown (weights =
+//      operand A - mA8's tiles follow m108 in the host repack), K = 4C, N = the 16 pixels
+//      (B = s_MT, [K][N] pitch 16 -> NR_LOAD_B_ROW).
+//   4. EPILOGUE: acc comp i of lane l = (d = d0 + 8*(l/16)+i, pixel = l%16), so each
+//      (pixel, d) has exactly one writer; xd = x0/2 + ix, yd = y0/2 + iy (the bit-exact
+//      port's integer division), + v170 (f16 at binding 5), clamp, e4m3, out_b store at
+//      pidx(d, xd, yd, W/2, H/2) - P-permuted channel byte of the [C/32][H/2][W/2][32] map.
+//
+// CONTRACT DEPENDENCIES (requested in enc0's progress.md and REPORT.md; neither exists yet):
+//   * rr_swin.comp must declare at file scope (shared cannot be declared in main - measured
+//     glslang error "'shared' : not allowed in nested scope"):
+//         #if RR_DOWN
+//         shared NR_OPERAND s_MT[4 * RR_C * 16];   // [j = 0..4C-1][16 pixels], fp8
+//         #endif
+//   * the host must bind blob item 9 (v170, raw f16[Cdown]) at binding 5 for RR_DOWN
+//     dispatches (x88 is unused by down units); the halves are decoded below.
+//
+// Lavapipe subset: no private arrays, no fragment arrays, no dynamic frag indexing - every
+// element index is an RR_UNROLL8 literal, every fragment a RR_FOR_NT name.
+
+    // v170 (down bias, logical) from mu_rrl's wtab (host de-permutes item 9).
+#define RR_DN_BV(d) (wtab[v170o + (d)])
+// f32 -> e4m3 code, rr_level.comp's e4m3_enc as an expression (RNE, +-448, NaN -> 0x7f).
+#define RR_DN_E8(x) (isnan(x) ? 0x7Fu : uint(((floatBitsToUint(x) >> 24u) & 0x80u) | uint( \
+        (min(abs(x), 448.0) >= 0.015625) \
+            ? (((floatBitsToUint(min(abs(x), 448.0)) + 0x407FFFFu \
+                 + ((floatBitsToUint(min(abs(x), 448.0)) >> 20u) & 1u)) >> 20u) & 0xFFu) \
+            : uint(roundEven(min(abs(x), 448.0) * 512.0)))))
+// pinv(c & 31): logical channel -> byte in the 32-block (rr_level.comp pinv()).
+#define RR_DN_PST(b) ((((b) & 1u)) | (((b) & 2u) << 3u) | (((b) & 0x1Cu) >> 1u))
+#define RR_DN_PINV(k) ((k & 1u) | ((k & 0x10u) >> 3u) | ((k & 2u) << 1u) \
+                     | ((k & 4u) << 1u) | ((k & 8u) << 1u))
+
+    if (Cdown_in > 0) {
+        const int Cdn = Cdown_in;
+        const uint KJ = 4u * RR_C;                 // concat width (the merge j axis)
+        const uint mA8T = m108T + NT * 256u;       // host order: m108, then mA8 (pipeline.cpp)
+
+        // ---- 1. stage this wave's four down pixels' merge rows into s_MT[j*16 + p] ----
+        {
+            const uint p = 4u * wave + ((col & 7u) >> 1u);        // wave w owns cols 4w..4w+3
+            const uint qt = (col & 1u) + 2u * (col >> 3u);        // q = dx + 2*dy
+            // (t, rowh, i) indexes the ACTIVATION's STORED byte (t&1)*16 + 8*rowh + i of plane
+            // t>>1; the merge j needs the LOGICAL channel = plane*32 + P(stored) (model j = q*C+c,
+            // c logical - rr_level's pidx/pinv round trip).  P = RR_DN_PST below.
+            #define RR_DN_IT(t, i) \
+                s_MT[((qt * RR_C + 32u * ((t) >> 1u) + RR_DN_PST(((t) & 1u) * 16u + 8u * rowh + (i))) * 16u) + p] = ofp##t[i];
+            #define RR_DN_ROW(t) RR_DN_IT(t, 0) RR_DN_IT(t, 1) RR_DN_IT(t, 2) RR_DN_IT(t, 3) \
+                                RR_DN_IT(t, 4) RR_DN_IT(t, 5) RR_DN_IT(t, 6) RR_DN_IT(t, 7)
+            RR_FOR_NT(RR_DN_ROW)
+            #undef RR_DN_ROW
+            #undef RR_DN_IT
+        }
+        sync_lds();
+
+        // ---- 2. down GEMM, M-split: this wave computes d-tiles wave, wave+4, ... ----
+        for (uint dt = wave; dt < uint(Cdn / 16); dt += 4u) {
+            NR_FRAG_ACC acc = NR_ACC_ZERO;
+            for (uint kt = 0u; kt < KJ / 16u; ++kt) {
+                NR_FRAG_A fa;
+                NR_LOAD_A(fa, wT, mA8T + (dt * (KJ / 16u) + kt) * 256u, 16u);
+                NR_FRAG_B fb;
+                NR_LOAD_B_ROW(fb, s_MT, kt * 256u, 16u);
+                NR_MMA(acc, fa, fb);
+            }
+            // ---- 3. epilogue: acc comp i of lane l = (d, pixel) -> one writer a cell ----
+            const uint d0 = 16u * dt;
+            const uint pix = lane & 15u;
+            const int ix = int(pix & 3u), iy = int(pix >> 2u);
+            const int xd = x0 / 2 + ix, yd = y0 / 2 + iy;
+            if (xd >= 0 && xd < W / 2 && yd >= 0 && yd < H / 2) {
+                const uint rowb = (uint(yd) * uint(W / 2) + uint(xd)) * 32u;
+                const uint pl = uint(H / 2) * uint(W / 2) * 32u;   // one c>>5 plane
+                #define RR_DN_EPI(i) { \
+                    const uint d = d0 + 8u * (lane >> 4u) + (i); \
+                    const float dv = clamp(acc[i] + RR_DN_BV(d), -6.28125, 6.28125); \
+                    const uint pos = (d >> 5u) * pl + rowb + RR_DN_PINV(d & 31u); \
+                    out_b[pos] = uint8_t(RR_DN_E8(dv)); }
+                RR_UNROLL8(RR_DN_EPI)
+                #undef RR_DN_EPI
+            }
+        }
+    }

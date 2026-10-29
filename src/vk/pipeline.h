@@ -254,6 +254,10 @@ private:
     std::map<std::string, Buffer> ue;
     Buffer rr_dummy;                 // bound to the rr_level slots a unit leaves unused
     Buffer rr_tab;                   // rr_level binding 13: 16 units x 32 uints (21 item offsets, s1d2/4/6, s1d0, dec0_s0/f0)
+    Buffer rr_swin_w;                // mu_rrl: rr_swin tiled weights (matrices) + f32 tables
+    size_t rrsw_moff[16] = {};       // byte offset of unit u's tiled matrices in rr_swin_w
+    static const size_t kRrSwinTabBase = 8u * 1024u * 1024u;   // tables at + unit * kRrSwinTabMax
+    static const size_t kRrSwinTabMax = 34816u * 4u;   // words->bytes; fits 6C+20+G*4096+962
     size_t rr_blob_off[16] = {};     // byte offset of unit u's weights inside wbuf
     std::string trace_label;         // DLSS5_AMD_TRACE: which oracle launch the next dispatch is
     Buffer* rr_buf(const std::string& oracle_name);   // nullptr for "" or an unknown name

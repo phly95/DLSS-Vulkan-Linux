@@ -681,6 +681,451 @@ def make_test(name, out_dir):
                 {"binding": 14, "file": "wbuf.bin", "bytes": 16384}
             ]
         }
+    elif name == "rr_swin_u5":
+        # rr_swin unit 5 (C=160, G=8, mode 0 + o98 head): same grid/push shape as
+        # rr_level's case, but binding 0 = tiled stored-order weights and binding 13
+        # = the f32 table at the unit-5 row (8MB + 5*139264). 2x2 workgroups of 128
+        # threads over the 16x16 level; C/32 = 5 channel groups.
+        open(os.path.join(out_dir, "in_act.bin"), "wb").write(
+            np.tile(np.linspace(1, 250, 4096, dtype=np.uint8), 10).tobytes())
+        open(os.path.join(out_dir, "wt.bin"), "wb").write(
+            np.tile(np.linspace(1, 250, 8192, dtype=np.uint8), 64).tobytes())
+        open(os.path.join(out_dir, "x88.bin"), "wb").write(
+            np.linspace(-2.0, 3.0, 16 * 16 * 4, dtype=np.float32).astype(np.float16).tobytes())
+        tab = bytearray(8 * 1024 * 1024 + 6 * 139264)
+        toff = 8 * 1024 * 1024 + 5 * 139264
+        vec = np.linspace(0.5, 2.0, 6 * 160 + 20 + 8 * 4096, dtype=np.float32)
+        tab[toff:toff + len(vec.tobytes())] = vec.tobytes()
+        open(os.path.join(out_dir, "wtab.bin"), "wb").write(bytes(tab))
+        push = bytearray(84)
+        struct.pack_into("<10i", push, 0, 16, 16, 0, 0, 0, 160, 8, 0, 0, 1)
+        struct.pack_into("<4i", push, 40, 16, 16, 0, 0)
+        struct.pack_into("<3i", push, 56, 160, 0, 5)
+        struct.pack_into("<3i", push, 68, 16, 16, 1)
+        cfg = {
+            "groups": [2, 2, 1],
+            "push": push.hex(),
+            "bindings": [
+                {"binding": 0, "file": "wt.bin"},
+                {"binding": 1, "file": "in_act.bin"},
+                {"binding": 2, "bytes": 40960, "output": "out_act", "type": "u8"},
+                {"binding": 3, "bytes": 256},
+                {"binding": 4, "bytes": 256},
+                {"binding": 5, "file": "x88.bin", "bytes": 2048},
+                {"binding": 6, "bytes": 256},
+                {"binding": 7, "bytes": 2048, "output": "o98", "type": "f16"},
+                {"binding": 8, "bytes": 512},
+                {"binding": 9, "bytes": 256},
+                {"binding": 10, "bytes": 256},
+                {"binding": 11, "bytes": 256},
+                {"binding": 12, "bytes": 256},
+                {"binding": 13, "file": "wtab.bin"}
+            ]
+        }
+    elif name == "rr_swin_u2t":
+        # TEMPORARY block-only probe (C=96 G=8? no C=96 G=4 mode 0, no head): same shape
+        # as rr_swin_u5's case but C=96 (NT=6, 3 channel groups), 2x2 workgroups over
+        # a 16x16 level. Revert before merge (real u2 pipeline has down+heads).
+        open(os.path.join(out_dir, "in_act.bin"), "wb").write(
+            np.tile(np.linspace(1, 250, 4096, dtype=np.uint8), 6).tobytes())
+        open(os.path.join(out_dir, "wt.bin"), "wb").write(
+            np.tile(np.linspace(1, 250, 8192, dtype=np.uint8), 40).tobytes())
+        open(os.path.join(out_dir, "x88.bin"), "wb").write(
+            np.linspace(-2.0, 3.0, 16 * 16 * 4, dtype=np.float32).astype(np.float16).tobytes())
+        tab = bytearray(8 * 1024 * 1024 + 6 * 139264)
+        toff = 8 * 1024 * 1024 + 2 * 139264
+        vec = np.linspace(0.5, 2.0, 6 * 96 + 20 + 4 * 4096, dtype=np.float32)
+        tab[toff:toff + len(vec.tobytes())] = vec.tobytes()
+        open(os.path.join(out_dir, "wtab.bin"), "wb").write(bytes(tab))
+        push = bytearray(84)
+        struct.pack_into("<10i", push, 0, 16, 16, 0, 0, 0, 96, 4, 0, 0, 1)
+        struct.pack_into("<4i", push, 40, 16, 16, 0, 0)
+        struct.pack_into("<3i", push, 56, 96, 0, 2)
+        struct.pack_into("<3i", push, 68, 16, 16, 0)
+        cfg = {
+            "groups": [2, 2, 1],
+            "push": push.hex(),
+            "bindings": [
+                {"binding": 0, "file": "wt.bin"},
+                {"binding": 1, "file": "in_act.bin"},
+                {"binding": 2, "bytes": 24576, "output": "out_act", "type": "u8"},
+                {"binding": 3, "bytes": 256},
+                {"binding": 4, "bytes": 256},
+                {"binding": 5, "file": "x88.bin", "bytes": 2048},
+                {"binding": 6, "bytes": 256},
+                {"binding": 7, "bytes": 2048},
+                {"binding": 8, "bytes": 512},
+                {"binding": 9, "bytes": 256},
+                {"binding": 10, "bytes": 256},
+                {"binding": 11, "bytes": 256},
+                {"binding": 12, "bytes": 256},
+                {"binding": 13, "file": "wtab.bin"}
+            ]
+        }
+    elif name == "rr_swin_u1":
+        # rr_swin unit 1 (C=64 G=2 mode-1 merge + enc head + down): 2x2
+        # workgroups over the 16x16 level; down out = 4 windows x 16 px x 96.
+        # Small-magnitude synthetics (f16-half-safe byte pattern; lavapipe O7
+        # needs finite, non-constant output - hot linspace saturates e4m3).
+        # small finite byte pattern: e4m3 values in [0, 1.5]; keeps the down
+        # GEMM under +-6.28125 (hot linspace clamp-saturates out_b = constant).
+        patp = np.tile(np.array([0x00, 0x30, 0x00, 0x38, 0x00, 0x34, 0x00, 0x3C], dtype=np.uint8), 512)
+        # weights on the subnormal rung (e4m3 0..0.004): keeps the down GEMM
+        # (mA8 x merge x 4C) inside +-6.28125 so out_b is varied, not clamp-flat
+        patw = np.tile(np.array([0x00, 0x01, 0x02, 0x03], dtype=np.uint8), 1024)
+        open(os.path.join(out_dir, "in_act.bin"), "wb").write(
+            np.tile(patp, 4).tobytes())
+        open(os.path.join(out_dir, "wt.bin"), "wb").write(
+            np.tile(patw, 24).tobytes())
+        open(os.path.join(out_dir, "x88.bin"), "wb").write(
+            np.linspace(-2.0, 3.0, 16 * 16 * 4, dtype=np.float32).astype(np.float16).tobytes())
+        tab = bytearray(8 * 1024 * 1024 + 2 * 139264)
+        toff = 8 * 1024 * 1024 + 1 * 139264
+        # +962 covers the uniform extras incl. v170 at VH+800 (down bias)
+        vec = np.linspace(0.01, 0.08, 6 * 64 + 20 + 2 * 4096 + 962, dtype=np.float32)
+        # v170 ramp: per-channel bias variation keeps out_b from collapsing to
+        # one e4m3 code (all-zero bias + uniform micro-weights = constant sum)
+        vec[6 * 64 + 20 + 2 * 4096 + 800:6 * 64 + 20 + 2 * 4096 + 800 + 96] = \
+            np.linspace(-0.4, 0.4, 96, dtype=np.float32)
+        tab[toff:toff + len(vec.tobytes())] = vec.tobytes()
+        open(os.path.join(out_dir, "wtab.bin"), "wb").write(bytes(tab))
+        push = bytearray(84)
+        struct.pack_into("<10i", push, 0, 16, 16, 0, 0, 1, 64, 2, 96, 0, 1)
+        struct.pack_into("<4i", push, 40, 16, 16, 0, 0)
+        struct.pack_into("<3i", push, 56, 32, 0, 1)
+        struct.pack_into("<3i", push, 68, 16, 16, 3)
+        cfg = {
+            "groups": [2, 2, 1],
+            "push": push.hex(),
+            "bindings": [
+                {"binding": 0, "file": "wt.bin"},
+                {"binding": 1, "file": "in_act.bin"},
+                {"binding": 2, "bytes": 16384, "output": "out_act", "type": "u8"},
+                {"binding": 3, "bytes": 256},
+                {"binding": 4, "bytes": 6144, "output": "out_b", "type": "u8"},
+                {"binding": 5, "file": "x88.bin", "bytes": 2048},
+                {"binding": 6, "bytes": 256},
+                {"binding": 7, "bytes": 2048, "output": "o98", "type": "f16"},
+                {"binding": 8, "bytes": 512, "output": "oa0", "type": "f16"},
+                {"binding": 9, "bytes": 256},
+                {"binding": 10, "bytes": 256},
+                {"binding": 11, "bytes": 256},
+                {"binding": 12, "bytes": 256},
+                {"binding": 13, "file": "wtab.bin"}
+            ]
+        }
+    elif name == "rr_swin_u2":
+        # rr_swin unit 2 (C=96 G=4 mode-0 + enc head + down): down out =
+        # 4 windows x 16 px x 128.
+        open(os.path.join(out_dir, "in_act.bin"), "wb").write(
+            np.tile(np.linspace(1, 250, 4096, dtype=np.uint8), 6).tobytes())
+        open(os.path.join(out_dir, "wt.bin"), "wb").write(
+            np.tile(np.linspace(1, 250, 8192, dtype=np.uint8), 40).tobytes())
+        open(os.path.join(out_dir, "x88.bin"), "wb").write(
+            np.linspace(-2.0, 3.0, 16 * 16 * 4, dtype=np.float32).astype(np.float16).tobytes())
+        tab = bytearray(8 * 1024 * 1024 + 3 * 139264)
+        toff = 8 * 1024 * 1024 + 2 * 139264
+        vec = np.linspace(0.5, 2.0, 6 * 96 + 20 + 4 * 4096 + 96, dtype=np.float32)
+        tab[toff:toff + len(vec.tobytes())] = vec.tobytes()
+        open(os.path.join(out_dir, "wtab.bin"), "wb").write(bytes(tab))
+        push = bytearray(84)
+        struct.pack_into("<10i", push, 0, 16, 16, 0, 0, 0, 96, 4, 128, 0, 1)
+        struct.pack_into("<4i", push, 40, 16, 16, 0, 0)
+        struct.pack_into("<3i", push, 56, 96, 0, 2)
+        struct.pack_into("<3i", push, 68, 16, 16, 3)
+        cfg = {
+            "groups": [2, 2, 1],
+            "push": push.hex(),
+            "bindings": [
+                {"binding": 0, "file": "wt.bin"},
+                {"binding": 1, "file": "in_act.bin"},
+                {"binding": 2, "bytes": 24576, "output": "out_act", "type": "u8"},
+                {"binding": 3, "bytes": 256},
+                {"binding": 4, "bytes": 8192, "output": "out_b", "type": "u8"},
+                {"binding": 5, "file": "x88.bin", "bytes": 2048},
+                {"binding": 6, "bytes": 256},
+                {"binding": 7, "bytes": 2048, "output": "o98", "type": "f16"},
+                {"binding": 8, "bytes": 512, "output": "oa0", "type": "f16"},
+                {"binding": 9, "bytes": 256},
+                {"binding": 10, "bytes": 256},
+                {"binding": 11, "bytes": 256},
+                {"binding": 12, "bytes": 256},
+                {"binding": 13, "file": "wtab.bin"}
+            ]
+        }
+    elif name == "rr_swin_u3":
+        # rr_swin unit 3 (C=128 G=4 mode-0 + enc head + down): down out =
+        # 4 windows x 16 px x 160.
+        open(os.path.join(out_dir, "in_act.bin"), "wb").write(
+            np.tile(np.linspace(1, 250, 4096, dtype=np.uint8), 8).tobytes())
+        open(os.path.join(out_dir, "wt.bin"), "wb").write(
+            np.tile(np.linspace(1, 250, 8192, dtype=np.uint8), 56).tobytes())
+        open(os.path.join(out_dir, "x88.bin"), "wb").write(
+            np.linspace(-2.0, 3.0, 16 * 16 * 4, dtype=np.float32).astype(np.float16).tobytes())
+        tab = bytearray(8 * 1024 * 1024 + 4 * 139264)
+        toff = 8 * 1024 * 1024 + 3 * 139264
+        vec = np.linspace(0.5, 2.0, 6 * 128 + 20 + 4 * 4096 + 96, dtype=np.float32)
+        tab[toff:toff + len(vec.tobytes())] = vec.tobytes()
+        open(os.path.join(out_dir, "wtab.bin"), "wb").write(bytes(tab))
+        push = bytearray(84)
+        struct.pack_into("<10i", push, 0, 16, 16, 0, 0, 0, 128, 4, 160, 0, 1)
+        struct.pack_into("<4i", push, 40, 16, 16, 0, 0)
+        struct.pack_into("<3i", push, 56, 128, 0, 3)
+        struct.pack_into("<3i", push, 68, 16, 16, 3)
+        cfg = {
+            "groups": [2, 2, 1],
+            "push": push.hex(),
+            "bindings": [
+                {"binding": 0, "file": "wt.bin"},
+                {"binding": 1, "file": "in_act.bin"},
+                {"binding": 2, "bytes": 32768, "output": "out_act", "type": "u8"},
+                {"binding": 3, "bytes": 256},
+                {"binding": 4, "bytes": 10240, "output": "out_b", "type": "u8"},
+                {"binding": 5, "file": "x88.bin", "bytes": 2048},
+                {"binding": 6, "bytes": 256},
+                {"binding": 7, "bytes": 2048, "output": "o98", "type": "f16"},
+                {"binding": 8, "bytes": 512, "output": "oa0", "type": "f16"},
+                {"binding": 9, "bytes": 256},
+                {"binding": 10, "bytes": 256},
+                {"binding": 11, "bytes": 256},
+                {"binding": 12, "bytes": 256},
+                {"binding": 13, "file": "wtab.bin"}
+            ]
+        }
+    elif name == "rr_swin_u4":
+        # rr_swin unit 4 (C=160 G=8 mode-0 + enc head + down): down out =
+        # 4 windows x 16 px x 160.
+        # small pattern; wt must cover ALL tiles incl. mA8 (432640 B for
+        # u4: 1690 tiles - np.tile needs >= 106 reps of 4096 B).
+        patp = np.tile(np.array([0x00, 0x30, 0x00, 0x38, 0x00, 0x34, 0x00, 0x3C], dtype=np.uint8), 512)
+        patw = np.tile(np.array([0x00, 0x01, 0x02, 0x03], dtype=np.uint8), 1024)
+        open(os.path.join(out_dir, "in_act.bin"), "wb").write(
+            np.tile(patp, 10).tobytes())
+        open(os.path.join(out_dir, "wt.bin"), "wb").write(
+            np.tile(patw, 112).tobytes())
+        open(os.path.join(out_dir, "x88.bin"), "wb").write(
+            np.linspace(-2.0, 3.0, 16 * 16 * 4, dtype=np.float32).astype(np.float16).tobytes())
+        tab = bytearray(8 * 1024 * 1024 + 5 * 139264)
+        toff = 8 * 1024 * 1024 + 4 * 139264
+        vec = np.linspace(0.01, 0.08, 6 * 160 + 20 + 8 * 4096 + 962, dtype=np.float32)
+        vec[6 * 160 + 20 + 8 * 4096 + 800:6 * 160 + 20 + 8 * 4096 + 800 + 160] = \
+            np.linspace(-0.4, 0.4, 160, dtype=np.float32)
+        tab[toff:toff + len(vec.tobytes())] = vec.tobytes()
+        open(os.path.join(out_dir, "wtab.bin"), "wb").write(bytes(tab))
+        push = bytearray(84)
+        struct.pack_into("<10i", push, 0, 16, 16, 0, 0, 0, 160, 8, 160, 0, 1)
+        struct.pack_into("<4i", push, 40, 16, 16, 0, 0)
+        struct.pack_into("<3i", push, 56, 160, 0, 4)
+        struct.pack_into("<3i", push, 68, 16, 16, 3)
+        cfg = {
+            "groups": [2, 2, 1],
+            "push": push.hex(),
+            "bindings": [
+                {"binding": 0, "file": "wt.bin"},
+                {"binding": 1, "file": "in_act.bin"},
+                {"binding": 2, "bytes": 40960, "output": "out_act", "type": "u8"},
+                {"binding": 3, "bytes": 256},
+                {"binding": 4, "bytes": 10240, "output": "out_b", "type": "u8"},
+                {"binding": 5, "file": "x88.bin", "bytes": 2048},
+                {"binding": 6, "bytes": 256},
+                {"binding": 7, "bytes": 2048, "output": "o98", "type": "f16"},
+                {"binding": 8, "bytes": 512, "output": "oa0", "type": "f16"},
+                {"binding": 9, "bytes": 256},
+                {"binding": 10, "bytes": 256},
+                {"binding": 11, "bytes": 256},
+                {"binding": 12, "bytes": 256},
+                {"binding": 13, "file": "wtab.bin"}
+            ]
+        }
+    elif name in ("rr_swin_u7", "rr_swin_u9", "rr_swin_u11", "rr_swin_u13"):
+        # rr_swin mode-3 decoder units (own-level copy entry + dec o98 head):
+        # W=16 H=16, shift (4,0) -> grid 3x2; head reads x88/x90 (small f16
+        # patterns keep the o98 f16 chain finite on lavapipe O7).
+        cfg_m3 = {
+            "rr_swin_u7": (160, 8, 7), "rr_swin_u9": (128, 4, 9),
+            "rr_swin_u11": (96, 4, 11), "rr_swin_u13": (64, 2, 13),
+        }
+        C, G, uid = cfg_m3[name]
+        NT = C // 16
+        ntiles = G * 4 * NT + G * NT * 2 + (C // 8) * 2 * NT + (C // 8) * NT * 2 + NT
+        wt_n = (ntiles * 256 + 4095) // 4096
+        patp = np.tile(np.array([0x00, 0x30, 0x00, 0x38, 0x00, 0x34, 0x00, 0x3C], dtype=np.uint8), 512)
+        patw = np.tile(np.array([0x00, 0x01, 0x02, 0x03], dtype=np.uint8), 1024)
+        open(os.path.join(out_dir, "in_act.bin"), "wb").write(
+            np.tile(patp, (16 * 16 * C) // 4096).tobytes())
+        open(os.path.join(out_dir, "wt.bin"), "wb").write(
+            np.tile(patw, wt_n).tobytes())
+        open(os.path.join(out_dir, "x88.bin"), "wb").write(
+            np.linspace(-1.0, 1.0, 16 * 16 * 4, dtype=np.float32).astype(np.float16).tobytes())
+        open(os.path.join(out_dir, "x90.bin"), "wb").write(
+            np.linspace(-1.0, 1.0, 8 * 8 * 4, dtype=np.float32).astype(np.float16).tobytes())
+        tab = bytearray(8 * 1024 * 1024 + 16 * 139264)
+        toff = 8 * 1024 * 1024 + uid * 139264
+        vec = np.linspace(0.01, 0.08, 6 * C + 20 + G * 4096 + 96, dtype=np.float32)
+        tab[toff:toff + len(vec.tobytes())] = vec.tobytes()
+        open(os.path.join(out_dir, "wtab.bin"), "wb").write(bytes(tab))
+        push = bytearray(84)
+        struct.pack_into("<10i", push, 0, 16, 16, 4, 0, 3, C, G, 0, 0, 1)
+        struct.pack_into("<4i", push, 40, 16, 16, 4, 0)
+        struct.pack_into("<3i", push, 56, C, 0, uid)
+        struct.pack_into("<3i", push, 68, 16, 16, 1)
+        cfg = {
+            "groups": [3, 2, 1],
+            "push": push.hex(),
+            "bindings": [
+                {"binding": 0, "file": "wt.bin"},
+                {"binding": 1, "file": "in_act.bin"},
+                {"binding": 2, "bytes": 16 * 16 * C, "output": "out_act", "type": "u8"},
+                {"binding": 3, "bytes": 256},
+                {"binding": 4, "bytes": 256},
+                {"binding": 5, "file": "x88.bin", "bytes": 2048},
+                {"binding": 6, "file": "x90.bin", "bytes": 1024},
+                {"binding": 7, "bytes": 2048, "output": "o98", "type": "f16"},
+                {"binding": 8, "bytes": 256},
+                {"binding": 9, "bytes": 256},
+                {"binding": 10, "bytes": 256},
+                {"binding": 11, "bytes": 256},
+                {"binding": 12, "bytes": 256},
+                {"binding": 13, "file": "wtab.bin"}
+            ]
+        }
+    elif name in ("rr_swin_u6", "rr_swin_u8", "rr_swin_u10", "rr_swin_u12", "rr_swin_u14"):
+        # rr_swin up units (mode-2 + tube entry, no heads): 2x2 workgroups over a
+        # 16x16 level; low input is 8x8xCup, skip is full-res 16x16xC. Small-magnitude
+        # synthetic weights/tables (lavapipe O7 needs finite, non-constant output).
+        cfg_up = {
+            "rr_swin_u6": (160, 8, 160, 6), "rr_swin_u8": (128, 4, 160, 8),
+            "rr_swin_u10": (96, 4, 128, 10), "rr_swin_u12": (64, 2, 96, 12),
+            "rr_swin_u14": (32, 2, 64, 14),
+        }
+        C, G, Cup, uid = cfg_up[name]
+        NT = C // 16
+        ntiles = G * 4 * NT + G * NT * 2 + (C // 8) * 2 * NT + (C // 8) * NT * 2 + NT + (4 * C // 16) * (Cup // 16)
+        wt_need = ntiles * 256
+        wt_n = (wt_need + 8191) // 8192
+        open(os.path.join(out_dir, "in_act.bin"), "wb").write(
+            np.tile(np.linspace(1, 40, 4096, dtype=np.uint8), max(1, 8 * 8 * Cup // 4096)).tobytes())
+        open(os.path.join(out_dir, "wt.bin"), "wb").write(
+            np.tile(np.linspace(1, 40, 8192, dtype=np.uint8), wt_n).tobytes())
+        open(os.path.join(out_dir, "skip.bin"), "wb").write(
+            np.tile(np.linspace(1, 40, 4096, dtype=np.uint8), 16 * 16 * C // 4096).tobytes())
+        tab = bytearray(8 * 1024 * 1024 + 16 * 139264)
+        toff = 8 * 1024 * 1024 + uid * 139264
+        vec = np.linspace(0.02, 0.6, 6 * C + 20 + G * 4096 + 96, dtype=np.float32)
+        tab[toff:toff + len(vec.tobytes())] = vec.tobytes()
+        open(os.path.join(out_dir, "wtab.bin"), "wb").write(bytes(tab))
+        push = bytearray(84)
+        struct.pack_into("<10i", push, 0, 16, 16, 0, 0, 2, C, G, 0, Cup, 1)
+        struct.pack_into("<4i", push, 40, 16, 16, 0, 0)
+        struct.pack_into("<3i", push, 56, Cup, 0, uid)
+        struct.pack_into("<3i", push, 68, 16, 16, 0)
+        cfg = {
+            "groups": [2, 2, 1],
+            "push": push.hex(),
+            "bindings": [
+                {"binding": 0, "file": "wt.bin"},
+                {"binding": 1, "file": "in_act.bin"},
+                {"binding": 2, "bytes": 16 * 16 * C, "output": "out_act", "type": "u8"},
+                {"binding": 3, "file": "skip.bin"},
+                {"binding": 4, "bytes": 256},
+                {"binding": 5, "bytes": 256},
+                {"binding": 6, "bytes": 256},
+                {"binding": 7, "bytes": 256},
+                {"binding": 8, "bytes": 256},
+                {"binding": 9, "bytes": 256},
+                {"binding": 10, "bytes": 256},
+                {"binding": 11, "bytes": 256},
+                {"binding": 12, "bytes": 256},
+                {"binding": 13, "file": "wtab.bin"}
+            ]
+        }
+    elif name == "rr_swin_u0":
+        # rr_swin unit 0 (C=32 G=2 mode-5 enc0 entry + enc head): C/32 = 1 channel
+        # group; grid 2x2 over the 16x16 level. Table row unit 0 (8MB + 0).
+        open(os.path.join(out_dir, "in_act.bin"), "wb").write(
+            np.tile(np.linspace(1, 250, 4096, dtype=np.uint8), 8).tobytes())
+        open(os.path.join(out_dir, "wt.bin"), "wb").write(
+            np.tile(np.linspace(1, 250, 8192, dtype=np.uint8), 16).tobytes())
+        open(os.path.join(out_dir, "x88.bin"), "wb").write(
+            np.linspace(-2.0, 3.0, 16 * 16 * 4, dtype=np.float32).astype(np.float16).tobytes())
+        tab = bytearray(8 * 1024 * 1024 + 1 * 139264)
+        toff = 8 * 1024 * 1024 + 0 * 139264
+        vec = np.linspace(0.5, 2.0, 6 * 32 + 20 + 2 * 4096 + 96, dtype=np.float32)
+        tab[toff:toff + len(vec.tobytes())] = vec.tobytes()
+        open(os.path.join(out_dir, "wtab.bin"), "wb").write(bytes(tab))
+        push = bytearray(84)
+        struct.pack_into("<10i", push, 0, 16, 16, 0, 0, 5, 32, 2, 0, 0, 4)
+        struct.pack_into("<4i", push, 40, 16, 16, 0, 0)
+        struct.pack_into("<3i", push, 56, 64, 0, 0)
+        struct.pack_into("<3i", push, 68, 16, 16, 3)
+        cfg = {
+            "groups": [2, 2, 1],
+            "push": push.hex(),
+            "bindings": [
+                {"binding": 0, "file": "wt.bin"},
+                {"binding": 1, "file": "in_act.bin"},
+                {"binding": 2, "bytes": 8192, "output": "out_act", "type": "u8"},
+                {"binding": 3, "bytes": 256},
+                {"binding": 4, "bytes": 256},
+                {"binding": 5, "file": "x88.bin", "bytes": 2048},
+                {"binding": 6, "bytes": 256},
+                {"binding": 7, "bytes": 2048, "output": "o98", "type": "f16"},
+                {"binding": 8, "bytes": 512, "output": "oa0", "type": "f16"},
+                {"binding": 9, "bytes": 256},
+                {"binding": 10, "bytes": 256},
+                {"binding": 11, "bytes": 256},
+                {"binding": 12, "bytes": 256},
+                {"binding": 13, "file": "wtab.bin"}
+            ]
+        }
+    elif name == "rr_swin_u15":
+        # rr_swin unit 15 (C=32 G=2 mode-4 + unit-15 epilogue): grid 2x2 over the
+        # 16x16 level; render grid 16x16. Table row unit 15 (8MB + 15*139264).
+        # Small-magnitude synthetics (lavapipe O7 needs finite, non-constant output).
+        # f16-safe pattern: low byte cycles 0..255, high byte in {0x30,0xB0} => small finite f16
+        lo = np.tile(np.arange(256, dtype=np.uint8), 16)
+        hi = np.tile(np.array([0x30, 0xB0], dtype=np.uint8), 2048)
+        patf = np.empty(8192, dtype=np.uint8)
+        patf[0::2] = lo[:4096]
+        patf[1::2] = hi[:4096]
+        open(os.path.join(out_dir, "in_act.bin"), "wb").write(
+            np.tile(patf, 8).tobytes())
+        open(os.path.join(out_dir, "wt.bin"), "wb").write(
+            np.tile(patf, 16).tobytes())
+        open(os.path.join(out_dir, "x88.bin"), "wb").write(
+            np.linspace(-1.0, 1.0, 16 * 16 * 4, dtype=np.float32).astype(np.float16).tobytes())
+        open(os.path.join(out_dir, "x90.bin"), "wb").write(
+            np.linspace(-1.0, 1.0, 8 * 8 * 4, dtype=np.float32).astype(np.float16).tobytes())
+        tab = bytearray(8 * 1024 * 1024 + 16 * 139264)
+        toff = 8 * 1024 * 1024 + 15 * 139264
+        vec = np.linspace(0.02, 0.6, 6 * 32 + 20 + 2 * 4096, dtype=np.float32)
+        tab[toff:toff + len(vec.tobytes())] = vec.tobytes()
+        open(os.path.join(out_dir, "wtab.bin"), "wb").write(bytes(tab))
+        push = bytearray(84)
+        struct.pack_into("<10i", push, 0, 16, 16, 0, 0, 4, 32, 2, 0, 0, 4)
+        struct.pack_into("<4i", push, 40, 16, 16, 0, 0)
+        struct.pack_into("<3i", push, 56, 32, 0, 15)
+        struct.pack_into("<3i", push, 68, 16, 16, 1)
+        cfg = {
+            "groups": [2, 2, 1],
+            "push": push.hex(),
+            "bindings": [
+                {"binding": 0, "file": "wt.bin"},
+                {"binding": 1, "file": "in_act.bin"},
+                {"binding": 2, "bytes": 256},
+                {"binding": 3, "bytes": 256},
+                {"binding": 4, "bytes": 256},
+                {"binding": 5, "file": "x88.bin", "bytes": 2048},
+                {"binding": 6, "file": "x90.bin", "bytes": 1024},
+                {"binding": 7, "bytes": 2048, "output": "o98", "type": "f16"},
+                {"binding": 8, "bytes": 256},
+                {"binding": 9, "bytes": 1024, "output": "oc0", "type": "i8"},
+                {"binding": 10, "bytes": 1024, "output": "oc8", "type": "u8"},
+                {"binding": 11, "bytes": 1024, "output": "od0", "type": "u8"},
+                {"binding": 12, "bytes": 2048, "output": "od8", "type": "f16"},
+                {"binding": 13, "file": "wtab.bin"}
+            ]
+        }
     elif name == "sr_enc0L_in":
         # k_sr_enc0L_in (preset L, oracle launch 2): one 8x8 tile of the PADDED grid a
         # workgroup, grid ((W0+8)+7)/8 x ((H0+8)+7)/8 (tile-exact here: w0/h0 are 8-aligned),

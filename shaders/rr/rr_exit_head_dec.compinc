@@ -1,0 +1,67 @@
+// rr_exit_head_dec: decoder o98 head (flags bit 0), units 7/9/11/13 (mode 3).
+// Contract: reads ofp[] (fp8 block output), x88 (binding 5, this level),
+// x90 (binding 6, the coarser level's o98), s1d0/v1b8 (table). Writes o98
+// (binding 7) for in-range tokens: lanes 0..2, lane 3 = 0. Caller provides:
+// x0/y0/W/H, col/q/rowh/lane, flags_in, ofp[], hbias/s1d0o, wtab, in_5/in_6.
+// f16 RNE stores (f16_enc). Math (f32; the bit-exact port uses f16 chains,
+// guard decides): 4 gates h_r = v1b8[r] + m108[r] . q8(out), s_r = sigmoid;
+// up = 2x-bilinear(x90); o98_c = min(s1d0 s_c up_c s_3 + (1-s_3) x88_c, 65504).
+    if ((flags_in & 1) != 0) {
+        NR_FRAG_ACC gg = NR_ACC_ZERO;
+        #define RR_GD_KT(kt) { \
+            NR_FRAG_A ma; NR_LOAD_A(ma, wT, m108T + 256u * uint(kt), 16u); \
+            NR_MMA(gg, ma, ofp##kt); }
+        RR_FOR_NT(RR_GD_KT)
+        #undef RR_GD_KT
+        // Gates 0..3 live in ACC rows 0..3; xor-16 makes them visible to every
+        // lane of the wave (lanes 16..31 fetch their wave-mate's rows).
+        float g0 = (lane < 16u) ? gg[0] : subgroupShuffleXor(gg[0], 16u);
+        float g1 = (lane < 16u) ? gg[1] : subgroupShuffleXor(gg[1], 16u);
+        float g2 = (lane < 16u) ? gg[2] : subgroupShuffleXor(gg[2], 16u);
+        float g3 = (lane < 16u) ? gg[3] : subgroupShuffleXor(gg[3], 16u);
+        float s0 = 1.0 / (1.0 + exp(-(g0 + wtab[hbias])));
+        float s1 = 1.0 / (1.0 + exp(-(g1 + wtab[hbias + 1u])));
+        float s2 = 1.0 / (1.0 + exp(-(g2 + wtab[hbias + 2u])));
+        float s3 = 1.0 / (1.0 + exp(-(g3 + wtab[hbias + 3u])));
+        float gate = s3;
+        float inv = 1.0 - gate;
+        float s1d0 = wtab[s1d0o];
+        int rx = x0 + int(col & 7u);
+        int ry = y0 + int(q * 2u) + int(col >> 3u);
+        if (rx >= 0 && rx < W && ry >= 0 && ry < H) {
+            uint pix = uint(ry * W + rx);
+            uint x8b = pix * 8u;
+            float x88_0 = unpackHalf2x16(uint(in_5[x8b]) | (uint(in_5[x8b + 1u]) << 8u)).x;
+            float x88_1 = unpackHalf2x16(uint(in_5[x8b + 2u]) | (uint(in_5[x8b + 3u]) << 8u)).x;
+            float x88_2 = unpackHalf2x16(uint(in_5[x8b + 4u]) | (uint(in_5[x8b + 5u]) << 8u)).x;
+            // 2x-bilinear upsample of the coarser o98 ([H/2][W/2][4] f16).
+            // Fine p uses coarse base (p-1)/2 (floor) and base+1; the base+1
+            // weight is 0.75 (p even) / 0.25 (p odd), 0 at the borders.
+            int Wc = W / 2, Hc = H / 2;
+            int bxx = (rx <= 0) ? -1 : (rx - 1) / 2;
+            int byy = (ry <= 0) ? -1 : (ry - 1) / 2;
+            float aw = ((rx & 1) == 0) ? 0.75 : 0.25;
+            float ah = ((ry & 1) == 0) ? 0.75 : 0.25;
+            if (bxx < 0 || bxx + 1 >= Wc) aw = 0.0;
+            if (byy < 0 || byy + 1 >= Hc) ah = 0.0;
+            int bx = (bxx < 0) ? 0 : ((bxx >= Wc) ? Wc - 1 : bxx);
+            int by = (byy < 0) ? 0 : ((byy >= Hc) ? Hc - 1 : byy);
+            int nx = (bx + 1 >= Wc) ? Wc - 1 : bx + 1;
+            int ny = (by + 1 >= Hc) ? Hc - 1 : by + 1;
+            uint r0b = (uint(by) * uint(Wc) + uint(bx)) * 8u;
+            uint r1b = (uint(by) * uint(Wc) + uint(nx)) * 8u;
+            uint r2b = (uint(ny) * uint(Wc) + uint(bx)) * 8u;
+            uint r3b = (uint(ny) * uint(Wc) + uint(nx)) * 8u;
+            float up0 = (1.0 - ah) * ((1.0 - aw) * unpackHalf2x16(uint(in_6[r0b]) | (uint(in_6[r0b + 1u]) << 8u)).x + aw * unpackHalf2x16(uint(in_6[r1b]) | (uint(in_6[r1b + 1u]) << 8u)).x) + ah * ((1.0 - aw) * unpackHalf2x16(uint(in_6[r2b]) | (uint(in_6[r2b + 1u]) << 8u)).x + aw * unpackHalf2x16(uint(in_6[r3b]) | (uint(in_6[r3b + 1u]) << 8u)).x);
+            float up1 = (1.0 - ah) * ((1.0 - aw) * unpackHalf2x16(uint(in_6[r0b + 2u]) | (uint(in_6[r0b + 3u]) << 8u)).x + aw * unpackHalf2x16(uint(in_6[r1b + 2u]) | (uint(in_6[r1b + 3u]) << 8u)).x) + ah * ((1.0 - aw) * unpackHalf2x16(uint(in_6[r2b + 2u]) | (uint(in_6[r2b + 3u]) << 8u)).x + aw * unpackHalf2x16(uint(in_6[r3b + 2u]) | (uint(in_6[r3b + 3u]) << 8u)).x);
+            float up2 = (1.0 - ah) * ((1.0 - aw) * unpackHalf2x16(uint(in_6[r0b + 4u]) | (uint(in_6[r0b + 5u]) << 8u)).x + aw * unpackHalf2x16(uint(in_6[r1b + 4u]) | (uint(in_6[r1b + 5u]) << 8u)).x) + ah * ((1.0 - aw) * unpackHalf2x16(uint(in_6[r2b + 4u]) | (uint(in_6[r2b + 5u]) << 8u)).x + aw * unpackHalf2x16(uint(in_6[r3b + 4u]) | (uint(in_6[r3b + 5u]) << 8u)).x);
+            float v0 = min(s1d0 * s0 * up0 * gate + inv * x88_0, 65504.0);
+            float v1 = min(s1d0 * s1 * up1 * gate + inv * x88_1, 65504.0);
+            float v2 = min(s1d0 * s2 * up2 * gate + inv * x88_2, 65504.0);
+            uint e0b = f16_enc(v0); uint e1b = f16_enc(v1); uint e2b = f16_enc(v2);
+            out_c[pix * 8u] = uint8_t(e0b & 0xFFu); out_c[pix * 8u + 1u] = uint8_t(e0b >> 8u);
+            out_c[pix * 8u + 2u] = uint8_t(e1b & 0xFFu); out_c[pix * 8u + 3u] = uint8_t(e1b >> 8u);
+            out_c[pix * 8u + 4u] = uint8_t(e2b & 0xFFu); out_c[pix * 8u + 5u] = uint8_t(e2b >> 8u);
+            out_c[pix * 8u + 6u] = uint8_t(0); out_c[pix * 8u + 7u] = uint8_t(0);
+        }
+    }

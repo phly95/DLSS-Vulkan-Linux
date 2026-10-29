@@ -1,0 +1,54 @@
+// rr_entry_mode1: level 0 -> 1 merge entry (unit 1, C=64, Cin=32).
+// X = mC8 . merge2x2(in) + v188. Fills st[] (f32 residual, stored-order).
+// merge2x2: K = q*Cin + c, q = dx+2dy sub-pixel, c stored channel; the token's
+// full-res coords reflect in (W,H), the sub-pixel scales to (2W,2H) (no second
+// reflection, matching the port: 2px+1 is always in range).
+// Uses: x0/y0/W/H, col/q/rowh, in_act4 (binding 1), wT/wtab, NT/G,
+// m108T (head tiles end), gram (table gram base), Cdown_in/RR_DOWN (mA8 size).
+// Weight tiles (host rrsw order): mA8 (Cdown x 4C down-projection) after m108,
+// mC8 64x128 (4 row-tiles x 8 K-tiles) after mA8.
+// Bias vector (host appends f32 after gram): v188[64] (stored channel order).
+{
+    uint mC8T = m108T + NT * 256u;
+#if RR_DOWN
+    mC8T += (uint(Cdown_in) >> 4u) * ((uint(RR_C) * 4u) >> 4u) * 256u;
+#endif
+    // v188 lives at the shader-scope v188o (table VH+96); do NOT redeclare here
+    // (a local gram+G*4096 would hit the v218 slot = zeros for u1).
+    int tx = x0 + int(col & 7u);
+    int ty = y0 + int(q * 2u) + int(col >> 3u);
+    int rtx = reflect_coord(tx, W);
+    int rty = reflect_coord(ty, H);
+    #define RR_M1_ZERO(t) { st##t = NR_ACC_ZERO; }
+    RR_FOR_NT(RR_M1_ZERO)
+    NR_FRAG_B fb;
+    // One K-tile per step: tile kt sits inside q-block qq = kt>>1 (16 | 32), so a
+    // single sub-pixel (sx,sy) and a single uvec4 serve all 8 elements.
+    #define RR_M1_KT(kt) { \
+        uint qq = uint(kt) >> 1u; \
+        uint sx = uint(2 * rtx + int(qq & 1u)); \
+        uint sy = uint(2 * rty + int(qq >> 1u)); \
+        uint pos2 = sy * uint(2 * W) + sx; \
+        uvec4 fq = in_act4[pos2 * 2u + (uint(kt) & 1u)]; \
+        uvec2 fh = (rowh != 0u) ? fq.zw : fq.xy; \
+        Q8P(fb, 0u, e4m3_to_f32(byte_of(fh.x, 0u)), e4m3_to_f32(byte_of(fh.x, 1u))) \
+        Q8P(fb, 2u, e4m3_to_f32(byte_of(fh.x, 2u)), e4m3_to_f32(byte_of(fh.x, 3u))) \
+        Q8P(fb, 4u, e4m3_to_f32(byte_of(fh.y, 0u)), e4m3_to_f32(byte_of(fh.y, 1u))) \
+        Q8P(fb, 6u, e4m3_to_f32(byte_of(fh.y, 2u)), e4m3_to_f32(byte_of(fh.y, 3u))) \
+        NR_FRAG_A fa0; NR_LOAD_A(fa0, wT, mC8T + 256u * (uint(kt)), 16u); NR_MMA(st0, fa0, fb); \
+        NR_FRAG_A fa1; NR_LOAD_A(fa1, wT, mC8T + 256u * (8u + uint(kt)), 16u); NR_MMA(st1, fa1, fb); \
+        NR_FRAG_A fa2; NR_LOAD_A(fa2, wT, mC8T + 256u * (16u + uint(kt)), 16u); NR_MMA(st2, fa2, fb); \
+        NR_FRAG_A fa3; NR_LOAD_A(fa3, wT, mC8T + 256u * (24u + uint(kt)), 16u); NR_MMA(st3, fa3, fb); }
+    RR_M1_KT(0) RR_M1_KT(1) RR_M1_KT(2) RR_M1_KT(3)
+    RR_M1_KT(4) RR_M1_KT(5) RR_M1_KT(6) RR_M1_KT(7)
+    #define RR_M1_BIAS(t) { \
+        st##t[0] += wtab[v188o + 16u * uint(t) + 8u * rowh]; \
+        st##t[1] += wtab[v188o + 16u * uint(t) + 8u * rowh + 1u]; \
+        st##t[2] += wtab[v188o + 16u * uint(t) + 8u * rowh + 2u]; \
+        st##t[3] += wtab[v188o + 16u * uint(t) + 8u * rowh + 3u]; \
+        st##t[4] += wtab[v188o + 16u * uint(t) + 8u * rowh + 4u]; \
+        st##t[5] += wtab[v188o + 16u * uint(t) + 8u * rowh + 5u]; \
+        st##t[6] += wtab[v188o + 16u * uint(t) + 8u * rowh + 6u]; \
+        st##t[7] += wtab[v188o + 16u * uint(t) + 8u * rowh + 7u]; }
+    RR_FOR_NT(RR_M1_BIAS)
+}

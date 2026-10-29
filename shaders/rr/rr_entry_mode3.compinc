@@ -1,0 +1,29 @@
+// rr_entry_mode3: residual-stream entry for the decoder units u7/u9/u11/u13.
+// The input is the unit's own level: the mode-2 up unit's output at this
+// level and resolution (u7 <- E0b90, u9 <- E0b8c, u11 <- E0b88, u13 <- E0b84),
+// with C_in == C, so the entry is a plain stored-order copy into registers,
+// exactly like mode 0 (bit-exact port: "0, 3, 4: the input is the unit's own
+// level"). Own file (not a share of mode0) so the mode-3 contract has one
+// owner and mu_rrl can hook `#elif RR_MODE == 3` without touching mode 0.
+// Contract: fills st[] (f32 residual, stored-order channels) for this lane's
+// token. Uses: x0/y0 (window origin), col (token in quarter), q (quarter),
+// rowh, W/H/HW, in_act4 (binding 1). Provides: st0.. (declared by caller via
+// RR_FOR_NT). The core seeds (st += v128', Q8P) after this include.
+    // ---- 1. entry (mode 3): the quarter's pixels, reflected, into registers
+    {
+        int txl = x0 + int(col & 7u);
+        int tyr = y0 + int(q * 2u) + int(col >> 3u);
+        // The lane's token is (txl, tyr): txl strides over the 8 columns,
+        // tyr over this quarter's two rows.
+        uint pos = uint(reflect_coord(tyr, H) * W + reflect_coord(txl, W));
+        #define RR_ENTRY3_T(t) { \
+            uint byte = ((uint(t) >> 1u) * HW + pos) * 32u + (uint(t) & 1u) * 16u + rowh * 8u; \
+            uvec4 eq = in_act4[byte >> 4u]; \
+            uvec2 eh = ((byte & 8u) != 0u) ? eq.zw : eq.xy; \
+            st##t[0] = e4m3_to_f32(byte_of(eh.x, 0u)); st##t[1] = e4m3_to_f32(byte_of(eh.x, 1u)); \
+            st##t[2] = e4m3_to_f32(byte_of(eh.x, 2u)); st##t[3] = e4m3_to_f32(byte_of(eh.x, 3u)); \
+            st##t[4] = e4m3_to_f32(byte_of(eh.y, 0u)); st##t[5] = e4m3_to_f32(byte_of(eh.y, 1u)); \
+            st##t[6] = e4m3_to_f32(byte_of(eh.y, 2u)); st##t[7] = e4m3_to_f32(byte_of(eh.y, 3u)); }
+        RR_FOR_NT(RR_ENTRY3_T)
+        #undef RR_ENTRY3_T
+    }

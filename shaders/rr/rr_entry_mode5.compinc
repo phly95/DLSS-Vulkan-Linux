@@ -1,0 +1,68 @@
+// rr_entry_mode5: enc0 entry (unit 0, C=32, Cin=64).
+// h = q8(nh_gelu(m1d8 . F + v218)) (64 hidden), X = m1f8 . h + v230.
+// Fills st[] (f32 residual, stored-order channels) for this lane's token.
+// Uses: x0/y0/W/H/HW, col/q/rowh, in_act4 (binding 1), wT/wtab, NT/G,
+// m108T (head tiles end), gram (table row gram base). Provides: st0.. (f32 X).
+// Weight tiles (host rrsw order; u0 has no mA8/mC8/mE8, so m1d8 follows m108):
+// m1d8 64x64 (4 row-tiles x 4 K-tiles), m1f8 32x64 (2 row-tiles x 4 K-tiles).
+// Bias vectors (host appends f32 after gram): v218[64] (hidden, logical order),
+// v230[32] (stored channel order, matching st[]).
+{
+    uint m1d8T = m108T + NT * 256u;
+    uint m1f8T = m1d8T + 16u * 256u;
+    uint v218o = gram + G * 4096u;
+    uint v230o = v218o + 64u;
+    int txl = x0 + int(col & 7u);
+    int tyr = y0 + int(q * 2u) + int(col >> 3u);
+    uint pos = uint(reflect_coord(tyr, H) * W + reflect_coord(txl, W));
+    NR_FRAG_B fb;
+    NR_FRAG_ACC hh0 = NR_ACC_ZERO; NR_FRAG_ACC hh1 = NR_ACC_ZERO;
+    NR_FRAG_ACC hh2 = NR_ACC_ZERO; NR_FRAG_ACC hh3 = NR_ACC_ZERO;
+    // GEMM1: hidden rows 16rt.. over F K-tiles (16 stored channels each).
+    #define RR_M5_KT(kt) { \
+        uint fbyte = ((uint(kt) >> 1u) * HW + pos) * 32u + (uint(kt) & 1u) * 16u; \
+        uvec4 fq = in_act4[fbyte >> 4u]; \
+        uvec2 fh = (rowh != 0u) ? fq.zw : fq.xy; \
+        Q8P(fb, 0u, e4m3_to_f32(byte_of(fh.x, 0u)), e4m3_to_f32(byte_of(fh.x, 1u))) \
+        Q8P(fb, 2u, e4m3_to_f32(byte_of(fh.x, 2u)), e4m3_to_f32(byte_of(fh.x, 3u))) \
+        Q8P(fb, 4u, e4m3_to_f32(byte_of(fh.y, 0u)), e4m3_to_f32(byte_of(fh.y, 1u))) \
+        Q8P(fb, 6u, e4m3_to_f32(byte_of(fh.y, 2u)), e4m3_to_f32(byte_of(fh.y, 3u))) \
+        NR_FRAG_A fa0; NR_LOAD_A(fa0, wT, m1d8T + 256u * (uint(kt)), 16u); NR_MMA(hh0, fa0, fb); \
+        NR_FRAG_A fa1; NR_LOAD_A(fa1, wT, m1d8T + 256u * (4u + uint(kt)), 16u); NR_MMA(hh1, fa1, fb); \
+        NR_FRAG_A fa2; NR_LOAD_A(fa2, wT, m1d8T + 256u * (8u + uint(kt)), 16u); NR_MMA(hh2, fa2, fb); \
+        NR_FRAG_A fa3; NR_LOAD_A(fa3, wT, m1d8T + 256u * (12u + uint(kt)), 16u); NR_MMA(hh3, fa3, fb); }
+    RR_M5_KT(0) RR_M5_KT(1) RR_M5_KT(2) RR_M5_KT(3)
+    // Hidden bias + GELU + quantise to second-GEMM B operands.
+    NR_FRAG_B hb0; NR_FRAG_B hb1; NR_FRAG_B hb2; NR_FRAG_B hb3;
+    #define RR_M5_HB(HB, HH, RT) { \
+        HH[0] += wtab[v218o + 16u * uint(RT) + 8u * rowh]; \
+        HH[1] += wtab[v218o + 16u * uint(RT) + 8u * rowh + 1u]; \
+        HH[2] += wtab[v218o + 16u * uint(RT) + 8u * rowh + 2u]; \
+        HH[3] += wtab[v218o + 16u * uint(RT) + 8u * rowh + 3u]; \
+        HH[4] += wtab[v218o + 16u * uint(RT) + 8u * rowh + 4u]; \
+        HH[5] += wtab[v218o + 16u * uint(RT) + 8u * rowh + 5u]; \
+        HH[6] += wtab[v218o + 16u * uint(RT) + 8u * rowh + 6u]; \
+        HH[7] += wtab[v218o + 16u * uint(RT) + 8u * rowh + 7u]; \
+        Q8P(HB, 0u, nh_gelu(HH[0]), nh_gelu(HH[1])) \
+        Q8P(HB, 2u, nh_gelu(HH[2]), nh_gelu(HH[3])) \
+        Q8P(HB, 4u, nh_gelu(HH[4]), nh_gelu(HH[5])) \
+        Q8P(HB, 6u, nh_gelu(HH[6]), nh_gelu(HH[7])) }
+    RR_M5_HB(hb0, hh0, 0) RR_M5_HB(hb1, hh1, 1) RR_M5_HB(hb2, hh2, 2) RR_M5_HB(hb3, hh3, 3)
+    // GEMM2: X rows 16t.. over the 4 hidden K-tiles, straight into st[] (f32).
+    #define RR_M5_ZERO(t) { st##t = NR_ACC_ZERO; }
+    RR_FOR_NT(RR_M5_ZERO)
+    #define RR_M5_JT(jt) { \
+        NR_FRAG_A ga0; NR_LOAD_A(ga0, wT, m1f8T + 256u * (uint(jt)), 16u); NR_MMA(st0, ga0, hb##jt); \
+        NR_FRAG_A ga1; NR_LOAD_A(ga1, wT, m1f8T + 256u * (4u + uint(jt)), 16u); NR_MMA(st1, ga1, hb##jt); }
+    RR_M5_JT(0) RR_M5_JT(1) RR_M5_JT(2) RR_M5_JT(3)
+    #define RR_M5_BIAS(t) { \
+        st##t[0] += wtab[v230o + 16u * uint(t) + 8u * rowh]; \
+        st##t[1] += wtab[v230o + 16u * uint(t) + 8u * rowh + 1u]; \
+        st##t[2] += wtab[v230o + 16u * uint(t) + 8u * rowh + 2u]; \
+        st##t[3] += wtab[v230o + 16u * uint(t) + 8u * rowh + 3u]; \
+        st##t[4] += wtab[v230o + 16u * uint(t) + 8u * rowh + 4u]; \
+        st##t[5] += wtab[v230o + 16u * uint(t) + 8u * rowh + 5u]; \
+        st##t[6] += wtab[v230o + 16u * uint(t) + 8u * rowh + 6u]; \
+        st##t[7] += wtab[v230o + 16u * uint(t) + 8u * rowh + 7u]; }
+    RR_FOR_NT(RR_M5_BIAS)
+}

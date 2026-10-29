@@ -88,6 +88,193 @@ static bool rr_table_from_params(const std::string& pj, uint32_t* tab) {
     return true;
 }
 
+// ---- rr_swin repack (mu_rrl): tiled stored-order weights + f32 vector/gram tables ----
+// Mirrors tools/rr/rr_layout.py (frag order) and rr_pack.py (permutations).  The only
+// consumer is shaders/rr/rr_swin.comp: every weight matrix as [rowtile][coltile][16][16]
+// = 256-byte tiles (one cooperative-matrix load, stride 16), activation-channel axes in
+// the activation's STORED order (byte j of a 32-group holds logical channel P(j), so the
+// kernel indexes channels by stored byte with no permute).  LayerScale is folded here:
+// Wo' = s1d2*Wo, v128' = s1d2*v128, W2' = s1d4*W2, b2' = s1d4*b2 (f32 scalars from tab).
+namespace {
+static uint32_t rrsw_frag_u(uint32_t u, uint32_t c, uint32_t cols) {
+    return 16u * (u & 15u) + 256u * ((c >> 2u) & 1u) + 8u * ((c >> 3u) & 1u) + 4u * ((c >> 1u) & 1u)
+         + 2u * ((c >> 4u) & 1u) + (c & 1u) + 512u * (c >> 5u) + 16u * cols * (u >> 4u);
+}
+static uint32_t rrsw_frag_off(uint32_t r, uint32_t c, uint32_t cols) {
+    uint32_t u = ((r & 0x7FFFFFE1u) | ((r >> 3) & 2u)) + (r & 0xEu) * 2u;
+    return rrsw_frag_u(u, c, cols);
+}
+static uint32_t rrsw_perm_P(uint32_t i) {
+    return ((i >> 2u) << 1u) | (i & 1u) | (((i >> 1u) & 1u) << 4u);
+}
+static uint32_t rrsw_basis(uint32_t idx) { return (idx & ~31u) | rrsw_perm_P(idx & 31u); }
+static uint32_t rrsw_pinv(uint32_t k) {
+    return (k & 1u) | ((k & 0x10u) >> 3u) | ((k & 2u) << 1u) | ((k & 4u) << 1u) | ((k & 8u) << 1u);
+}
+static float rrsw_f16_to_f32(uint32_t h) {
+    uint32_t s = (h >> 15) & 1u, e = (h >> 10) & 31u, m = h & 0x3FFu;
+    if (e == 0u) {
+        float v = float(m) * 5.9604644775390625e-08f;
+        return (s != 0u) ? -v : v;
+    }
+    // Sign rides in b for normals and inf/nan alike (e+112 <= 142, no overflow).
+    uint32_t b = (s << 31) | ((e == 31u ? 0xFFu : e + 112u) << 23) | (m << 13);
+    float v;
+    std::memcpy(&v, &b, 4);
+    return v;
+}
+static float rrsw_e4m3_to_f32(uint32_t b) {
+    uint32_t e = (b >> 3u) & 15u;
+    float v = (e == 0u) ? float(b & 7u) * 0.001953125f
+                        : ([&] { uint32_t bb = ((e + 120u) << 23) | ((b & 7u) << 20); float f;
+                                  std::memcpy(&f, &bb, 4); return f; })();
+    return ((b & 0x80u) != 0u) ? -v : v;
+}
+static uint8_t rrsw_f32_to_e4m3(float x) {
+    if (!std::isfinite(x)) return 0x7Fu;
+    uint32_t s;
+    std::memcpy(&s, &x, 4);
+    uint32_t sgn = (s >> 24) & 0x80u;
+    float a = std::fabs(x);
+    if (a > 448.0f) a = 448.0f;
+    uint32_t ab;
+    std::memcpy(&ab, &a, 4);
+    uint32_t code;
+    if (a >= 0.015625f) code = ((ab + 0x407FFFFu + ((ab >> 20) & 1u)) >> 20) & 0xFFu;
+    else code = uint32_t(std::nearbyint(a * 512.0f));
+    return uint8_t(sgn | code);
+}
+
+// Matrix sizes (tiles of 256 B) for unit (C,G,Cdown,Cup) with the given present items.
+static size_t rrsw_unit_tiles(uint32_t C, uint32_t G, uint32_t Cdown, uint32_t Cup, const uint32_t* meta) {
+    const uint32_t NT = C / 16, NBLK = C / 8;
+    size_t t = 0;
+    t += size_t(G) * 4u * NT;                 // Q+V per head
+    t += size_t(G) * NT * 2u;                 // Wo per head
+    t += size_t(NBLK) * 2u * NT;              // fc1 per block
+    t += size_t(NBLK) * NT * 2u;              // fc2 per block
+    t += NT;                                  // m108 (always present)
+    if (meta[8] != 0xFFFFFFFFu) t += size_t(Cdown / 16) * size_t(4 * C / 16);   // mA8
+    if (meta[10] != 0xFFFFFFFFu) t += size_t(4) * size_t(128 / 16);             // mC8
+    if (meta[12] != 0xFFFFFFFFu) t += size_t(4 * C / 16) * size_t(Cup / 16);    // mE8
+    if (meta[16] != 0xFFFFFFFFu) t += size_t(4) * size_t(64 / 16);              // m1d8
+    if (meta[18] != 0xFFFFFFFFu) t += size_t(2) * size_t(64 / 16);              // m1f8
+    return t;
+}
+static size_t rrsw_unit_tab(uint32_t C, uint32_t G) { return size_t(6 * C + 20 + G * 4096 + 962); }
+
+// Repacks unit (C,G,Cdown,Cup): blob (wblob, size bytes, meta = 21 item offsets,
+// s1d2/s1d4 f32) -> tiled matrices at wout, f32 table at tout.  Returns false when any
+// byte read would leave the blob.
+static bool rrsw_repack_unit(const uint8_t* wblob, size_t size, const uint32_t* meta,
+                             uint32_t C, uint32_t G, uint32_t Cdown, uint32_t Cup,
+                             float s1d2, float s1d4, uint8_t* wout, float* tout) {
+    const uint32_t NT = C / 16, NBLK = C / 8;
+    auto byte_ok = [&](uint32_t rel) { return size_t(rel) < size; };
+    auto tile = [&](uint32_t rel, uint32_t row0, uint32_t col0, uint32_t rows, uint32_t cols,
+                    uint32_t scols, size_t tiles_off, bool perm_r, bool perm_c, bool plain) {
+        if (rel == 0xFFFFFFFFu) return true;
+        for (uint32_t rt = 0; rt < rows / 16u; ++rt)
+            for (uint32_t ct = 0; ct < cols / 16u; ++ct)
+                for (uint32_t n = 0u; n < 16u; ++n)
+                    for (uint32_t k = 0u; k < 16u; ++k) {
+                        uint32_t r = row0 + rt * 16u + n, c = col0 + ct * 16u + k;
+                        uint32_t rl = perm_r ? rrsw_basis(r) : r;
+                        uint32_t cl = perm_c ? rrsw_basis(c) : c;
+                        uint32_t src = plain ? rrsw_frag_u(rl, cl, scols) : rrsw_frag_off(rl, cl, scols);
+                        if (!byte_ok(rel + src)) return false;
+                        wout[tiles_off + (size_t(rt) * (cols / 16u) + ct) * 256u + n * 16u + k] =
+                            wblob[rel + src];
+                    }
+        return true;
+    };
+    size_t cur = 0;
+    const size_t rHS = size_t(4u) * NT * 256u;
+    for (uint32_t h = 0u; h < G; ++h) {
+        if (!tile(meta[0] + h * 64u * C, 0, 0, 32, C, C, cur, false, true, false)) return false;
+        if (!tile(meta[0] + h * 64u * C, 32, 0, 32, C, C, cur + size_t(2u) * NT * 256u, false, true, false))
+            return false;
+        cur += rHS;
+    }
+    for (uint32_t h = 0u; h < G; ++h) {
+        if (!tile(meta[2], 0, 32u * h, C, 32, 32u * G, cur, true, false, false)) return false;
+        cur += size_t(NT) * 2u * 256u;
+    }
+    for (uint32_t j = 0u; j < NBLK; ++j) {
+        if (!tile(meta[4], 32u * j, 0, 32, C, C, cur, false, true, false)) return false;
+        cur += size_t(2u) * NT * 256u;
+    }
+    for (uint32_t j = 0u; j < NBLK; ++j) {
+        if (!tile(meta[6], 0, 32u * j, C, 32, 4u * C, cur, true, false, false)) return false;
+        cur += size_t(NT) * 2u * 256u;
+    }
+    if (!tile(meta[14], 0, 0, 16, C, C, cur, false, true, true)) return false;
+    cur += size_t(NT) * 256u;
+    if (!tile(meta[8], 0, 0, Cdown, 4 * C, 4u * C, cur, false, false, false)) return false;
+    if (meta[8] != 0xFFFFFFFFu) cur += size_t(Cdown / 16) * size_t(4 * C / 16) * 256u;
+    if (!tile(meta[10], 0, 0, 64, 128, 128, cur, true, true, false)) return false;
+    if (meta[10] != 0xFFFFFFFFu) cur += size_t(4) * size_t(8) * 256u;
+    if (!tile(meta[12], 0, 0, 4 * C, Cup, Cup, cur, true, true, false)) return false;
+    if (meta[12] != 0xFFFFFFFFu) cur += size_t(4 * C / 16) * size_t(Cup / 16) * 256u;
+    if (!tile(meta[16], 0, 0, 64, 64, 64, cur, false, true, false)) return false;
+    if (meta[16] != 0xFFFFFFFFu) cur += size_t(4) * size_t(4) * 256u;
+    if (!tile(meta[18], 0, 0, 32, 64, 64, cur, true, false, false)) return false;
+    (void)cur;
+    // NOTE: no LayerScale fold on Wo/W2 (it re-quantises the weights and costs ~6 dB):
+    // the shader scales ctx by s1d2 and h by s1d4 instead.  v128'/b2' above stay folded
+    // (f32 vectors: exact).
+    // f32 table: v128' [C], b2' [C], v140 [4C hidden, logical order], v1b8 [16],
+    // s1d0, s1d6, s1d2, s1d4, gram [G][64][64], then per-mode extras (uniform offsets):
+    // v218[64] (u0 hidden, logical), v230[32] (u0, stored), v188[64] (u1, stored),
+    // v1a0[640] (mode2, stored per-quad), v170[160] (down, stored), dec0_s0/f0 (u15).
+    // (LayerScale is folded into the v128'/b2' vectors only; Wo/W2 stay exact and the
+    // shader scales ctx/h by s1d2/s1d4 from slots 18/19.)
+    auto f16at = [&](uint32_t rel, uint32_t i) -> float {
+        if (!byte_ok(rel + 2u * i + 1u)) return 0.0f;
+        return rrsw_f16_to_f32(uint32_t(wblob[rel + 2u * i]) | (uint32_t(wblob[rel + 2u * i + 1u]) << 8));
+    };
+    if (meta[3] != 0xFFFFFFFFu)
+        for (uint32_t j = 0u; j < C; ++j) {
+            uint32_t bj = rrsw_basis(j);
+            uint32_t st = (bj & ~31u) | rrsw_pinv(bj & 31u);
+            tout[j] = s1d2 * f16at(meta[3], st);
+        }
+    if (meta[7] != 0xFFFFFFFFu)
+        for (uint32_t j = 0u; j < C; ++j) {
+            uint32_t bj = rrsw_basis(j);
+            uint32_t st = (bj & ~31u) | rrsw_pinv(bj & 31u);
+            tout[C + j] = s1d4 * f16at(meta[7], st);
+        }
+    if (meta[5] != 0xFFFFFFFFu)
+        for (uint32_t j = 0u; j < 4 * C; ++j) tout[2 * C + j] = f16at(meta[5], (j & ~31u) | rrsw_pinv(j & 31u));
+    if (meta[15] != 0xFFFFFFFFu)
+        for (uint32_t j = 0u; j < 16; ++j) tout[6 * C + j] = f16at(meta[15], j);
+    tout[6 * C + 16] = rrsw_f16_to_f32(meta[24] & 0xFFFFu);   // s1d0
+    tout[6 * C + 17] = rrsw_f16_to_f32(meta[23] & 0xFFFFu);   // s1d6
+    tout[6 * C + 18] = rrsw_f16_to_f32(meta[21] & 0xFFFFu);   // s1d2 (unfolded scale)
+    tout[6 * C + 19] = rrsw_f16_to_f32(meta[22] & 0xFFFFu);   // s1d4 (unfolded scale)
+    if (meta[1] != 0xFFFFFFFFu)
+        for (uint32_t j = 0u; j < G * 4096u; ++j) tout[6 * C + 20 + j] = f16at(meta[1], j);
+    // Per-mode extras (uniform offsets from the gram end; activation axes stored
+    // raw = blob order, hidden axes de-permuted to logical order).
+    {
+        const size_t VH = size_t(6 * C + 20 + G * 4096u);
+        if (meta[17] != 0xFFFFFFFFu)
+            for (uint32_t j = 0u; j < 64u; ++j)
+                tout[VH + j] = f16at(meta[17], (j & ~31u) | rrsw_pinv(j & 31u));   // v218 hidden
+        if (meta[19] != 0xFFFFFFFFu)
+            for (uint32_t j = 0u; j < 32u; ++j) tout[VH + 64u + j] = f16at(meta[19], j);  // v230
+        if (meta[11] != 0xFFFFFFFFu)
+            for (uint32_t j = 0u; j < 64u; ++j) tout[VH + 96u + j] = f16at(meta[11], j);  // v188
+        if (meta[13] != 0xFFFFFFFFu)
+            for (uint32_t j = 0u; j < 4u * C; ++j) tout[VH + 160u + j] = f16at(meta[13], j); // v1a0
+        if (meta[9] != 0xFFFFFFFFu)
+            for (uint32_t j = 0u; j < Cdown; ++j) tout[VH + 800u + j] = f16at(meta[9], (j & ~31u) | rrsw_pinv(j & 31u));  // v170 logical
+    }
+    return true;
+}
+} // namespace
+
 // Flat JSON parser
 std::vector<double> jget(const std::string& txt, const std::string& key) {
     std::vector<double> v;
@@ -697,7 +884,18 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         add_pipe("rr_level", 15, 80, 32);   // +binding 14 = wrep (item 0 row-major); pin wave32:
                                              // 4 waves of the 128-thread WMMA path, and ACO may pick
                                              // wave64 at this VGPR pressure (sr_stage's lesson)
-
+        add_pipe("rr_swin_u5", 14, 80, 32);   // mu_rrl: C=160 G=8 mode-0 rewrite (wave32 pin)
+        add_pipe("rr_swin_u0", 14, 80, 32);   // mu_rrl: C=32 G=2 mode-5 (integrated mu_h2 entry + mu_h3 heads)
+        add_pipe("rr_swin_u1", 14, 80, 32);   // mu_rrl: C=64 G=2 mode-1 + enc head + down
+        add_pipe("rr_swin_u2", 14, 80, 32);   // mu_rrl: C=96 G=4 mode-0 + enc head + down
+        add_pipe("rr_swin_u3", 14, 80, 32);   // mu_rrl: C=128 G=4 mode-0 + enc head + down
+        add_pipe("rr_swin_u4", 14, 80, 32);   // mu_rrl: C=160 G=8 mode-0 + enc head + down
+        add_pipe("rr_swin_u14", 14, 80, 32);  // mu_rrl: C=32 G=2 mode-2 up (tube entry + mu_h2 raw-v1a0)
+        add_pipe("rr_swin_u12", 14, 80, 32);  // mu_rrl: C=64 G=2 mode-2 up (tube entry + mu_h2 raw-v1a0)
+        add_pipe("rr_swin_u7", 14, 80, 32);   // mu_rrl: C=160 G=8 mode-3 + dec head (mu_h3)
+        add_pipe("rr_swin_u9", 14, 80, 32);   // mu_rrl: C=128 G=4 mode-3 + dec head (mu_h3)
+        add_pipe("rr_swin_u11", 14, 80, 32);  // mu_rrl: C=96 G=4 mode-3 + dec head (mu_h3)
+        add_pipe("rr_swin_u13", 14, 80, 32);  // mu_rrl: C=64 G=2 mode-3 + dec head (mu_h3)
         add_pipe("rr_post_prep", 4, 40);
         add_pipe("rr_post", 12, 184);
         add_pipe("rr_downsample", 4, 48);
@@ -1004,6 +1202,7 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         c->ue["E0d02"].logical = 8208;
         c->rr_dummy = create_buffer(dev, phys, 256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         c->rr_tab = create_buffer(dev, phys, 16 * 32 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        c->rr_swin_w = create_buffer(dev, phys, 16 * 1024 * 1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         c->expo.logical = 16;   // the oracle's E0c22 is 16 bytes; dumps report that size
     }
 
@@ -1141,6 +1340,39 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
             auto bc = slurp(wdir + "/bicubic.bin");
             Buffer& e0d02 = c->ue["E0d02"];
             if (!bc.empty() && bc.size() <= e0d02.size) std::memcpy(e0d02.mapped, bc.data(), bc.size());
+            // rr_swin repack (mu_rrl): tiled stored-order weights + f32 tables, all 16 units.
+            if (c->rr_tab.mapped && c->rr_swin_w.mapped) {
+                static const struct { int C, g, mode, Cdown, Cup; } kU[16] = {
+                    {32,2,5,0,0}, {64,2,1,96,0}, {96,4,0,128,0}, {128,4,0,160,0},
+                    {160,8,0,160,0}, {160,8,0,0,0}, {160,8,2,0,160}, {160,8,3,0,0},
+                    {128,4,2,0,160}, {128,4,3,0,0}, {96,4,2,0,128}, {96,4,3,0,0},
+                    {64,2,2,0,96}, {64,2,3,0,0}, {32,2,2,0,64}, {32,2,4,0,0}};
+                const uint8_t* wb = static_cast<const uint8_t*>(c->wbuf.mapped);
+                uint8_t* sw = static_cast<uint8_t*>(c->rr_swin_w.mapped);
+                const uint32_t* tab = static_cast<const uint32_t*>(c->rr_tab.mapped);
+                size_t moff = 0;
+                for (int u = 0; u < 16; ++u) {
+                    moff = (moff + 255) & ~size_t(255);
+                    c->rrsw_moff[u] = moff;
+                    size_t toff = kRrSwinTabBase + size_t(u) * kRrSwinTabMax;
+                    const uint32_t* meta = tab + u * 32;
+                    float s1d2 = rrsw_f16_to_f32(meta[21] & 0xFFFFu);
+                    float s1d4 = rrsw_f16_to_f32(meta[22] & 0xFFFFu);
+                    // blob size upper bound: blobs are 256-aligned back to back from rr_blob_off.
+                    size_t bsz = (u < 15 ? c->rr_blob_off[u + 1] : c->wbuf.size) - c->rr_blob_off[u];
+                    const uint8_t* wblob = wb + c->rr_blob_off[u];
+                    uint8_t* wout = sw + moff;
+                    float* tout = reinterpret_cast<float*>(sw + toff);
+                    size_t need = rrsw_unit_tiles(kU[u].C, kU[u].g, kU[u].Cdown, kU[u].Cup, meta) * 256u;
+                    size_t tneed = rrsw_unit_tab(kU[u].C, kU[u].g) * 4u;
+                    if (moff + need <= kRrSwinTabBase && toff + tneed <= c->rr_swin_w.size) {
+                        if (!rrsw_repack_unit(wblob, bsz, meta, kU[u].C, kU[u].g,
+                                              kU[u].Cdown, kU[u].Cup, s1d2, s1d4, wout, tout))
+                            std::fprintf(stderr, "rr_swin: unit %d repack out of range\n", u);
+                    } else std::fprintf(stderr, "rr_swin: unit %d does not fit (%zu/%zu)\n", u, need, tneed);
+                    moff += need;
+                }
+            }
         }
     }
 
@@ -1207,6 +1439,7 @@ FrameChain::~FrameChain() {
     for (auto& kv : ue) destroy_buffer(dev, kv.second);
     destroy_buffer(dev, rr_dummy);
     destroy_buffer(dev, rr_tab);
+    destroy_buffer(dev, rr_swin_w);
 
     for (auto& pair : pipelines) {
         vkDestroyPipeline(dev, pair.second.pipeline, nullptr);
@@ -2149,7 +2382,42 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             std::snprintf(lbl, sizeof lbl, "launch %d k_level<%d,%d,%d,%d,%d,%d>", u + 4 + roff,
                           U.C, U.g, U.mode, U.Cdown, U.Cup, U.n);
             trace_label = lbl;
-            dispatch(cmd, "rr_level", bufs, push, 80, gx, gy, 1);
+            // mu_rrl: units on the from-scratch rr_swin path (binding 0 = tiled weights
+            // at rrsw_moff[u], binding 13 = the f32 table buffer). u0/u5 integrated;
+            // u15 parked on the old path until mu_h1's precision diff lands (HANDOFF.md).
+            // The rest follow as helpers deliver (HANDOFF.md).
+            const char* swin_pipe = nullptr;  /* hybrid P1: u0-u5 only (guard-clean) */
+            if (u == 0) swin_pipe = "rr_swin_u0";
+            else if (u == 5) swin_pipe = "rr_swin_u5";
+            else if (u == 1) swin_pipe = "rr_swin_u1";
+            else if (u == 2) swin_pipe = "rr_swin_u2";
+            else if (u == 3) swin_pipe = "rr_swin_u3";
+            else if (u == 4) swin_pipe = "rr_swin_u4";
+            else if (u == 14) swin_pipe = "rr_swin_u14";
+            else if (u == 12) swin_pipe = "rr_swin_u12";
+            else if (u == 7) swin_pipe = "rr_swin_u7";
+            else if (u == 9) swin_pipe = "rr_swin_u9";
+            else if (u == 11) swin_pipe = "rr_swin_u11";
+            else if (u == 13) swin_pipe = "rr_swin_u13";
+            if (swin_pipe) {
+                std::vector<Buffer*> bufs5 = {
+                    &rr_swin_w, in, primary,
+                    or_in(rr_buf(U.role[R_SKIP])),
+                    or_dummy(rr_buf(U.role[R_O80])),
+                    or_in(rr_buf(U.role[R_I88])), or_in(rr_buf(U.role[R_I90])),
+                    or_dummy(o98), or_dummy(rr_buf(U.role[R_OA0])),
+                    or_dummy(rr_buf(U.role[R_OC0])), or_dummy(rr_buf(U.role[R_OC8])),
+                    or_dummy(rr_buf(U.role[R_OD0])), or_dummy(rr_buf(U.role[R_OD8])),
+                    &rr_swin_w,
+                };
+                uint8_t push5[80];
+                std::memcpy(push5, push, 80);
+                const int swin_off = int(rrsw_moff[u]);
+                std::memcpy(push5 + 60, &swin_off, 4);
+                dispatch(cmd, swin_pipe, bufs5, push5, 80, gx, gy, 1);
+            } else {
+                dispatch(cmd, "rr_level", bufs, push, 80, gx, gy, 1);
+            }
             inject_after(cmd, ("L" + std::to_string(u + 5)).c_str(), u + 4 + roff);
         }
         // 5. Post prep (launch 20 + roff): inputs are the U-Net's own outputs E0bd4, E0c16, E0c1e

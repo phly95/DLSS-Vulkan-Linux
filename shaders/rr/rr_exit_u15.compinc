@@ -1,0 +1,267 @@
+// rr_exit_u15: unit-15 epilogue (u15, C=32 G=2 mode 4): five render-grid outputs.
+//
+// Contract: on entry st[] holds the block output (+ residual stream, f32, NO fp8
+// roundtrip on this path); reads block channels 0..17 (stored-order positions via
+// the P^-1 map baked below: kernel stored position i holds logical P(i), the head
+// slots were fitted in logical space) + x88 (binding 5) + x90 (binding 6) + s1d0
+// (wtab) + dec0_s0/dec0_f0. Writes o98 (binding 7), oc0 (9), oc8 (10), od0 (11),
+// od8 (12) for in-range tokens/pixels only.
+// Caller provides: st0..st1, col/q/rowh, x0/y0/W/H, wtab, s1d0o, in_5/in_6,
+// out_c/out_e/out_f/out_g/out_h, f16_enc, Wr_in/Hr_in.
+// Formula source: the bit-exact port's section 6 (shaders/rr/rr_level.comp) and the
+// UNIT 15 SPEC (tools/rr/rr_level_model.py). Per COMMON the f16 rounding chains
+// (rh) and K=32 f16 sum trees are dropped (f32 accumulation, hardware exp2/E4M3,
+// f32 rcp); the od8 f64-tanh straddle fallback is kept bit-identical (scalar,
+// rare, double-float inlined below since includes live inside main()).
+//
+// dec0_s0/dec0_f0 are weights-file constants (params.json unit-15 dec0_scalars =
+// [8.0, 0.3076750934123993, ...] = min(exp(f16 0x1820),8), exp(f16 0x1830)); the
+// rr_swin f32 table carries no dec0 slots, so they are literals here. If the
+// weights change, mu_rrl should plumb them (see REPORT).
+#define MUH1_DEC0_S0 8.0
+#define MUH1_DEC0_F0 0.3076750934123993
+// Fitted-channel c lives at stored position Pinv(c): (t, half, idx) below.
+#define MUH1_CH(V, ST, I, S) { float _vv = ST[I]; float _oo = subgroupShuffleXor(_vv, 16u); V = (rowh == S) ? _vv : _oo; }
+#define MUH1_SIG(h) (MUH1_RND(1.0 / (1.0 + exp2(-1.4426950216293335 * (h)))))
+#if RR_PRECISE
+// Recipe A head roundings (SIG/OC0/OD0). nr_round_f16_e4m3: the opaque bit-twiddle
+// (a float16_t() round trip would be folded away by ACO, silently dropping this).
+#define MUH1_RND(x) (nr_round_f16_e4m3(x))
+#else
+#define MUH1_RND(x) (x)
+#endif
+#define MUH1_X88(R, L, PIX) { uint _b = ((PIX) * 4u + uint(L)) * 2u; R = unpackHalf2x16(uint(in_5[_b]) | (uint(in_5[_b + 1u]) << 8u)).x; }
+#define MUH1_X90(R, L, CX, CY, W2) { uint _b = ((uint(CY) * uint(W2) + uint(CX)) * 4u + uint(L)) * 2u; R = unpackHalf2x16(uint(in_6[_b]) | (uint(in_6[_b + 1u]) << 8u)).x; }
+#define MUH1_AXIS(B0, NX, WG, P, N2) { int _b = ((P) - 1) >> 1; WG = ((((P) & 1) == 0) ? 0.75 : 0.25); if (_b < 0 || _b + 1 >= (N2)) WG = 0.0; B0 = clamp(_b, 0, (N2) - 1); NX = clamp(B0 + 1, 0, (N2) - 1); }
+#define MUH1_UPTAP(R, L, X, Y, W2, H2) { \
+    int _bx; int _nx; float _wa; MUH1_AXIS(_bx, _nx, _wa, X, W2); \
+    int _by; int _ny; float _wb; MUH1_AXIS(_by, _ny, _wb, Y, H2); \
+    float _t1; MUH1_X90(_t1, L, _bx, _by, W2); \
+    float _t2; MUH1_X90(_t2, L, _nx, _by, W2); \
+    float _t3; MUH1_X90(_t3, L, _bx, _ny, W2); \
+    float _t4; MUH1_X90(_t4, L, _nx, _ny, W2); \
+    float _one = 1.0; \
+    float _r = ((_one - _wb) * ((_one - _wa) * _t1)) + ((_one - _wb) * (_wa * _t2)); \
+    _r = _r + (_wb * ((_one - _wa) * _t3)); \
+    R = _r + (_wb * (_wa * _t4)); }
+#define MUH1_O98LANE(C, HV) { \
+    float _x; MUH1_X88(_x, C, muh1_pix); \
+    float _u; MUH1_UPTAP(_u, C, muh1_rx, muh1_ry, muh1_W2, muh1_H2); \
+    float _v = (((muh1_s1d0 * MUH1_SIG(HV)) * _u) * muh1_gate) + (muh1_inv * _x); \
+    _v = min(_v, 65504.0); \
+    uint _bits = f16_enc(_v); \
+    out_c[muh1_pix * 8u + 2u * uint(C)] = uint8_t(_bits & 0xFFu); \
+    out_c[muh1_pix * 8u + 2u * uint(C) + 1u] = uint8_t(_bits >> 8u); }
+// Port u15_tanh verbatim minus rh() (f32 throughout, single-rounding fma chain).
+#define MUH1_TANH(R, X) { \
+    float _ax = abs(X); \
+    float _y = _ax * _ax; \
+    float _p = fma(uintBitsToFloat(0xBBBAC73Du), _y, uintBitsToFloat(0x3CA908C9u)); \
+    _p = fma(_y, _p, uintBitsToFloat(0xBD5C1C4Eu)); \
+    _p = fma(_y, _p, uintBitsToFloat(0x3E088382u)); \
+    _p = fma(_y, _p, uintBitsToFloat(0xBEAAAA99u)); \
+    float _poly = fma(_y, _ax * _p, _ax); \
+    float _a = _ax + _ax; \
+    float _t = 1.4426950216293335 * _a; \
+    float _k = roundEven(_t); \
+    float _eps = fma(1.4426950216293335, _a, -_t); \
+    float _tail = fma(_a, uintBitsToFloat(0x32A5705Fu), _eps); \
+    float _frac = (_t - _k) + _tail; \
+    float _e2 = ldexp(exp2(_frac), int(_k)); \
+    float _rcp = 1.0 / (1.0 + _e2); \
+    float _expb = fma(_rcp, -2.0, 1.0); \
+    float _mag = (_ax <= uintBitsToFloat(0x3F200000u)) ? _poly : _expb; \
+    R = uintBitsToFloat((floatBitsToUint(_mag) & 0x7FFFFFFFu) | (floatBitsToUint(X) & 0x80000000u)); }
+// E0c1a factor: f16(2**prod) with the kernel fix-up (prod bits 0x11c5 -> 0x3c01).
+#define MUH1_SME(R, PROD) { float _e = exp2(PROD); R = (f16_enc(PROD) == 0x11C5u) ? 1.0009765625 : _e; }
+// Double-float pair ops (port df_* verbatim, inlined; precise inhibits contraction).
+#define MUH1_DF2(S, A, B) { precise float _s = (A) + (B); precise float _bb = _s - (A); S = vec2(_s, ((A) - (_s - _bb)) + ((B) - _bb)); }
+#define MUH1_DFQ(S, A, B) { precise float _s = (A) + (B); S = vec2(_s, (B) - (_s - (A))); }
+#define MUH1_DFADD(S, AX, AY, BX, BY) { vec2 _u; vec2 _v; MUH1_DF2(_u, AX, BX); MUH1_DF2(_v, AY, BY); _u.y += _v.x; MUH1_DFQ(_u, _u.x, _u.y); _u.y += _v.y; MUH1_DFQ(S, _u.x, _u.y); }
+#define MUH1_DFMUL(S, AX, AY, BX, BY) { precise float _m1p = (AX) * (BX); precise float _m1e = fma((AX), (BX), -_m1p); _m1e += (AX) * (BY) + (AY) * (BX); MUH1_DFQ(S, _m1p, _m1e); }
+#define MUH1_HSTEP(HI, LO) { vec2 _m; MUH1_DFMUL(_m, _p.x, _p.y, _r.x, _r.y); MUH1_DFADD(_p, _m.x, _m.y, HI, LO); }
+    // ---- 6. unit-15 epilogue: gather fitted block channels 0..17
+    float muh1_h0; MUH1_CH(muh1_h0, st0, 0, 0u)
+    float muh1_h1; MUH1_CH(muh1_h1, st0, 1, 0u)
+    float muh1_h2; MUH1_CH(muh1_h2, st0, 4, 0u)
+    float muh1_h3; MUH1_CH(muh1_h3, st0, 5, 0u)
+    float muh1_h4; MUH1_CH(muh1_h4, st0, 0, 1u)
+    float muh1_h5; MUH1_CH(muh1_h5, st0, 1, 1u)
+    float muh1_h6; MUH1_CH(muh1_h6, st0, 4, 1u)
+    float muh1_h7; MUH1_CH(muh1_h7, st0, 5, 1u)
+    float muh1_h8; MUH1_CH(muh1_h8, st1, 0, 0u)
+    float muh1_h9; MUH1_CH(muh1_h9, st1, 1, 0u)
+    float muh1_h10; MUH1_CH(muh1_h10, st1, 4, 0u)
+    float muh1_h11; MUH1_CH(muh1_h11, st1, 5, 0u)
+    float muh1_h12; MUH1_CH(muh1_h12, st1, 0, 1u)
+    float muh1_h13; MUH1_CH(muh1_h13, st1, 1, 1u)
+    float muh1_h14; MUH1_CH(muh1_h14, st1, 4, 1u)
+    float muh1_h15; MUH1_CH(muh1_h15, st1, 5, 1u)
+    float muh1_h16; MUH1_CH(muh1_h16, st0, 2, 0u)
+    float muh1_h17; MUH1_CH(muh1_h17, st0, 3, 0u)
+    {
+        int muh1_rx = x0 + int(col & 7u);
+        int muh1_ry = y0 + int(q * 2u) + int(col >> 3u);
+        if (muh1_rx >= 0 && muh1_rx < W && muh1_ry >= 0 && muh1_ry < H) {
+            uint muh1_pix = uint(muh1_ry * W + muh1_rx);
+            float muh1_s1d0 = wtab[s1d0o];
+            float muh1_gate = MUH1_SIG(muh1_h3);
+            float muh1_inv = 1.0 - muh1_gate;
+            int muh1_W2 = W / 2;
+            int muh1_H2 = H / 2;
+            MUH1_O98LANE(0, muh1_h0)
+            MUH1_O98LANE(1, muh1_h1)
+            MUH1_O98LANE(2, muh1_h2)
+            {
+                float _x3; MUH1_X88(_x3, 3, muh1_pix);
+                float _v3 = muh1_inv * _x3;
+                _v3 = min(_v3, 65504.0);
+                uint _b3 = f16_enc(_v3);
+                out_c[muh1_pix * 8u + 6u] = uint8_t(_b3 & 0xFFu);
+                out_c[muh1_pix * 8u + 7u] = uint8_t(_b3 >> 8u);
+            }
+            // render-resolution outputs (guards y < Hr, x < Wr)
+            if (muh1_ry < Hr_in && muh1_rx < Wr_in) {
+                uint muh1_rp = uint(muh1_ry) * uint(Wr_in) + uint(muh1_rx);
+                // E0c02 (oc0): i8 x 4 = rndne(127 * clamp(f16(tanh(ch 14..17)), -1, 1))
+                {
+                    float _th0; MUH1_TANH(_th0, muh1_h14); _th0 = MUH1_RND(_th0);
+                    float _v0 = clamp(_th0, -1.0, 1.0);
+                    out_e[muh1_rp * 4u] = uint8_t(uint(int(roundEven(127.0 * _v0))) & 0xFFu);
+                    float _th1; MUH1_TANH(_th1, muh1_h15); _th1 = MUH1_RND(_th1);
+                    float _v1 = clamp(_th1, -1.0, 1.0);
+                    out_e[muh1_rp * 4u + 1u] = uint8_t(uint(int(roundEven(127.0 * _v1))) & 0xFFu);
+                    float _th2; MUH1_TANH(_th2, muh1_h16); _th2 = MUH1_RND(_th2);
+                    float _v2 = clamp(_th2, -1.0, 1.0);
+                    out_e[muh1_rp * 4u + 2u] = uint8_t(uint(int(roundEven(127.0 * _v2))) & 0xFFu);
+                    float _th3; MUH1_TANH(_th3, muh1_h17); _th3 = MUH1_RND(_th3);
+                    float _v3 = clamp(_th3, -1.0, 1.0);
+                    out_e[muh1_rp * 4u + 3u] = uint8_t(uint(int(roundEven(127.0 * _v3))) & 0xFFu);
+                }
+                // E0c16 (oc8): u8 x 4 gates, lane 3 = 0
+                {
+                    float _g0 = MUH1_SIG(muh1_h4);
+                    out_f[muh1_rp * 4u] = uint8_t(uint(int(clamp(roundEven(255.0 * _g0), -128.0, 255.0))) & 0xFFu);
+                    float _g1 = MUH1_SIG(muh1_h5);
+                    out_f[muh1_rp * 4u + 1u] = uint8_t(uint(int(clamp(roundEven(255.0 * _g1), -128.0, 255.0))) & 0xFFu);
+                    float _g2 = MUH1_SIG(muh1_h6);
+                    out_f[muh1_rp * 4u + 2u] = uint8_t(uint(int(clamp(roundEven(255.0 * _g2), -128.0, 255.0))) & 0xFFu);
+                    out_f[muh1_rp * 4u + 3u] = uint8_t(0);
+                }
+                // E0c1a (od0): four-way softmax of block channels 10..13, all f16
+                {
+                    float _m = max(max(muh1_h10, muh1_h11), max(muh1_h12, muh1_h13));
+                    float _e0; MUH1_SME(_e0, 1.4423828125 * (muh1_h10 - _m)); _e0 = MUH1_RND(_e0);
+                    float _e1; MUH1_SME(_e1, 1.4423828125 * (muh1_h11 - _m)); _e1 = MUH1_RND(_e1);
+                    float _e2; MUH1_SME(_e2, 1.4423828125 * (muh1_h12 - _m)); _e2 = MUH1_RND(_e2);
+                    float _e3; MUH1_SME(_e3, 1.4423828125 * (muh1_h13 - _m)); _e3 = MUH1_RND(_e3);
+                    float _tot = MUH1_RND(MUH1_RND(_e0 + _e2) + MUH1_RND(_e1 + _e3));
+                    float _rcp = MUH1_RND(1.0 / _tot);
+                    float _r0 = MUH1_RND(_e0 * _rcp);
+                    out_g[muh1_rp * 4u] = uint8_t(uint(int(clamp(roundEven(255.0 * _r0), -128.0, 255.0))) & 0xFFu);
+                    float _r1 = MUH1_RND(_e1 * _rcp);
+                    out_g[muh1_rp * 4u + 1u] = uint8_t(uint(int(clamp(roundEven(255.0 * _r1), -128.0, 255.0))) & 0xFFu);
+                    float _r2 = MUH1_RND(_e2 * _rcp);
+                    out_g[muh1_rp * 4u + 2u] = uint8_t(uint(int(clamp(roundEven(255.0 * _r2), -128.0, 255.0))) & 0xFFu);
+                    float _r3 = MUH1_RND(_e3 * _rcp);
+                    out_g[muh1_rp * 4u + 3u] = uint8_t(uint(int(clamp(roundEven(255.0 * _r3), -128.0, 255.0))) & 0xFFu);
+                }
+                // E0c1e (od8): aniso lanes 0..2 (lane 3 = 0)
+                {
+                    float _A = MUH1_DEC0_S0 * MUH1_SIG(clamp(muh1_h7, -20.0, 20.0));
+                    float _B = MUH1_DEC0_S0 * MUH1_SIG(clamp(muh1_h8, -20.0, 20.0));
+                    float _xx = MUH1_DEC0_F0 * muh1_h9;
+                    float _tt; MUH1_TANH(_tt, _xx);
+                    float _ab = _A * _B;
+                    uint _tb = floatBitsToUint(_tt);
+                    float _vlo = _ab * uintBitsToFloat(_tb - 3u);
+                    float _vhi = _ab * uintBitsToFloat(_tb + 3u);
+                    float _l0 = _A * _A;
+                    float _l1 = _B * _B;
+                    float _l2;
+                    // P5 straddle test on f16-rounded values (the f32 products are
+                    // 6 ulp apart, so a raw f32 compare is false for ~every pixel
+                    // and the fallback below would run per pixel; the bracket test
+                    // is only meaningful after f16 rounding).
+                    if (float16_t(_vlo) == float16_t(_vhi)) {
+                        _l2 = _vlo;
+                    } else {
+                        // bit-identical copy of the port's tanh64 (double-float
+                        // f64 tanh emulation): exp(2|x|) = 2^k exp(r), 16-term
+                        // Horner in pairs, tanh = (E-1)/(E+1).
+                        float _ax = abs(_xx);
+                        if (_ax < 0.000244140625) {
+                            _l2 = _ab * _xx;
+                        } else if (_ax > 20.0) {
+                            _l2 = _ab * ((_xx < 0.0) ? -1.0 : 1.0);
+                        } else {
+                            vec2 _y = vec2(2.0 * _ax, 0.0);
+                            float _k = roundEven(_y.x * 1.4426950216293335);
+                            vec2 _pr; MUH1_DFMUL(_pr, -_k, 0.0, 0.6931471824645996, -1.9046542121259336e-09);
+                            vec2 _r; MUH1_DFADD(_r, _y.x, _y.y, _pr.x, _pr.y);
+                            vec2 _p = vec2(4.7794772561329453e-14, 7.62544404448643e-22);
+                            MUH1_HSTEP(7.647163609812713e-13, 1.2200710471178288e-20)
+                            MUH1_HSTEP(1.147074536050896e-11, 2.372207689231238e-19)
+                            MUH1_HSTEP(1.6059044372074283e-10, -5.352526511562726e-18)
+                            MUH1_HSTEP(2.0876755879584152e-09, 1.1082839147459852e-16)
+                            MUH1_HSTEP(2.5052107943679403e-08, 4.417623044648366e-16)
+                            MUH1_HSTEP(2.755731998149713e-07, -7.575112209051195e-15)
+                            MUH1_HSTEP(2.7557318844628753e-06, 3.793571224297229e-14)
+                            MUH1_HSTEP(2.4801587642286904e-05, -3.40699609366682e-13)
+                            MUH1_HSTEP(0.00019841270113829523, -2.725596874933456e-12)
+                            MUH1_HSTEP(0.0013888889225199819, -3.363109443710321e-11)
+                            MUH1_HSTEP(0.008333333767950535, -4.34617203337595e-10)
+                            MUH1_HSTEP(0.0416666679084301, -1.2417634698280722e-09)
+                            MUH1_HSTEP(0.1666666716337204, -4.967053879312289e-09)
+                            MUH1_HSTEP(0.5, 0.0)
+                            MUH1_HSTEP(1.0, 0.0)
+                            MUH1_HSTEP(1.0, 0.0)
+                            vec2 _e = _p * exp2(_k);
+                            vec2 _num; MUH1_DFADD(_num, _e.x, _e.y, -1.0, 0.0);
+                            vec2 _den; MUH1_DFADD(_den, _e.x, _e.y, 1.0, 0.0);
+                            float _dq1 = _num.x / _den.x;
+                            vec2 _t1; MUH1_DFMUL(_t1, _dq1, 0.0, _den.x, _den.y);
+                            vec2 _rr1; MUH1_DFADD(_rr1, _num.x, _num.y, -_t1.x, -_t1.y);
+                            float _dq2 = _rr1.x / _den.x;
+                            vec2 _t2; MUH1_DFMUL(_t2, _dq2, 0.0, _den.x, _den.y);
+                            vec2 _rr2; MUH1_DFADD(_rr2, _rr1.x, _rr1.y, -_t2.x, -_t2.y);
+                            float _dq3 = _rr2.x / _den.x;
+                            vec2 _qq; MUH1_DFQ(_qq, _dq1, _dq2);
+                            vec2 _rf; MUH1_DFADD(_rf, _qq.x, _qq.y, _dq3, 0.0);
+                            float _t64 = (_xx < 0.0) ? -_rf.x : _rf.x;
+                            _l2 = _ab * _t64;
+                        }
+                    }
+                    uint _b0 = f16_enc(_l0);
+                    out_h[muh1_rp * 8u] = uint8_t(_b0 & 0xFFu);
+                    out_h[muh1_rp * 8u + 1u] = uint8_t(_b0 >> 8u);
+                    uint _b1 = f16_enc(_l1);
+                    out_h[muh1_rp * 8u + 2u] = uint8_t(_b1 & 0xFFu);
+                    out_h[muh1_rp * 8u + 3u] = uint8_t(_b1 >> 8u);
+                    uint _b2 = f16_enc(_l2);
+                    out_h[muh1_rp * 8u + 4u] = uint8_t(_b2 & 0xFFu);
+                    out_h[muh1_rp * 8u + 5u] = uint8_t(_b2 >> 8u);
+                    uint _b3 = f16_enc(0.0);
+                    out_h[muh1_rp * 8u + 6u] = uint8_t(_b3 & 0xFFu);
+                    out_h[muh1_rp * 8u + 7u] = uint8_t(_b3 >> 8u);
+                }
+            }
+        }
+    }
+#undef MUH1_DEC0_S0
+#undef MUH1_DEC0_F0
+#undef MUH1_CH
+#undef MUH1_SIG
+#undef MUH1_X88
+#undef MUH1_X90
+#undef MUH1_AXIS
+#undef MUH1_UPTAP
+#undef MUH1_O98LANE
+#undef MUH1_TANH
+#undef MUH1_RND
+#undef MUH1_SME
+#undef MUH1_DF2
+#undef MUH1_DFQ
+#undef MUH1_DFADD
+#undef MUH1_DFMUL
+#undef MUH1_HSTEP

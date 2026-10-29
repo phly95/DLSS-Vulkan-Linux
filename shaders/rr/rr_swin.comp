@@ -1,0 +1,710 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_EXT_shader_8bit_storage : enable
+#extension GL_EXT_shader_16bit_storage : enable
+#define NR_QUANT_MODE 4
+#include "nh_mm.glsl"
+
+// rr_swin: Ray Reconstruction's U-Net block rewritten in sr_swin's register-resident
+// token-lane style. One wave per 16-token quarter of the 8x8 window (64 tokens):
+// local_size 128 = 4 waves, wave q owns tokens 16q..16q+15 (window rows 2q,2q+1).
+// Transposed dataflow (rows = channels, lane col = token), exactly like sr_swin:
+// weights are WMMA operand A (host-tiled, stored-order), activations operand B
+// chained register-to-register, f32 accumulation, hardware E4M3, no LDS round trips
+// for the math. The one exception is the cross-quarter Q/V sharing: each wave's Q/V
+// quarter is exchanged through f16 LDS (values stay on the fp8 grid, so widening is
+// exact) because WMMA has no cross-wave registers.
+//
+// Specialised per (C, G) through defines (pipelines.json: one entry per unit).
+// v1 covers mode 0 + the encoder o98 head (unit 5: C=160, G=8). RR has no RMSNorm
+// gains: the "norm" is quantise-to-fp8 only. LayerScale is folded into the weights
+// on the host (Wo' = s1d2*Wo, v128' = s1d2*v128, W2' = s1d4*W2, b2' = s1d4*b2), so
+// no scale/shift phase exists in the shader.
+//
+// Lavapipe note: no private arrays and no fragment arrays anywhere (both crash
+// Mesa's NIR on this file's patterns, as bisected for sr_swin); fragments are
+// individually named st0..stN via the RR_FOR_NT machinery so every index is a
+// preprocessor literal, vectors come from shared staging or scalar table loads.
+
+#ifndef RR_C
+#define RR_C 160
+#endif
+#ifndef RR_G
+#define RR_G 8
+#endif
+// Mode/feature selection (one specialised pipeline per unit via defines).
+#ifndef RR_MODE
+#define RR_MODE 0
+#endif
+#ifndef RR_HEAD_ENC
+#define RR_HEAD_ENC 1
+#endif
+#ifndef RR_HEAD_DEC
+#define RR_HEAD_DEC 0
+#endif
+#ifndef RR_UNIT15
+#define RR_UNIT15 0
+#endif
+#ifndef RR_DOWN
+#define RR_DOWN 0
+#endif
+
+#if RR_C == 160
+#define RR_NT 10
+#define RR_FOR_NT(X) X(0) X(1) X(2) X(3) X(4) X(5) X(6) X(7) X(8) X(9)
+#define RR_NBLK 20
+#define RR_FOR_NBLK(X) X(0) X(1) X(2) X(3) X(4) X(5) X(6) X(7) X(8) X(9) X(10) X(11) X(12) X(13) X(14) X(15) X(16) X(17) X(18) X(19)
+#elif RR_C == 128
+#define RR_NT 8
+#define RR_FOR_NT(X) X(0) X(1) X(2) X(3) X(4) X(5) X(6) X(7)
+#define RR_NBLK 16
+#define RR_FOR_NBLK(X) X(0) X(1) X(2) X(3) X(4) X(5) X(6) X(7) X(8) X(9) X(10) X(11) X(12) X(13) X(14) X(15)
+#elif RR_C == 96
+#define RR_NT 6
+#define RR_FOR_NT(X) X(0) X(1) X(2) X(3) X(4) X(5)
+#define RR_NBLK 12
+#define RR_FOR_NBLK(X) X(0) X(1) X(2) X(3) X(4) X(5) X(6) X(7) X(8) X(9) X(10) X(11)
+#elif RR_C == 64
+#define RR_NT 4
+#define RR_FOR_NT(X) X(0) X(1) X(2) X(3)
+#define RR_NBLK 8
+#define RR_FOR_NBLK(X) X(0) X(1) X(2) X(3) X(4) X(5) X(6) X(7)
+#else
+#define RR_NT 2
+#define RR_FOR_NT(X) X(0) X(1)
+#define RR_NBLK 4
+#define RR_FOR_NBLK(X) X(0) X(1) X(2) X(3)
+#endif
+
+#if RR_G == 8
+#define RR_FOR_G(X) X(0) X(1) X(2) X(3) X(4) X(5) X(6) X(7)
+#elif RR_G == 4
+#define RR_FOR_G(X) X(0) X(1) X(2) X(3)
+#else
+#define RR_FOR_G(X) X(0) X(1)
+#endif
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer WTrep { NR_OPERAND wT[]; };
+layout(set = 0, binding = 1) readonly buffer InAct  { uvec4 in_act4[]; };
+layout(set = 0, binding = 2) writeonly buffer OutAct { NR_OPERAND out_act[]; };
+layout(set = 0, binding = 3) readonly buffer InSkip { uint8_t skip_act[]; };
+layout(set = 0, binding = 4) writeonly buffer OutB { uint8_t out_b[]; };
+layout(set = 0, binding = 5) readonly buffer In5 { uint8_t in_5[]; };
+layout(set = 0, binding = 6) readonly buffer In6 { uint8_t in_6[]; };
+layout(set = 0, binding = 7) writeonly buffer OutC { uint8_t out_c[]; };
+layout(set = 0, binding = 8) writeonly buffer OutD { uint8_t out_d[]; };
+layout(set = 0, binding = 9) writeonly buffer OutE { uint8_t out_e[]; };
+layout(set = 0, binding = 10) writeonly buffer OutF { uint8_t out_f[]; };
+layout(set = 0, binding = 11) writeonly buffer OutG { uint8_t out_g[]; };
+layout(set = 0, binding = 12) writeonly buffer OutH { uint8_t out_h[]; };
+// Per-unit f32 table (host): v128' [C], b2' [C], v140 [4C], v1b8 [16],
+// s1d0, s1d6, pad, pad, gram [G][64][64]. Row = unit_in * TAB_STRIDE.
+layout(set = 0, binding = 13) readonly buffer WTab { float wtab[]; };
+
+layout(push_constant) uniform RrUnitArgs {
+    layout(offset = 0) int W_in;
+    int H_in;
+    int sx_in;
+    int sy_in;
+    int mode_in;
+    int C_out;
+    int g_in;
+    int Cdown_in;
+    int Cup_in;
+    int n_in;
+    layout(offset = 40) int W_test;
+    int H_test;
+    int sx_test;
+    int sy_test;
+    layout(offset = 56) int C_in;
+    int blob_off;
+    int unit_in;
+    layout(offset = 68) int Wr_in;
+    int Hr_in;
+    int flags_in;
+};
+
+// ---- scalar helpers ----
+uint byte_of(uint w, uint k) { return (w >> (8u * k)) & 0xffu; }
+float e4m3_to_f32(uint b) {
+    uint e = (b >> 3u) & 15u;
+    float v = (e == 0u) ? float(b & 7u) * 0.001953125
+                        : uintBitsToFloat(((e + 120u) << 23u) | ((b & 7u) << 20u));
+    return ((b & 0x80u) != 0u) ? -v : v;
+}
+float quant8(float x) { return clamp(x, -448.0, 448.0); }
+#ifdef NR_OPERAND_F16
+#define Q8P(F, i, a, b) { F[i] = NR_OPERAND(quant8(a)); F[(i) + 1u] = NR_OPERAND(quant8(b)); }
+#else
+#define Q8P(F, i, a, b) { F[i] = nr_quant_pair32(vec2(a, b)).x; F[(i) + 1u] = nr_quant_pair32(vec2(a, b)).y; }
+#endif
+
+int reflect_coord(int p, int dim) {
+    int a = abs(p);
+    int b = 2 * (dim - 1) - a;
+    int r = min(min(a, b), dim - 1);
+    return (b < 0) ? dim - 1 : r;
+}
+
+// NeuralHub's scaled exp, kept as in sr_swin (the softmax temperature curve).
+float swin_exp(float x) {
+    float y = clamp(x * 0.017181396484375, -0.55615234375, 0.55615234375);
+    float p = y * (-y * y + 0.92724609375) + 1.375;
+    uint h = packHalf2x16(vec2(p, 0.0)) & 0xffffu;
+    return unpackHalf2x16(((h << 5u) + 0x8000u) & 0xffffu).x;
+}
+
+// NeuralHub's spline GELU, f32 arithmetic (as in sr_swin).
+float nh_gelu(float z) {
+    float t = clamp(z, -2.0, 2.0);
+    return z * (t * (0.412109375 - 0.0810546875 * abs(t)) + 0.5);
+}
+
+// f16 RNE encode of a finite value (head stores; matches the bit-exact port).
+uint f16_enc(float x) {
+    if (isnan(x)) return 0x7E00u;
+    uint s = (floatBitsToUint(x) >> 16u) & 0x8000u;
+    float a = abs(x);
+    if (a > 65504.0) return s | 0x7C00u;
+    if (a == 0.0) return s;
+    if (a < 6.103515625e-05) return s | uint(roundEven(a * 16777216.0));
+    uint ab = floatBitsToUint(a);
+    return s | (((ab >> 23u) - 112u) << 10u) | ((ab >> 13u) & 1023u);
+}
+
+void sync_lds() { memoryBarrierShared(); barrier(); }
+
+// Cross-quarter Q/V exchange (f16 LDS; Q values stay on the fp8 grid).
+shared float16_t s_QT[32 * 64];
+shared float16_t s_VB[64 * 32];
+#if RR_DOWN
+// Down-projection merge buffer (enc0's design): [merge j = 0..4C-1][16 down pixels].
+shared NR_OPERAND s_MT[4 * 160 * 16];
+#endif
+
+// ---- RR_PRECISE (u15 recipe A): f16-exact roundings the oracle needs.
+// Only the u15 pipeline sets RR_PRECISE=1; every other unit keeps the fast path
+// byte-identical (all precise code is #if-guarded and additive).
+#ifndef RR_PRECISE
+#define RR_PRECISE 0
+#endif
+#if RR_PRECISE
+// Scalar fp8-grid rounding (the bit-exact port's e4m3 pair, renamed: the offline
+// gate owns the e4m3 token): quantise to the fp8 grid, keep the value in f32.
+uint rr_q8enc(float x) {
+    if (isnan(x)) return 0x7Fu;
+    uint sgn = (floatBitsToUint(x) >> 24u) & 0x80u;
+    float a = min(abs(x), 448.0);
+    uint ab = floatBitsToUint(a);
+    uint code;
+    if (a >= 0.015625) code = ((ab + 0x407FFFFu + ((ab >> 20u) & 1u)) >> 20u) & 0xFFu;
+    else code = uint(roundEven(a * 512.0));
+    return sgn | code;
+}
+float rr_q8dec(uint c) {
+    uint e = (c >> 3u) & 15u, m = c & 7u;
+    float v = (e == 0u) ? float(m) * (1.0 / 512.0) : uintBitsToFloat(((e + 120u) << 23u) | (m << 20u));
+    return ((c & 0x80u) != 0u) ? -v : v;
+}
+float rr_q8grid(float x) { return rr_q8dec(rr_q8enc(x)); }
+// f16 round of 8 fragment elements. Must be the opaque bit-twiddle: a plain
+// float16_t() round trip is folded away by ACO, silently un-applying the recipe.
+#define RR_RND8(F) { F[0] = nr_round_f16_e4m3(F[0]); F[1] = nr_round_f16_e4m3(F[1]); F[2] = nr_round_f16_e4m3(F[2]); F[3] = nr_round_f16_e4m3(F[3]); F[4] = nr_round_f16_e4m3(F[4]); F[5] = nr_round_f16_e4m3(F[5]); F[6] = nr_round_f16_e4m3(F[6]); F[7] = nr_round_f16_e4m3(F[7]); }
+// K=32 chunk pairs (2 kt each) for the Q1/F1 chunk roundings.
+#if RR_C == 160
+#define RR_FOR_PAIR(X) X(0,1) X(2,3) X(4,5) X(6,7) X(8,9)
+#elif RR_C == 128
+#define RR_FOR_PAIR(X) X(0,1) X(2,3) X(4,5) X(6,7)
+#elif RR_C == 96
+#define RR_FOR_PAIR(X) X(0,1) X(2,3) X(4,5)
+#elif RR_C == 64
+#define RR_FOR_PAIR(X) X(0,1) X(2,3)
+#else
+#define RR_FOR_PAIR(X) X(0,1)
+#endif
+#define RR_DECL_AT(t) NR_FRAG_ACC at##t;
+#endif
+
+// Table region (host): tables live at RR_TAB_BASE + unit * RR_TAB_MAX (words).
+#define RR_TAB_BASE (2097152u)
+#define RR_TAB_MAX (34816u)
+#define RR_DECL_ST(t) NR_FRAG_ACC st##t;
+#define RR_DECL_NST(t) NR_FRAG_B nst##t;
+#define RR_DECL_OFP(t) NR_FRAG_B ofp##t;
+
+// Fully unrolled element loops (lavapipe-safe: every index a literal).
+#define RR_UNROLL8(X) X(0) X(1) X(2) X(3) X(4) X(5) X(6) X(7)
+#define RR_BPACK0(i) { b0[i] = vb0[i]; }
+#define RR_BPACK1(i) { b1[i] = vb1[i]; }
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint wave = tid >> 5u;          // quarter q: tokens 16q..16q+15 (rows 2q,2q+1)
+    uint lane = tid & 31u;
+    uint col = tid & 15u;           // fragment column = token inside the quarter
+    uint rowh = (tid >> 4u) & 1u;   // 8-row half (0/1: local_size is 128, so mask)
+    uint q = wave;
+
+    const int W = (W_in > 0) ? W_in : 16;
+    const int H = (H_in > 0) ? H_in : 16;
+    const uint HW = uint(W * H);
+    int gx = int(gl_WorkGroupID.x);
+    int gy = int(gl_WorkGroupID.y);
+    int x0 = gx * 8 - sx_in;
+    int y0 = gy * 8 - sy_in;
+
+    uint woff = uint(blob_off);
+    const uint NT = uint(RR_NT);
+    const uint G = uint(RR_G);
+    const uint NBLK = uint(RR_NBLK);
+    // Weight-region bases (tiles of 256 B), per the host repack.
+    uint HS = 4u * NT * 256u;                       // head stride (Q+V tiles)
+    uint qT = woff;                                 // Q/V tiles, per head
+    uint woT = qT + G * HS;                         // Wo tiles, per head
+    uint w1T = woT + G * NT * 2u * 256u;            // fc1 tiles, per block
+    uint w2T = w1T + NBLK * 2u * NT * 256u;         // fc2 tiles, per block
+    uint m108T = w2T + NBLK * NT * 2u * 256u;       // head matrix tiles
+    // Table row for this unit.
+    uint v128o = RR_TAB_BASE + uint(unit_in) * RR_TAB_MAX;
+    uint b2o = v128o + uint(RR_C);                  // b2' [C]
+    uint b1o = v128o + 2u * uint(RR_C);             // v140 [4C]
+    uint hbias = v128o + 6u * uint(RR_C);           // v1b8 [16]
+    uint s1d0o = hbias + 16u;                       // s1d0 (f32)
+    uint s1d2o = hbias + 18u;                       // s1d2/s1d4 (unfolded scales)
+    uint gram = hbias + 20u;                        // gram [G][64][64] f32
+    uint v218o = gram + G * 4096u;                  // v218[64] hidden logical (u0)
+    uint v230o = v218o + 64u;                       // v230[32] stored (u0)
+    uint v188o = v218o + 96u;                       // v188[64] stored (u1)
+    uint v1a0o = v218o + 160u;                      // v1a0[640] stored per-quad (mode 2)
+    uint v170o = v218o + 800u;                     // v170[160] logical (down bias)
+    float s1d2 = wtab[s1d2o];
+    float s1d4 = wtab[s1d2o + 1u];
+
+    RR_FOR_NT(RR_DECL_ST)
+    RR_FOR_NT(RR_DECL_NST)
+    RR_FOR_NT(RR_DECL_OFP)
+
+    // ---- 1. entry (per mode; see shaders/rr/rr_entry_*.compinc)
+#if RR_MODE == 0
+#include "rr_entry_mode0.compinc"
+#elif RR_MODE == 1
+#include "rr_entry_mode1.compinc"   // helper: merge entry (u1)
+#elif RR_MODE == 2
+#include "rr_entry_mode2.compinc"   // helper: up-projection entry (u6/u8/u10/u12/u14)
+#elif RR_MODE == 5
+#include "rr_entry_mode5.compinc"   // helper: enc0 entry (u0)
+#elif RR_MODE == 3
+#include "rr_entry_mode3.compinc"   // helper: decoder copy entry (u7/u9/u11/u13)
+// mode 4 uses the mode-0 copy path:
+#else
+#include "rr_entry_mode0.compinc"
+#endif
+    // ---- 2. seed with v128' (LayerScale folded on the host) + quantise
+#if RR_PRECISE
+    // Precise: quantise the clean entry FIRST; the v128 seed lives in the
+    // separate attn accumulator (the old kernel seeds here, without norm).
+    #define RR_SEED_T(t) { \
+        Q8P(nst##t, 0u, st##t[0], st##t[1]) Q8P(nst##t, 2u, st##t[2], st##t[3]) \
+        Q8P(nst##t, 4u, st##t[4], st##t[5]) Q8P(nst##t, 6u, st##t[6], st##t[7]) }
+#else
+    #define RR_SEED_T(t) { \
+        st##t[0] += wtab[v128o + 16u * uint(t) + 8u * rowh]; \
+        st##t[1] += wtab[v128o + 16u * uint(t) + 8u * rowh + 1u]; \
+        st##t[2] += wtab[v128o + 16u * uint(t) + 8u * rowh + 2u]; \
+        st##t[3] += wtab[v128o + 16u * uint(t) + 8u * rowh + 3u]; \
+        st##t[4] += wtab[v128o + 16u * uint(t) + 8u * rowh + 4u]; \
+        st##t[5] += wtab[v128o + 16u * uint(t) + 8u * rowh + 5u]; \
+        st##t[6] += wtab[v128o + 16u * uint(t) + 8u * rowh + 6u]; \
+        st##t[7] += wtab[v128o + 16u * uint(t) + 8u * rowh + 7u]; \
+        Q8P(nst##t, 0u, st##t[0], st##t[1]) Q8P(nst##t, 2u, st##t[2], st##t[3]) \
+        Q8P(nst##t, 4u, st##t[4], st##t[5]) Q8P(nst##t, 6u, st##t[6], st##t[7]) }
+#endif
+    RR_FOR_NT(RR_SEED_T)
+#if RR_PRECISE
+    // Precise attn accumulator (unscaled; the s1d2 unscale is one f32 division
+    // per element here - exact unscaled vectors are a host-table change).
+    RR_FOR_NT(RR_DECL_AT)
+    #define RR_AT_SEED(t) { \
+        at##t[0] = nr_round_f16_e4m3(wtab[v128o + 16u * uint(t) + 8u * rowh] / s1d2); \
+        at##t[1] = nr_round_f16_e4m3(wtab[v128o + 16u * uint(t) + 8u * rowh + 1u] / s1d2); \
+        at##t[2] = nr_round_f16_e4m3(wtab[v128o + 16u * uint(t) + 8u * rowh + 2u] / s1d2); \
+        at##t[3] = nr_round_f16_e4m3(wtab[v128o + 16u * uint(t) + 8u * rowh + 3u] / s1d2); \
+        at##t[4] = nr_round_f16_e4m3(wtab[v128o + 16u * uint(t) + 8u * rowh + 4u] / s1d2); \
+        at##t[5] = nr_round_f16_e4m3(wtab[v128o + 16u * uint(t) + 8u * rowh + 5u] / s1d2); \
+        at##t[6] = nr_round_f16_e4m3(wtab[v128o + 16u * uint(t) + 8u * rowh + 6u] / s1d2); \
+        at##t[7] = nr_round_f16_e4m3(wtab[v128o + 16u * uint(t) + 8u * rowh + 7u] / s1d2); }
+    RR_FOR_NT(RR_AT_SEED)
+#endif
+
+    // ---- 3. attention, one head at a time
+    for (uint h = 0u; h < G; ++h) {
+        uint hb = qT + h * HS;
+        // 3a. Q and V of this quarter (A = weight rows, B = norm regs)
+        NR_FRAG_ACC qa0 = NR_ACC_ZERO; NR_FRAG_ACC qa1 = NR_ACC_ZERO;
+        NR_FRAG_ACC va0 = NR_ACC_ZERO; NR_FRAG_ACC va1 = NR_ACC_ZERO;
+        #define RR_QV_KT(kt) { \
+            NR_FRAG_A wq0; NR_LOAD_A(wq0, wT, hb + 256u * uint(kt), 16u); \
+            NR_FRAG_A wq1; NR_LOAD_A(wq1, wT, hb + 256u * (NT + uint(kt)), 16u); \
+            NR_MMA(qa0, wq0, nst##kt); \
+            NR_MMA(qa1, wq1, nst##kt); \
+            NR_FRAG_A wv0; NR_LOAD_A(wv0, wT, hb + 256u * (2u * NT + uint(kt)), 16u); \
+            NR_FRAG_A wv1; NR_LOAD_A(wv1, wT, hb + 256u * (3u * NT + uint(kt)), 16u); \
+            NR_MMA(va0, wv0, nst##kt); \
+            NR_MMA(va1, wv1, nst##kt); }
+#if RR_PRECISE
+        // Q1: K=32 chunks with f16 partials between chunks (recipe A).
+        #define RR_QV_P(p, q) { RR_QV_KT(p) RR_QV_KT(q) RR_RND8(qa0) RR_RND8(qa1) RR_RND8(va0) RR_RND8(va1) }
+        RR_FOR_PAIR(RR_QV_P)
+#else
+        RR_FOR_NT(RR_QV_KT)
+#endif
+        // quantise Q to the fp8 grid, widen to f16, share quarters through LDS
+        NR_FRAG_A qf0; NR_FRAG_A qf1;
+        Q8P(qf0, 0u, qa0[0], qa0[1]) Q8P(qf0, 2u, qa0[2], qa0[3])
+        Q8P(qf0, 4u, qa0[4], qa0[5]) Q8P(qf0, 6u, qa0[6], qa0[7])
+        Q8P(qf1, 0u, qa1[0], qa1[1]) Q8P(qf1, 2u, qa1[2], qa1[3])
+        Q8P(qf1, 4u, qa1[4], qa1[5]) Q8P(qf1, 6u, qa1[6], qa1[7])
+        NR_FRAG_ACC16 e0; NR_FRAG_ACC16 e1;
+        #define RR_EPACK(i) { e0[i] = float16_t(qf0[i]); e1[i] = float16_t(qf1[i]); }
+        RR_UNROLL8(RR_EPACK)
+        NR_STORE_ACC(e0, s_QT, 16u * q, 64u);
+        NR_STORE_ACC(e1, s_QT, 16u * 64u + 16u * q, 64u);
+        // V exchange through LDS as plain V[token][dim] (scalar stores: a cooperative
+        // matrix store cannot transpose, and the A-copy below transposes once to V^T).
+#if RR_PRECISE
+        // Precise: V on the fp8 grid (reference quantises Kf), still widened to
+        // f16 for the exchange (fp8 values are exact in f16; products identical).
+        #define RR_VBSTORE(i) { \
+            s_VB[(16u * q + col) * 32u + 8u * rowh + uint(i)] = float16_t(rr_q8grid(va0[i])); \
+            s_VB[(16u * q + col) * 32u + 16u + 8u * rowh + uint(i)] = float16_t(rr_q8grid(va1[i])); }
+#else
+        #define RR_VBSTORE(i) { \
+            s_VB[(16u * q + col) * 32u + 8u * rowh + uint(i)] = float16_t(va0[i]); \
+            s_VB[(16u * q + col) * 32u + 16u + 8u * rowh + uint(i)] = float16_t(va1[i]); }
+#endif
+        RR_UNROLL8(RR_VBSTORE)
+        sync_lds();
+
+        // 3b. logits^T = Q_all x Q_q^T (lane = query). A16 from QT (direct),
+        // B16 from Q_q regs (direct); f16 MMA. 4 key tiles, 2 dim tiles.
+        NR_FRAG_ACC lt0 = NR_ACC_ZERO; NR_FRAG_ACC lt1 = NR_ACC_ZERO;
+        NR_FRAG_ACC lt2 = NR_ACC_ZERO; NR_FRAG_ACC lt3 = NR_ACC_ZERO;
+        #define RR_QB16(QF, WB) { \
+            WB[0] = float16_t(QF[0]); WB[1] = float16_t(QF[1]); \
+            WB[2] = float16_t(QF[2]); WB[3] = float16_t(QF[3]); \
+            WB[4] = float16_t(QF[4]); WB[5] = float16_t(QF[5]); \
+            WB[6] = float16_t(QF[6]); WB[7] = float16_t(QF[7]); }
+        #define RR_LOG_DT(dt, WB) for (uint kk = 0u; kk < 4u; ++kk) { \
+            NR_FRAG_ACC16 _qa; NR_LOAD_ACC(_qa, s_QT, (16u * uint(dt)) * 64u + 16u * kk, 64u); \
+            NR_FRAG_A16 _wa; \
+            _wa[0] = _qa[0]; _wa[1] = _qa[1]; _wa[2] = _qa[2]; _wa[3] = _qa[3]; \
+            _wa[4] = _qa[4]; _wa[5] = _qa[5]; _wa[6] = _qa[6]; _wa[7] = _qa[7]; \
+            if (kk == 0u) { NR_MMA(lt0, _wa, WB); } \
+            else if (kk == 1u) { NR_MMA(lt1, _wa, WB); } \
+            else if (kk == 2u) { NR_MMA(lt2, _wa, WB); } \
+            else { NR_MMA(lt3, _wa, WB); } }
+        NR_FRAG_B16 wb0; RR_QB16(qf0, wb0)
+        RR_LOG_DT(0, wb0)
+        NR_FRAG_B16 wb1; RR_QB16(qf1, wb1)
+        RR_LOG_DT(1, wb1)
+        // relpos bias (gram symmetric: [key-block][query-block] tiles)
+        {
+            uint rqb = gram + h * 4096u + 16u * q;
+            NR_FRAG_ACC r0; NR_LOAD_ACC(r0, wtab, rqb, 64u);
+            NR_FRAG_ACC r1; NR_LOAD_ACC(r1, wtab, rqb + 16u * 64u, 64u);
+            NR_FRAG_ACC r2; NR_LOAD_ACC(r2, wtab, rqb + 32u * 64u, 64u);
+            NR_FRAG_ACC r3; NR_LOAD_ACC(r3, wtab, rqb + 48u * 64u, 64u);
+            #define RR_REL_ADD(i) { lt0[i] = lt0[i] + r0[i]; lt1[i] = lt1[i] + r1[i]; \
+                                      lt2[i] = lt2[i] + r2[i]; lt3[i] = lt3[i] + r3[i]; }
+            RR_UNROLL8(RR_REL_ADD)
+        }
+
+        // 3c. softmax over keys (rows): exp, in-lane key sums + one xor-16,
+        // rcp, P^T directly as f16 B operands (lane = query throughout).
+#if RR_PRECISE
+        // Precise S1: the reference isa f16 pair-tree with bit-exact pairing -
+        // this lane holds keys 16kk+8*rowh+i at lt{kk}[i], the xor-16 peer the
+        // other half. swin_exp outputs are f16 values already (bit-built), so e
+        // needs no rounding. P stays f16 but on the fp8 grid (reference q8).
+        #define RR_EXP_P(L) { \
+            L[0] = swin_exp(L[0]); L[1] = swin_exp(L[1]); \
+            L[2] = swin_exp(L[2]); L[3] = swin_exp(L[3]); \
+            L[4] = swin_exp(L[4]); L[5] = swin_exp(L[5]); \
+            L[6] = swin_exp(L[6]); L[7] = swin_exp(L[7]); }
+        RR_EXP_P(lt0) RR_EXP_P(lt1) RR_EXP_P(lt2) RR_EXP_P(lt3)
+        float s1t0 = nr_round_f16_e4m3(nr_round_f16_e4m3(lt0[0] + lt1[0]) + nr_round_f16_e4m3(lt2[0] + lt3[0]));
+        float s1t1 = nr_round_f16_e4m3(nr_round_f16_e4m3(lt0[1] + lt1[1]) + nr_round_f16_e4m3(lt2[1] + lt3[1]));
+        float s1t2 = nr_round_f16_e4m3(nr_round_f16_e4m3(lt0[2] + lt1[2]) + nr_round_f16_e4m3(lt2[2] + lt3[2]));
+        float s1t3 = nr_round_f16_e4m3(nr_round_f16_e4m3(lt0[3] + lt1[3]) + nr_round_f16_e4m3(lt2[3] + lt3[3]));
+        float s1t4 = nr_round_f16_e4m3(nr_round_f16_e4m3(lt0[4] + lt1[4]) + nr_round_f16_e4m3(lt2[4] + lt3[4]));
+        float s1t5 = nr_round_f16_e4m3(nr_round_f16_e4m3(lt0[5] + lt1[5]) + nr_round_f16_e4m3(lt2[5] + lt3[5]));
+        float s1t6 = nr_round_f16_e4m3(nr_round_f16_e4m3(lt0[6] + lt1[6]) + nr_round_f16_e4m3(lt2[6] + lt3[6]));
+        float s1t7 = nr_round_f16_e4m3(nr_round_f16_e4m3(lt0[7] + lt1[7]) + nr_round_f16_e4m3(lt2[7] + lt3[7]));
+        float s1u0 = nr_round_f16_e4m3(s1t0 + subgroupShuffleXor(s1t0, 16u));
+        float s1u1 = nr_round_f16_e4m3(s1t1 + subgroupShuffleXor(s1t1, 16u));
+        float s1u2 = nr_round_f16_e4m3(s1t2 + subgroupShuffleXor(s1t2, 16u));
+        float s1u3 = nr_round_f16_e4m3(s1t3 + subgroupShuffleXor(s1t3, 16u));
+        float s1u4 = nr_round_f16_e4m3(s1t4 + subgroupShuffleXor(s1t4, 16u));
+        float s1u5 = nr_round_f16_e4m3(s1t5 + subgroupShuffleXor(s1t5, 16u));
+        float s1u6 = nr_round_f16_e4m3(s1t6 + subgroupShuffleXor(s1t6, 16u));
+        float s1u7 = nr_round_f16_e4m3(s1t7 + subgroupShuffleXor(s1t7, 16u));
+        float s1v0 = nr_round_f16_e4m3(nr_round_f16_e4m3(s1u0 + s1u2) + nr_round_f16_e4m3(s1u4 + s1u6));
+        float s1v1 = nr_round_f16_e4m3(nr_round_f16_e4m3(s1u1 + s1u3) + nr_round_f16_e4m3(s1u5 + s1u7));
+        float s1tot = lt0[0]+lt0[1]+lt0[2]+lt0[3]+lt0[4]+lt0[5]+lt0[6]+lt0[7]+lt1[0]+lt1[1]+lt1[2]+lt1[3]+lt1[4]+lt1[5]+lt1[6]+lt1[7]+lt2[0]+lt2[1]+lt2[2]+lt2[3]+lt2[4]+lt2[5]+lt2[6]+lt2[7]+lt3[0]+lt3[1]+lt3[2]+lt3[3]+lt3[4]+lt3[5]+lt3[6]+lt3[7];
+        s1tot += subgroupShuffleXor(s1tot, 16u);
+        float s1inv = 1.0 / s1tot;
+        NR_FRAG_B16 bp0; NR_FRAG_B16 bp1; NR_FRAG_B16 bp2; NR_FRAG_B16 bp3;
+        #define RR_PB_LT(P, L) { \
+            P[0] = float16_t(rr_q8grid(nr_round_f16_e4m3(L[0] * s1inv))); \
+            P[1] = float16_t(rr_q8grid(nr_round_f16_e4m3(L[1] * s1inv))); \
+            P[2] = float16_t(rr_q8grid(nr_round_f16_e4m3(L[2] * s1inv))); \
+            P[3] = float16_t(rr_q8grid(nr_round_f16_e4m3(L[3] * s1inv))); \
+            P[4] = float16_t(rr_q8grid(nr_round_f16_e4m3(L[4] * s1inv))); \
+            P[5] = float16_t(rr_q8grid(nr_round_f16_e4m3(L[5] * s1inv))); \
+            P[6] = float16_t(rr_q8grid(nr_round_f16_e4m3(L[6] * s1inv))); \
+            P[7] = float16_t(rr_q8grid(nr_round_f16_e4m3(L[7] * s1inv))); }
+        RR_PB_LT(bp0, lt0) RR_PB_LT(bp1, lt1) RR_PB_LT(bp2, lt2) RR_PB_LT(bp3, lt3)
+#else
+        float ss = 0.0;
+        #define RR_EXP_LT(L) { \
+            float e; \
+            e = swin_exp(L[0]); ss += e; L[0] = e; \
+            e = swin_exp(L[1]); ss += e; L[1] = e; \
+            e = swin_exp(L[2]); ss += e; L[2] = e; \
+            e = swin_exp(L[3]); ss += e; L[3] = e; \
+            e = swin_exp(L[4]); ss += e; L[4] = e; \
+            e = swin_exp(L[5]); ss += e; L[5] = e; \
+            e = swin_exp(L[6]); ss += e; L[6] = e; \
+            e = swin_exp(L[7]); ss += e; L[7] = e; }
+        RR_EXP_LT(lt0) RR_EXP_LT(lt1) RR_EXP_LT(lt2) RR_EXP_LT(lt3)
+        ss += subgroupShuffleXor(ss, 16u);
+        float pinv = 1.0 / ss;
+        NR_FRAG_B16 bp0; NR_FRAG_B16 bp1; NR_FRAG_B16 bp2; NR_FRAG_B16 bp3;
+        #define RR_NORM_LT(P, L) { \
+            P[0] = float16_t(L[0] * pinv); P[1] = float16_t(L[1] * pinv); \
+            P[2] = float16_t(L[2] * pinv); P[3] = float16_t(L[3] * pinv); \
+            P[4] = float16_t(L[4] * pinv); P[5] = float16_t(L[5] * pinv); \
+            P[6] = float16_t(L[6] * pinv); P[7] = float16_t(L[7] * pinv); }
+        RR_NORM_LT(bp0, lt0) RR_NORM_LT(bp1, lt1) RR_NORM_LT(bp2, lt2) RR_NORM_LT(bp3, lt3)
+#endif
+        // 3d. ctx^T = V^T . P^T (f16 MMA, lane = query), two dim tiles.
+        // V^T tile (dt, kk) from VBUF rows (keys kk) / cols (dims dt), direct.
+        NR_FRAG_ACC ct0 = NR_ACC_ZERO; NR_FRAG_ACC ct1 = NR_ACC_ZERO;
+        #define RR_CTX_TKK(kk, BP) { \
+            NR_FRAG_ACC16 _vb0; NR_LOAD_ACC(_vb0, s_VB, (16u * uint(kk)) * 32u, 32u); \
+            NR_FRAG_A16 _va0; \
+            _va0[0] = _vb0[0]; _va0[1] = _vb0[1]; _va0[2] = _vb0[2]; _va0[3] = _vb0[3]; \
+            _va0[4] = _vb0[4]; _va0[5] = _vb0[5]; _va0[6] = _vb0[6]; _va0[7] = _vb0[7]; \
+            NR_FRAG_ACC16 _vb1; NR_LOAD_ACC(_vb1, s_VB, (16u * uint(kk)) * 32u + 16u, 32u); \
+            NR_FRAG_A16 _va1; \
+            _va1[0] = _vb1[0]; _va1[1] = _vb1[1]; _va1[2] = _vb1[2]; _va1[3] = _vb1[3]; \
+            _va1[4] = _vb1[4]; _va1[5] = _vb1[5]; _va1[6] = _vb1[6]; _va1[7] = _vb1[7]; \
+            NR_MMA(ct0, _va0, BP); \
+            NR_MMA(ct1, _va1, BP); }
+#if RR_PRECISE
+        // C1: two K=32 key-half chains through f16 (recipe A).
+        RR_CTX_TKK(0, bp0) RR_CTX_TKK(1, bp1)
+        RR_RND8(ct0) RR_RND8(ct1)
+        RR_CTX_TKK(2, bp2) RR_CTX_TKK(3, bp3)
+        RR_RND8(ct0) RR_RND8(ct1)
+#else
+        RR_CTX_TKK(0, bp0) RR_CTX_TKK(1, bp1) RR_CTX_TKK(2, bp2) RR_CTX_TKK(3, bp3)
+#endif
+
+#if RR_PRECISE
+        // 3e precise: end-scaled chain into at (A1: f16 after each head add).
+        // ctx stays unscaled here; the single s1d2 scale happens once at R1.
+        NR_FRAG_B cb0; NR_FRAG_B cb1;
+        Q8P(cb0, 0u, ct0[0], ct0[1]) Q8P(cb0, 2u, ct0[2], ct0[3])
+        Q8P(cb0, 4u, ct0[4], ct0[5]) Q8P(cb0, 6u, ct0[6], ct0[7])
+        Q8P(cb1, 0u, ct1[0], ct1[1]) Q8P(cb1, 2u, ct1[2], ct1[3])
+        Q8P(cb1, 4u, ct1[4], ct1[5]) Q8P(cb1, 6u, ct1[6], ct1[7])
+        uint wb = woT + h * NT * 2u * 256u;
+        #define RR_WO_AT(nt) { \
+            NR_FRAG_A wa0; NR_LOAD_A(wa0, wT, wb + 256u * (2u * uint(nt)), 16u); \
+            NR_FRAG_A wa1; NR_LOAD_A(wa1, wT, wb + 256u * (2u * uint(nt) + 1u), 16u); \
+            NR_MMA(at##nt, wa0, cb0); \
+            NR_MMA(at##nt, wa1, cb1); }
+        #define RR_AT_RND(t) RR_RND8(at##t)
+        RR_FOR_NT(RR_WO_AT)
+        RR_FOR_NT(RR_AT_RND)
+        sync_lds();
+#else
+        // 3e. Wo: accumulate unscaled ctx, scale once into st (avoids fp8 subnormal
+        // flush: s1d2~0.03 puts ~30% of ctx below fp8 normal-min before quant).
+        NR_FRAG_B cb0; NR_FRAG_B cb1;
+        Q8P(cb0, 0u, ct0[0], ct0[1]) Q8P(cb0, 2u, ct0[2], ct0[3])
+        Q8P(cb0, 4u, ct0[4], ct0[5]) Q8P(cb0, 6u, ct0[6], ct0[7])
+        Q8P(cb1, 0u, ct1[0], ct1[1]) Q8P(cb1, 2u, ct1[2], ct1[3])
+        Q8P(cb1, 4u, ct1[4], ct1[5]) Q8P(cb1, 6u, ct1[6], ct1[7])
+        uint wb = woT + h * NT * 2u * 256u;
+        #define RR_WO_NT(nt) { \
+            NR_FRAG_A wa0; NR_LOAD_A(wa0, wT, wb + 256u * (2u * uint(nt)), 16u); \
+            NR_FRAG_A wa1; NR_LOAD_A(wa1, wT, wb + 256u * (2u * uint(nt) + 1u), 16u); \
+            NR_FRAG_ACC tt; tt = NR_ACC_ZERO; \
+            NR_MMA(tt, wa0, cb0); \
+            NR_MMA(tt, wa1, cb1); \
+            st##nt[0] += s1d2 * tt[0]; st##nt[1] += s1d2 * tt[1]; \
+            st##nt[2] += s1d2 * tt[2]; st##nt[3] += s1d2 * tt[3]; \
+            st##nt[4] += s1d2 * tt[4]; st##nt[5] += s1d2 * tt[5]; \
+            st##nt[6] += s1d2 * tt[6]; st##nt[7] += s1d2 * tt[7]; }
+        RR_FOR_NT(RR_WO_NT)
+#endif
+        sync_lds();
+    }
+#if RR_PRECISE
+    // R1: X1 = f16(s + f16(s1d2 * a)) - the single end-scale (at holds the
+    // unscaled chain; at is dead after this and reused as the MLP accumulator).
+    #define RR_R1_T(t) { \
+        at##t[0] = nr_round_f16_e4m3(s1d2 * at##t[0]); \
+        at##t[1] = nr_round_f16_e4m3(s1d2 * at##t[1]); \
+        at##t[2] = nr_round_f16_e4m3(s1d2 * at##t[2]); \
+        at##t[3] = nr_round_f16_e4m3(s1d2 * at##t[3]); \
+        at##t[4] = nr_round_f16_e4m3(s1d2 * at##t[4]); \
+        at##t[5] = nr_round_f16_e4m3(s1d2 * at##t[5]); \
+        at##t[6] = nr_round_f16_e4m3(s1d2 * at##t[6]); \
+        at##t[7] = nr_round_f16_e4m3(s1d2 * at##t[7]); \
+        st##t[0] = nr_round_f16_e4m3(st##t[0] + at##t[0]); \
+        st##t[1] = nr_round_f16_e4m3(st##t[1] + at##t[1]); \
+        st##t[2] = nr_round_f16_e4m3(st##t[2] + at##t[2]); \
+        st##t[3] = nr_round_f16_e4m3(st##t[3] + at##t[3]); \
+        st##t[4] = nr_round_f16_e4m3(st##t[4] + at##t[4]); \
+        st##t[5] = nr_round_f16_e4m3(st##t[5] + at##t[5]); \
+        st##t[6] = nr_round_f16_e4m3(st##t[6] + at##t[6]); \
+        st##t[7] = nr_round_f16_e4m3(st##t[7] + at##t[7]); }
+    RR_FOR_NT(RR_R1_T)
+#endif
+
+    // ---- 4. MLP residual (b2' seed) + quantise, then per-block fc1/GELU/fc2
+#if RR_PRECISE
+    // Precise: quantise X1 only (no b2 seed into the norm); at (dead attn acc)
+    // becomes the unscaled mo accumulator, seeded with f32-unscaled b2.
+    #define RR_MLP_SEED(t) { \
+        Q8P(nst##t, 0u, st##t[0], st##t[1]) Q8P(nst##t, 2u, st##t[2], st##t[3]) \
+        Q8P(nst##t, 4u, st##t[4], st##t[5]) Q8P(nst##t, 6u, st##t[6], st##t[7]) \
+        at##t[0] = wtab[b2o + 16u * uint(t) + 8u * rowh] / s1d4; \
+        at##t[1] = wtab[b2o + 16u * uint(t) + 8u * rowh + 1u] / s1d4; \
+        at##t[2] = wtab[b2o + 16u * uint(t) + 8u * rowh + 2u] / s1d4; \
+        at##t[3] = wtab[b2o + 16u * uint(t) + 8u * rowh + 3u] / s1d4; \
+        at##t[4] = wtab[b2o + 16u * uint(t) + 8u * rowh + 4u] / s1d4; \
+        at##t[5] = wtab[b2o + 16u * uint(t) + 8u * rowh + 5u] / s1d4; \
+        at##t[6] = wtab[b2o + 16u * uint(t) + 8u * rowh + 6u] / s1d4; \
+        at##t[7] = wtab[b2o + 16u * uint(t) + 8u * rowh + 7u] / s1d4; }
+#else
+    #define RR_MLP_SEED(t) { \
+        st##t[0] += wtab[b2o + 16u * uint(t) + 8u * rowh]; \
+        st##t[1] += wtab[b2o + 16u * uint(t) + 8u * rowh + 1u]; \
+        st##t[2] += wtab[b2o + 16u * uint(t) + 8u * rowh + 2u]; \
+        st##t[3] += wtab[b2o + 16u * uint(t) + 8u * rowh + 3u]; \
+        st##t[4] += wtab[b2o + 16u * uint(t) + 8u * rowh + 4u]; \
+        st##t[5] += wtab[b2o + 16u * uint(t) + 8u * rowh + 5u]; \
+        st##t[6] += wtab[b2o + 16u * uint(t) + 8u * rowh + 6u]; \
+        st##t[7] += wtab[b2o + 16u * uint(t) + 8u * rowh + 7u]; \
+        Q8P(nst##t, 0u, st##t[0], st##t[1]) Q8P(nst##t, 2u, st##t[2], st##t[3]) \
+        Q8P(nst##t, 4u, st##t[4], st##t[5]) Q8P(nst##t, 6u, st##t[6], st##t[7]) }
+#endif
+    RR_FOR_NT(RR_MLP_SEED)
+    for (uint j = 0u; j < NBLK; ++j) {
+        NR_FRAG_ACC z0 = NR_ACC_ZERO; NR_FRAG_ACC z1 = NR_ACC_ZERO;
+        uint f1 = w1T + j * 2u * NT * 256u;
+        #define RR_FC1_KT(kt) { \
+            NR_FRAG_A a0; NR_LOAD_A(a0, wT, f1 + 256u * uint(kt), 16u); \
+            NR_FRAG_A a1; NR_LOAD_A(a1, wT, f1 + 256u * (NT + uint(kt)), 16u); \
+            NR_MMA(z0, a0, nst##kt); \
+            NR_MMA(z1, a1, nst##kt); }
+#if RR_PRECISE
+        // F1: K=32 chunks with f16 partials between chunks (recipe A).
+        #define RR_FC1_P(p, q) { RR_FC1_KT(p) RR_FC1_KT(q) RR_RND8(z0) RR_RND8(z1) }
+        RR_FOR_PAIR(RR_FC1_P)
+#else
+        RR_FOR_NT(RR_FC1_KT)
+#endif
+        NR_FRAG_B hb0; NR_FRAG_B hb1;
+        {
+            // z0 rows = hidden 0..15, z1 rows = hidden 16..31 of this block.
+            // Lane half rowh holds hidden rowh*8..+7 of each: hb0 from b1 base,
+            // hb1 from b1 base + 16; s1d4 scales AFTER the GELU (unfolded).
+            uint bb = b1o + j * 32u + 8u * rowh;
+            uint cc = b1o + j * 32u + 16u + 8u * rowh;
+            Q8P(hb0, 0u, nh_gelu(z0[0] + wtab[bb]), nh_gelu(z0[1] + wtab[bb + 1u]))
+            Q8P(hb0, 2u, nh_gelu(z0[2] + wtab[bb + 2u]), nh_gelu(z0[3] + wtab[bb + 3u]))
+            Q8P(hb0, 4u, nh_gelu(z0[4] + wtab[bb + 4u]), nh_gelu(z0[5] + wtab[bb + 5u]))
+            Q8P(hb0, 6u, nh_gelu(z0[6] + wtab[bb + 6u]), nh_gelu(z0[7] + wtab[bb + 7u]))
+            Q8P(hb1, 0u, nh_gelu(z1[0] + wtab[cc]), nh_gelu(z1[1] + wtab[cc + 1u]))
+            Q8P(hb1, 2u, nh_gelu(z1[2] + wtab[cc + 2u]), nh_gelu(z1[3] + wtab[cc + 3u]))
+            Q8P(hb1, 4u, nh_gelu(z1[4] + wtab[cc + 4u]), nh_gelu(z1[5] + wtab[cc + 5u]))
+            Q8P(hb1, 6u, nh_gelu(z1[6] + wtab[cc + 6u]), nh_gelu(z1[7] + wtab[cc + 7u]))
+        }
+        uint f2 = w2T + j * 2u * NT * 256u;
+#if RR_PRECISE
+        // Precise: mo accumulates into at (f32, F2 cheap per recipe A).
+        #define RR_FC2_NT_P(nt) { \
+            NR_FRAG_A d0; NR_LOAD_A(d0, wT, f2 + 256u * (2u * uint(nt)), 16u); \
+            NR_FRAG_A d1; NR_LOAD_A(d1, wT, f2 + 256u * (2u * uint(nt) + 1u), 16u); \
+            NR_MMA(at##nt, d0, hb0); \
+            NR_MMA(at##nt, d1, hb1); }
+        RR_FOR_NT(RR_FC2_NT_P)
+#else
+        #define RR_FC2_NT(nt) { \
+            NR_FRAG_A d0; NR_LOAD_A(d0, wT, f2 + 256u * (2u * uint(nt)), 16u); \
+            NR_FRAG_A d1; NR_LOAD_A(d1, wT, f2 + 256u * (2u * uint(nt) + 1u), 16u); \
+            NR_FRAG_ACC uu; uu = NR_ACC_ZERO; \
+            NR_MMA(uu, d0, hb0); \
+            NR_MMA(uu, d1, hb1); \
+            st##nt[0] += s1d4 * uu[0]; st##nt[1] += s1d4 * uu[1]; \
+            st##nt[2] += s1d4 * uu[2]; st##nt[3] += s1d4 * uu[3]; \
+            st##nt[4] += s1d4 * uu[4]; st##nt[5] += s1d4 * uu[5]; \
+            st##nt[6] += s1d4 * uu[6]; st##nt[7] += s1d4 * uu[7]; }
+        RR_FOR_NT(RR_FC2_NT)
+#endif
+    }
+#if RR_PRECISE
+    // Precise end-scale (R2 cheap per recipe A: f32, no final f16).
+    #define RR_FIN_T(t) { \
+        st##t[0] = st##t[0] + s1d4 * at##t[0]; \
+        st##t[1] = st##t[1] + s1d4 * at##t[1]; \
+        st##t[2] = st##t[2] + s1d4 * at##t[2]; \
+        st##t[3] = st##t[3] + s1d4 * at##t[3]; \
+        st##t[4] = st##t[4] + s1d4 * at##t[4]; \
+        st##t[5] = st##t[5] + s1d4 * at##t[5]; \
+        st##t[6] = st##t[6] + s1d4 * at##t[6]; \
+        st##t[7] = st##t[7] + s1d4 * at##t[7]; }
+    RR_FOR_NT(RR_FIN_T)
+#endif
+
+    // ---- 5. out (stored-order fp8)
+    #define RR_OUT_T(t) { \
+        Q8P(ofp##t, 0u, st##t[0], st##t[1]) Q8P(ofp##t, 2u, st##t[2], st##t[3]) \
+        Q8P(ofp##t, 4u, st##t[4], st##t[5]) Q8P(ofp##t, 6u, st##t[6], st##t[7]) }
+    RR_FOR_NT(RR_OUT_T)
+    {
+        int rx = x0 + int(col & 7u);
+        int ry = y0 + int(q * 2u) + int(col >> 3u);
+        if (rx >= 0 && rx < W && ry >= 0 && ry < H) {
+            uint opos = uint(ry * W + rx);
+            #define RR_STORE_T(t) { \
+                uint base = ((uint(t) >> 1u) * HW + opos) * 32u + (uint(t) & 1u) * 16u + rowh * 8u; \
+                out_act[base] = ofp##t[0]; out_act[base + 1u] = ofp##t[1]; \
+                out_act[base + 2u] = ofp##t[2]; out_act[base + 3u] = ofp##t[3]; \
+                out_act[base + 4u] = ofp##t[4]; out_act[base + 5u] = ofp##t[5]; \
+                out_act[base + 6u] = ofp##t[6]; out_act[base + 7u] = ofp##t[7]; }
+            RR_FOR_NT(RR_STORE_T)
+        }
+    }
+
+    // ---- 6. exit (per mode; see shaders/rr/rr_exit_*.compinc)
+#if RR_HEAD_ENC
+#include "rr_exit_head_enc.compinc"   // u0-u5 encoder o98 (+oa0 later)
+#elif RR_HEAD_DEC
+#include "rr_exit_head_dec.compinc"   // helper: decoder heads (u7/u9/u11/u13)
+#elif RR_UNIT15
+#include "rr_exit_u15.compinc"        // helper: unit-15 epilogue (u15)
+#endif
+#if RR_DOWN
+#include "rr_exit_down.compinc"       // helper: down projection (u1-u4)
+#endif
+}
