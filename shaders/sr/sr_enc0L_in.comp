@@ -7,6 +7,7 @@
 #extension GL_EXT_control_flow_attributes : enable
 
 #include "rh.glsl"
+#include "nh_mm.glsl"   // NR_OPERAND (typed fp8 view, RADV) / NR_OPERAND_F16 (lavapipe path)
 
 // k_sr_enc0L_in (NeuralHub SR preset L, oracle launch 2). Spec: tools/sr/sr_enc0L_model.py
 // (L-1 green: l0_in 100.0000% bit-exact vs the oracle on BOTH frames, the three MV buffers 100%).
@@ -81,8 +82,15 @@ layout(set = 0, binding = 5) readonly buffer InHidden     { uint in_h4[]; };
 layout(set = 0, binding = 6) writeonly buffer OutPrevMv   { f16vec2 out_prev_mvec[]; };
 layout(set = 0, binding = 7) writeonly buffer OutMvEro    { f16vec2 out_mv_ero[]; };
 layout(set = 0, binding = 8) writeonly buffer OutMvNondil { f16vec2 out_mv_nondil[]; };
-// the pixel's 32 stored bytes = eight dwords (little-endian), one write a dword.
+// the pixel's 32 stored bytes = eight dwords (little-endian), one write a dword
+// (lavapipe f16 build); the RADV build stores through a typed fp8 view instead (below).
+#ifdef NR_OPERAND_F16
 layout(set = 0, binding = 9) writeonly buffer OutL0In     { uint out_l0d[]; };
+#else
+// Typed fp8 view of the same l0_in bytes: the E4M3 quantisation is the hardware conversion
+// (RNE) on store, replacing the software e4m3_q8r. Indexed by byte (base1 = pixel * 32).
+layout(set = 0, binding = 9) writeonly buffer OutL0In     { NR_OPERAND out_l0[]; };
+#endif
 layout(set = 0, binding = 10) readonly buffer InEnc0W     { uint8_t enc0_w[]; };
 // the exposure buffer holds the two parity words (Enc0Args+0x80); the kernel reads enc0[parity]
 // as an f16 bit pattern and uses 1.0 when the word is 0 (model load()).
@@ -375,7 +383,11 @@ vec4 tap_hid4(int r, int c) {
 // mantissa bits kept by a bit mask, then the model's q8r_code (RNE e4m3, half-even subnormal
 // grid, software so the stored bytes keep the oracle's rounding). The dither word d =
 // dither[idx] >> 9 depends on (fc, y, x) only, so the caller fetches it once a pixel.
-uint dq_lo, dq_hi;                      // the two codes dq2 produces
+#ifdef NR_OPERAND_F16
+uint dq_lo, dq_hi;                      // the two codes dq2 produces (lavapipe path only)
+#else
+f16vec2 dq2f_lohi;                      // dithered f16 pair (RADV: HW fp8 converts on store)
+#endif
 
 // The dithered quantizer for TWO features a call (the pixel's twenty features run as ten
 // pairs): identical per-value maths and rounding to the scalar dq(), but the f16 round trips
@@ -391,10 +403,26 @@ void dq2(vec2 x, uint d) {
     uint pb = packHalf2x16(vec2(b));
     f16vec2 t = f16vec2(unpackHalf2x16(pb & 0xFF80u).x,
                         unpackHalf2x16((pb >> 16u) & 0xFF80u).x);
+#ifdef NR_OPERAND_F16
     dq_lo = e4m3_q8r(t.x);
     dq_hi = e4m3_q8r(t.y);
+#else
+    // RADV: keep the 3-mantissa-bit mask, drop only the software q8r - the masked value is
+    // already on the fp8 grid (normals; subnormals both round to fp8 zero), so the hardware
+    // RNE conversion on store is bit-identical to q8r except NaN payloads and the sign of
+    // zero (guard decides). Without the mask this would double-round ties (+-1 ULP, measured).
+    dq2f_lohi = t;
+#endif
 }
+#ifdef NR_OPERAND_F16
 #define DQ2(i0, v0, i1, v1) { dq2(vec2(v0, v1), dw); feat[i0] = dq_lo; feat[i1] = dq_hi; }
+#else
+// RADV no-dither variant (guard-gated): skip the f16 dither chain entirely; the hardware RNE
+// fp8 store quantizes directly. Removes ~10 f16/pack ops per feature plus the dither table
+// reads. The M-kernel precedent (no-dither dq, static G1 -0.021 -> -0.041) suggests the
+// network does not need the dither; the L guard decides.
+#define DQ2(i0, v0, i1, v1) { df[i0] = (v0); df[i1] = (v1); }
+#endif
 
 // ---------------------------------------------------------------- dispatch
 
@@ -482,8 +510,15 @@ void main() {
     vec2 P2 = vec2(base_x + 3.0 * m.mx.x, base_y + 3.0 * m.mx.y);
     vec2 P3 = vec2(3.0 * xx + 3.0 * m.ct.x, 3.0 * yy + 3.0 * m.ct.y);
 
+#ifdef NR_OPERAND_F16
     uint feat[20];
+#endif
     float fv[20];
+#ifdef NR_OPERAND_F16
+    // lavapipe: u8 codes packed below (original path)
+#else
+    float df[20];   // raw f32 features (RADV no-dither: hardware fp8 converts on store)
+#endif
     fv[0] = tm0; fv[1] = tm1; fv[2] = tm2;
 #define DHSAMP(P, b0, b1, b2) { \
         vec2 Cc = (P); \
@@ -524,8 +559,9 @@ void main() {
     DQ2(12, fv[12], 13, fv[13]) DQ2(14, fv[14], 15, fv[15])
     DQ2(16, fv[16], 17, fv[17]) DQ2(18, fv[18], 19, fv[19])
 
-    // the store: byte j = logical feature P(j); logical 20..31 are never written -> 0; eight
-    // dwords a pixel (little-endian).
+    // the store: byte j = logical feature P(j); logical 20..31 are never written -> 0.
+#ifdef NR_OPERAND_F16
+    // lavapipe: eight dwords a pixel (little-endian), software q8r codes packed as before.
     uint base4 = uint(r * int(W0 + 8) + c) * 8u;
     [[unroll]] for (uint b = 0u; b < 8u; ++b) {
         uint word = 0u;
@@ -536,4 +572,14 @@ void main() {
         }
         out_l0d[base4 + b] = word;
     }
+#else
+    // RADV: one hardware-RNE fp8 store per stored byte (32 scalar stores; the conversion is
+    // what the software q8r chain cost). Clamp keeps the value in fp8 range (as q8r does).
+    uint base1 = uint(r * int(W0 + 8) + c) * 32u;
+    [[unroll]] for (uint j = 0u; j < 32u; ++j) {
+        uint L = perm_P(j);
+        float v = (L < 20u) ? df[L] : 0.0;
+        out_l0[base1 + j] = NR_OPERAND(clamp(v, -448.0, 448.0));
+    }
+#endif
 }
