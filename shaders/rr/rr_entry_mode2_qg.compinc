@@ -1,0 +1,119 @@
+// rr_entry_mode2: up-projection entry for the decoder units u6/u8/u10/u12/u14.
+// x = q8(mE8 @ low + v1a0)[pixel-shuffled q = dx + 2 dy] + s1d6 * skip
+// (rr_level_model.py upsample + block_v2 up_entry, Review R9b: border tokens reflect in
+// low-res space - parent = reflect(tx>>1, Wlow) - the parity is the RAW token parity,
+// and the up result is staged in fp8: the model's up8 q8(clip(f16a(u))) round).
+//
+// P6 q-group form (replaces the in-lane 4-pass version): the in-lane version issued
+// 4 parity passes per (kc, m-tile) with 3/4 of lanes zero-filled. Now: stage low in
+// q-group order (scalar uvec4 stores - the s_VB idiom), one wave per (q, 16-col tile)
+// over the block-diagonal [16 tokens x Cup] . [Cup x C] GEMMs, epilogue scatters
+// (v1a0 RAW + fp8) to a u8 buffer and reloads per-lane tokens. A = mE8 row-block
+// [(q*C+c0)][k] (operand A from global wT, wave-uniform so no 4x redundancy).
+// B = staged low via scalar uvec4 loads + element-wise B fill (Q8P idiom - same
+// lane/token/K mapping the in-lane version relies on, validated end-to-end).
+// v1a0 RAW at v1a0o (mu_h2 fix). s1d6*skip added after the reload, exactly like
+// the in-lane version (fp8 staging, then f32 skip add). All LDS traffic is
+// scalar (uvec4/f16/u8 element access); NO coopMat loads from shared memory.
+//
+// Token/q-group map (a bijection): token t = 16*f + 8*d + a + 2*s with
+// f = (t>>4)&3, d = (t>>3)&1, a = t&1, s = (t>>1)&3. Parity q = (tx&1)+2*(ty&1)
+// (tx,ty full-res, possibly negative: GLSL & is two's-complement exact).
+// q-group slot v = 16*q + 4*f + s. Inverse: f = (m>>2), s = m&3 (m = M-row),
+// bit0 = (q&1)^(x0&1), bit3 = ((q>>1)&1)^(y0&1):
+//   t = 16*(m>>2) + 8*(((q>>1)&1)^(y0&1)) + ((q&1)^(x0&1)) + 2*(m&3).
+// Lane/token/K mapping (matches the in-lane Q8P convention): lane (col,rowh)
+// owns B comp i = K[8*rowh+i] of its q-group token (col), and acc comp i is
+// read back as (channel, token) the same way the enc head reads gg[0..2].
+// Contract: fills st[] (f32 residual, stored-order) for this lane's token.
+// Uses: x0/y0/W/H, col/q/rowh, NT/G, in_act4 (binding 1), skip_act (binding 3),
+// wT/wtab, m108T (mE8 tiles follow it: base m108T + NT*256), v1a0o, s1d0o (s1d6).
+// LDS (file-scope, per-unit sized via RR_CUP/RR_C in rr_swin.comp):
+// s_LSu[64][Cup/16] raw low bytes (uvec4) + s_LSo[64][C] staged up (e4m3 u8).
+{
+    const uint C_ = uint(RR_C);
+    const uint KC_ = uint(C_in) >> 4u;       // Cup/16 K tiles (C_in == Cup for mode 2)
+    // ---- stage low in q-group order (scalar uvec4 stores, exact bytes)
+    for (uint t = tid; t < 64u; t += 128u) {
+        int txw_ = x0 + int(t & 7u);
+        int tyw_ = y0 + int(t >> 3u);
+        uint qq_ = uint(txw_ & 1) + 2u * uint(tyw_ & 1);
+        uint vv_ = 16u * qq_ + 4u * ((t >> 4u) & 3u) + ((t >> 1u) & 3u);
+        int lpx_ = txw_ >> 1;
+        int lpy_ = tyw_ >> 1;
+        uint lpos_ = uint(reflect_coord(lpy_, int(H) >> 1)) * (uint(W) >> 1u)
+                   + uint(reflect_coord(lpx_, int(W) >> 1));
+        // NOTE (mu_rrl): low activations are [2][HW2][32] (two 32-ch halves),
+        // NOT contiguous [pix][64] - same byte formula as the in-lane fill.
+        // Staged s_LSu stays contiguous [slot][C_in]; only the SOURCE differs.
+        uint HW2_ = (uint(W) >> 1u) * (uint(H) >> 1u);
+        for (uint k4 = 0u; k4 < uint(C_in) >> 4u; ++k4)
+            s_LSu[(vv_ * (uint(C_in) >> 4u)) + k4]
+                = in_act4[((k4 >> 1u) * HW2_ + lpos_) * 2u + (k4 & 1u)];
+    }
+    sync_lds();
+    // ---- block-diagonal GEMM: this wave owns q-group qq = wave, all NT tiles
+    const uint mE8T = m108T + NT * 256u;        // mE8 tiles follow m108 (no mA8/mC8 in mode 2)
+    const float s6v_ = wtab[s1d0o + 1u];        // s1d6 scalar (slot +17)
+    const uint qq = wave;
+    const uint lane = tid & 31u;
+    const uint col = tid & 15u;
+    for (uint ctl = 0u; ctl < NT; ++ctl) {
+        const uint c0 = 16u * ctl;
+        NR_FRAG_ACC acc; acc = NR_ACC_ZERO;
+        for (uint kc = 0u; kc < KC_; ++kc) {
+            NR_FRAG_A wa_; NR_LOAD_A(wa_, wT, mE8T + ((qq * NT + ctl) * KC_ + kc) * 256u, 16u);
+            // B[k][n] subunit: lane (col,rowh) holds K = k0+8*rowh+i of its
+            // q-group token (col); same lane/token/K mapping as the in-lane fill.
+            NR_FRAG_B wb_;
+            uint baddr_ = (16u * qq + col) * uint(C_in) + kc * 16u + 8u * rowh;
+            uvec4 be_ = s_LSu[baddr_ >> 4u];
+            uvec2 bh_ = ((baddr_ & 8u) != 0u) ? be_.zw : be_.xy;
+            Q8P(wb_, 0u, e4m3_to_f32(byte_of(bh_.x, 0u)), e4m3_to_f32(byte_of(bh_.x, 1u)))
+            Q8P(wb_, 2u, e4m3_to_f32(byte_of(bh_.x, 2u)), e4m3_to_f32(byte_of(bh_.x, 3u)))
+            Q8P(wb_, 4u, e4m3_to_f32(byte_of(bh_.y, 0u)), e4m3_to_f32(byte_of(bh_.y, 1u)))
+            Q8P(wb_, 6u, e4m3_to_f32(byte_of(bh_.y, 2u)), e4m3_to_f32(byte_of(bh_.y, 3u)))
+            NR_MMA(acc, wa_, wb_);
+        }
+
+        // ---- epilogue: acc comp i of lane l = (m = 8*(l>>4)+i, n = l&15);
+        // token t(m) via inverse map, channel c0+m; +v1a0 RAW, fp8, u8 LDS store.
+        const uint ab_ = (qq & 1u) ^ uint(x0 & 1);
+        const uint db_ = ((qq >> 1u) & 1u) ^ uint(y0 & 1);
+        const uint n0_ = lane & 15u;
+        const uint m0_ = 8u * (lane >> 4u);
+        // token from the LANE's column n0_ (invert slot n0_ = 4f+s); channel from mm_.
+        const uint tx_ = 16u * (n0_ >> 2u) + 8u * db_ + ab_ + 2u * (n0_ & 3u);
+        #define RR_M2_EPI(i) { \
+            uint mm_ = m0_ + uint(i); \
+            float up_ = acc[i] + wtab[v1a0o + qq * C_ + c0 + mm_]; \
+            s_LSo[tx_ * C_ + c0 + mm_] = uint8_t(rr_q8enc(up_)); }
+        RR_M2_EPI(0) RR_M2_EPI(1) RR_M2_EPI(2) RR_M2_EPI(3)
+        RR_M2_EPI(4) RR_M2_EPI(5) RR_M2_EPI(6) RR_M2_EPI(7)
+        #undef RR_M2_EPI
+    }
+    sync_lds();
+    // ---- reload this lane's token + s1d6 * skip (stored order) into st[]
+    // NOTE (mu_rrl): s_LSo is indexed by WINDOW-LOCAL token (epilogue stores by
+    // inverse-map tx_ 0..63), NOT by image pixel pos_ (that was an OOB read -
+    // root cause of the -13 dB garbage). pos_ is only for the image-indexed skip.
+    {
+        int txl_ = x0 + int(col & 7u);
+        int tyr_ = y0 + int(q * 2u) + int(col >> 3u);
+        uint pos_ = uint(reflect_coord(tyr_, H) * W + reflect_coord(txl_, W));
+        uint t_ = (q * 2u + (col >> 3u)) * 8u + (col & 7u);
+        #define RR_M2_LD(t) { \
+            uint ch_ = 16u * uint(t) + 8u * rowh; \
+            uint sb_ = ((uint(t) >> 1u) * HW + pos_) * 32u + (uint(t) & 1u) * 16u + rowh * 8u; \
+            st##t[0] = e4m3_to_f32(s_LSo[t_ * C_ + ch_]) + s6v_ * e4m3_to_f32(skip_act[sb_]); \
+            st##t[1] = e4m3_to_f32(s_LSo[t_ * C_ + ch_ + 1u]) + s6v_ * e4m3_to_f32(skip_act[sb_ + 1u]); \
+            st##t[2] = e4m3_to_f32(s_LSo[t_ * C_ + ch_ + 2u]) + s6v_ * e4m3_to_f32(skip_act[sb_ + 2u]); \
+            st##t[3] = e4m3_to_f32(s_LSo[t_ * C_ + ch_ + 3u]) + s6v_ * e4m3_to_f32(skip_act[sb_ + 3u]); \
+            st##t[4] = e4m3_to_f32(s_LSo[t_ * C_ + ch_ + 4u]) + s6v_ * e4m3_to_f32(skip_act[sb_ + 4u]); \
+            st##t[5] = e4m3_to_f32(s_LSo[t_ * C_ + ch_ + 5u]) + s6v_ * e4m3_to_f32(skip_act[sb_ + 5u]); \
+            st##t[6] = e4m3_to_f32(s_LSo[t_ * C_ + ch_ + 6u]) + s6v_ * e4m3_to_f32(skip_act[sb_ + 6u]); \
+            st##t[7] = e4m3_to_f32(s_LSo[t_ * C_ + ch_ + 7u]) + s6v_ * e4m3_to_f32(skip_act[sb_ + 7u]); }
+        RR_FOR_NT(RR_M2_LD)
+        #undef RR_M2_LD
+    }
+}

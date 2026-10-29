@@ -38,6 +38,9 @@
 #ifndef RR_MODE
 #define RR_MODE 0
 #endif
+#ifndef RR_M2_QGROUP
+#define RR_M2_QGROUP 0
+#endif
 #ifndef RR_HEAD_ENC
 #define RR_HEAD_ENC 1
 #endif
@@ -185,6 +188,16 @@ shared float16_t s_VB[64 * 32];
 // Down-projection merge buffer (enc0's design): [merge j = 0..4C-1][16 down pixels].
 shared NR_OPERAND s_MT[4 * 160 * 16];
 #endif
+#ifndef RR_CUP
+#define RR_CUP 160
+#endif
+#if RR_MODE == 2 && RR_M2_QGROUP
+// P6 q-group up entry staging (scalar LDS only; NO coopMat loads from shared):
+// s_LSu[64][Cup/16] raw low bytes (uvec4) + s_LSo[64][C] staged up (e4m3 u8).
+// Sized per-unit (u14: Cup=64 -> 256 uvec4 + 2048 B = 6KB, not 20KB).
+shared uvec4 s_LSu[64u * (RR_CUP / 16u)];
+shared uint8_t s_LSo[64u * RR_C];
+#endif
 
 // ---- RR_PRECISE (u15 recipe A): f16-exact roundings the oracle needs.
 // Only the u15 pipeline sets RR_PRECISE=1; every other unit keeps the fast path
@@ -192,7 +205,7 @@ shared NR_OPERAND s_MT[4 * 160 * 16];
 #ifndef RR_PRECISE
 #define RR_PRECISE 0
 #endif
-#if RR_PRECISE
+// Hoisted out of #if RR_PRECISE (P6 q-group mode-2 entry needs rr_q8enc too).
 // Scalar fp8-grid rounding (the bit-exact port's e4m3 pair, renamed: the offline
 // gate owns the e4m3 token): quantise to the fp8 grid, keep the value in f32.
 uint rr_q8enc(float x) {
@@ -211,6 +224,7 @@ float rr_q8dec(uint c) {
     return ((c & 0x80u) != 0u) ? -v : v;
 }
 float rr_q8grid(float x) { return rr_q8dec(rr_q8enc(x)); }
+#if RR_PRECISE
 // f16 round of 8 fragment elements. Must be the opaque bit-twiddle: a plain
 // float16_t() round trip is folded away by ACO, silently un-applying the recipe.
 #define RR_RND8(F) { F[0] = nr_round_f16_e4m3(F[0]); F[1] = nr_round_f16_e4m3(F[1]); F[2] = nr_round_f16_e4m3(F[2]); F[3] = nr_round_f16_e4m3(F[3]); F[4] = nr_round_f16_e4m3(F[4]); F[5] = nr_round_f16_e4m3(F[5]); F[6] = nr_round_f16_e4m3(F[6]); F[7] = nr_round_f16_e4m3(F[7]); }
@@ -294,7 +308,11 @@ void main() {
 #elif RR_MODE == 1
 #include "rr_entry_mode1.compinc"   // helper: merge entry (u1)
 #elif RR_MODE == 2
+#if RR_M2_QGROUP
+#include "rr_entry_mode2_qg.compinc" // P6 q-group up entry (u14 only: measured win)
+#else
 #include "rr_entry_mode2.compinc"   // helper: up-projection entry (u6/u8/u10/u12/u14)
+#endif
 #elif RR_MODE == 5
 #include "rr_entry_mode5.compinc"   // helper: enc0 entry (u0)
 #elif RR_MODE == 3
