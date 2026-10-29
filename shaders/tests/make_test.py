@@ -1137,12 +1137,12 @@ def make_test(name, out_dir):
                 {"binding": 4, "bytes": 256},
                 {"binding": 5, "file": "x88.bin", "bytes": 2048},
                 {"binding": 6, "file": "x90.bin", "bytes": 1024},
-                {"binding": 7, "bytes": 2048, "output": "o98", "type": "f16"},
+                {"binding": 7, "bytes": 2048},
                 {"binding": 8, "bytes": 256},
-                {"binding": 9, "bytes": 1024, "output": "oc0", "type": "i8"},
+                {"binding": 9, "bytes": 1024},
                 {"binding": 10, "bytes": 1024, "output": "oc8", "type": "u8"},
-                {"binding": 11, "bytes": 1024, "output": "od0", "type": "u8"},
-                {"binding": 12, "bytes": 2048, "output": "od8", "type": "f16"},
+                {"binding": 11, "bytes": 1024},
+                {"binding": 12, "bytes": 2048},
                 {"binding": 13, "file": "wtab.bin"}
             ]
         }

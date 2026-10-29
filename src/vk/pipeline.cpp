@@ -893,6 +893,7 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         add_pipe("rr_swin_u3", 14, 80, 32);   // mu_rrl: C=128 G=4 mode-0 + enc head + down
         add_pipe("rr_swin_u4", 14, 80, 32);   // mu_rrl: C=160 G=8 mode-0 + enc head + down
         add_pipe("rr_swin_u14", 14, 80, 32);  // mu_rrl: C=32 G=2 mode-2 up (tube entry + mu_h2 raw-v1a0)
+        add_pipe("rr_swin_u15", 14, 80, 32);  // mu_rrl: C=32 G=2 mode-4 + Recipe A (mu_h1 RR_PRECISE)
         add_pipe("rr_swin_u12", 14, 80, 32);  // mu_rrl: C=64 G=2 mode-2 up (tube entry + mu_h2 raw-v1a0)
         add_pipe("rr_swin_u7", 14, 80, 32);   // mu_rrl: C=160 G=8 mode-3 + dec head (mu_h3)
         add_pipe("rr_swin_u9", 14, 80, 32);   // mu_rrl: C=128 G=4 mode-3 + dec head (mu_h3)
@@ -2393,6 +2394,7 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             else if (u == 9) swin_pipe = "rr_swin_u9";
             else if (u == 11) swin_pipe = "rr_swin_u11";
             else if (u == 13) swin_pipe = "rr_swin_u13";
+            else if (u == 15) swin_pipe = "rr_swin_u15";
             if (swin_pipe) {
                 std::vector<Buffer*> bufs5 = {
                     &rr_swin_w, in, primary,

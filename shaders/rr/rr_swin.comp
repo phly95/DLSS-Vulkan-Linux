@@ -456,7 +456,8 @@ void main() {
         float s1v1 = nr_round_f16_e4m3(nr_round_f16_e4m3(s1u1 + s1u3) + nr_round_f16_e4m3(s1u5 + s1u7));
         float s1tot = lt0[0]+lt0[1]+lt0[2]+lt0[3]+lt0[4]+lt0[5]+lt0[6]+lt0[7]+lt1[0]+lt1[1]+lt1[2]+lt1[3]+lt1[4]+lt1[5]+lt1[6]+lt1[7]+lt2[0]+lt2[1]+lt2[2]+lt2[3]+lt2[4]+lt2[5]+lt2[6]+lt2[7]+lt3[0]+lt3[1]+lt3[2]+lt3[3]+lt3[4]+lt3[5]+lt3[6]+lt3[7];
         s1tot += subgroupShuffleXor(s1tot, 16u);
-        float s1inv = 1.0 / s1tot;
+        // same degenerate-zero guard as the fast path (Recipe A S1)
+        float s1inv = (s1tot > 0.0) ? (1.0 / s1tot) : 0.0;
         NR_FRAG_B16 bp0; NR_FRAG_B16 bp1; NR_FRAG_B16 bp2; NR_FRAG_B16 bp3;
         #define RR_PB_LT(P, L) { \
             P[0] = float16_t(rr_q8grid(nr_round_f16_e4m3(L[0] * s1inv))); \
@@ -482,7 +483,10 @@ void main() {
             e = swin_exp(L[7]); ss += e; L[7] = e; }
         RR_EXP_LT(lt0) RR_EXP_LT(lt1) RR_EXP_LT(lt2) RR_EXP_LT(lt3)
         ss += subgroupShuffleXor(ss, 16u);
-        float pinv = 1.0 / ss;
+        // Degenerate-zero guard (lavapipe swin_exp quirk sums to +/-0): on the
+        // real path ss > 0 always and this is bit-identical; without it 1/0 = inf
+        // poisons P and every downstream head on the O7 f16 build.
+        float pinv = (ss > 0.0) ? (1.0 / ss) : 0.0;
         NR_FRAG_B16 bp0; NR_FRAG_B16 bp1; NR_FRAG_B16 bp2; NR_FRAG_B16 bp3;
         #define RR_NORM_LT(P, L) { \
             P[0] = float16_t(L[0] * pinv); P[1] = float16_t(L[1] * pinv); \
