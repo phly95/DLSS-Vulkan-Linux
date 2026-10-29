@@ -10,13 +10,32 @@
 
 // k_sr_enc0L_in (NeuralHub SR preset L, oracle launch 2). Spec: tools/sr/sr_enc0L_model.py
 // (L-1 green: l0_in 100.0000% bit-exact vs the oracle on BOTH frames, the three MV buffers 100%).
-// Every f16 rounding point is rh() (RADV folds float16_t casts, see shaders/include/rh.glsl) and
-// every e4m3 rounding point is an explicit encoder, in the model's operation order.
+// Every feature formula, constant and rounding point below is the model's, in its operation
+// order; what changed against the first (bit-exact) port is the shape of the work, not the maths
+// - the same techniques preset M's k_sr_enc0 (sr_enc0.comp) measured from 45.4 to 2.1 ms:
 //
-// Workgroup: one thread per PADDED pixel (grid ((W0+8)*(H0+8)+63)/64, block 64, as the oracle).
-//   r = idx / (W0+8), c = idx % (W0+8); the content region is rows 2..161, cols 2..257 = M's
-//   160x256 feature grid; the 2-pixel border mirrors it (yref = mirror(r-2, H), xref =
-//   mirror(c-2, W), model coords()/mirror()).
+//  * one workgroup = one 8x8 tile of the PADDED grid = 64 lanes; the tile's 10x10 depth +
+//    motion-vector neighbourhood (image coordinates, min row/col of the tile's mirrored rows
+//    minus one) is loaded cooperatively into LDS once, so the 3x3 tournament costs 18 LDS reads
+//    instead of 12 scattered global loads a pixel (sr_enc0.comp's sdep/smv staging, generalised
+//    for the 2-pixel mirror border: the window is staged at image coordinates so every lane's
+//    tournament reads the model's clamp(y+-1) cells in the model's exact visit order).
+//  * the tournament tracks the winning MV VALUES (f16vec2 is one register) rather than the
+//    winning row/column - same selection rule (ties keep the earlier element), ~25 fewer ops
+//    a pixel, and the coordinates are never needed again.
+//  * the four dhist samples share one bilinear setup per sample (dhsamp3: R,G,B ride the same
+//    four word loads, 48 -> 16 a pixel), one dither word a pixel (the index depends on
+//    (fc, y, x) only, 20 -> 1), and the hidden taps load one dword a tap (4 channels adjacent,
+//    16 -> 4).
+//  * dq()'s f16 round trips are the hardware's f16 adds/subtracts (the same RNE roundings the
+//    bit-twiddled f32_to_f16_bits/f16_bits_to_f32 chain spelled out, ~6x fewer instructions):
+//    dq_f32 is bit-identical to the model's, and the final E4M3 code stays the software q8r
+//    (RNE, half-even subnormal grid) so the stored bytes keep the oracle's rounding exactly.
+//
+// Workgroup: one thread per PADDED pixel, 8x8 per tile (grid ((W0+8)+7)/8, (H0+8)+7)/8, block
+// 64). r = padded row, c = padded column; the content region is rows 2..H0+1, cols 2..W0+1 =
+// M's H0xW0 feature grid; the 2-pixel border mirrors it (yref = mirror2(r-2, H), xref =
+// mirror2(c-2, W), model coords()/mirror()).
 // Two jobs share the thread:
 //  * the three MV outputs (model mv_outputs): the 3x3 depth tournament at (xref, yref) with the
 //    reset select, stored for level-0 y in [0,H) and x in [0,W) as f16(3.0*(mvoff + g_mv[read]))
@@ -25,7 +44,8 @@
 //  * l0_in: the 20 logical features (model features()), each through dq() (the dithered e4m3
 //    quantizer, dither = enc0_w[0:4096] as 2048 u16, fc from push +0xdc, index phase
 //    |coord-2| & 15), stored P-permuted: byte j of the pixel's 32 holds logical feature P(j)
-//    (P = perm_invP's inverse; logical 20..31 are never written -> 0).
+//    (P = perm_invP's inverse; logical 20..31 are never written -> 0), eight dword writes a
+//    pixel instead of 32 byte writes.
 //
 // Features 0..19 - identical set and math to preset M's k_sr_enc0 (tools/sr/sr_enc0_model.py),
 // on the padded grid with L's preset constants from the push:
@@ -43,17 +63,26 @@
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
+// The tile's 10x10 depth + motion-vector neighbourhood, image coordinates, loaded cooperatively
+// once: the 3x3 tournament then costs LDS reads instead of scattered global loads.
+shared float sdep[100];
+shared f16vec2 smv[100];
+shared uint s_expo;
+
 layout(set = 0, binding = 0) readonly buffer InCol        { f16vec4 g_col[]; };
 layout(set = 0, binding = 1) readonly buffer InDep        { float g_dep[]; };
 layout(set = 0, binding = 2) readonly buffer InMv         { f16vec2 g_mv[]; };
 layout(set = 0, binding = 3) readonly buffer InPrevMv     { f16vec2 in_prev_mvec[]; };
 layout(set = 0, binding = 4) readonly buffer InDhist      { uint in_dhist[]; };
-layout(set = 0, binding = 5) readonly buffer InHidden     { int8_t in_hidden[]; };
+// the four int8 hidden channels of a pixel are adjacent bytes: one dword a tap, four taps a
+// pixel (the buffer is raw bytes, the view type is this kernel's choice).
+layout(set = 0, binding = 5) readonly buffer InHidden     { uint in_h4[]; };
 
 layout(set = 0, binding = 6) writeonly buffer OutPrevMv   { f16vec2 out_prev_mvec[]; };
 layout(set = 0, binding = 7) writeonly buffer OutMvEro    { f16vec2 out_mv_ero[]; };
 layout(set = 0, binding = 8) writeonly buffer OutMvNondil { f16vec2 out_mv_nondil[]; };
-layout(set = 0, binding = 9) writeonly buffer OutL0In     { uint8_t out_l0_in[]; };
+// the pixel's 32 stored bytes = eight dwords (little-endian), one write a dword.
+layout(set = 0, binding = 9) writeonly buffer OutL0In     { uint out_l0d[]; };
 layout(set = 0, binding = 10) readonly buffer InEnc0W     { uint8_t enc0_w[]; };
 // the exposure buffer holds the two parity words (Enc0Args+0x80); the kernel reads enc0[parity]
 // as an f16 bit pattern and uses 1.0 when the word is 0 (model load()).
@@ -85,7 +114,8 @@ layout(push_constant) uniform Enc0Args {
 
 // f32 -> e4m3 CODE, RNE, saturating at 448, subnormal grid rounded half-to-even: the model's
 // q8r_code (the hardware packed e4m3 convert after the & 0xff80 truncation). NaN -> the normal
-// branch, exactly as numpy's bits take it (0x7fc00000 -> code 0x3c).
+// branch, exactly as numpy's bits take it (0x7fc00000 -> code 0x3c). Kept as the first port
+// spelled it: the stored bytes are the oracle's rounding, not the hardware convert's.
 uint e4m3_q8r(float x) {
     uint sign = (x < 0.0) ? 0x80u : 0u;
     float a = min(abs(x), 448.0);
@@ -102,23 +132,7 @@ uint e4m3_q8r(float x) {
     return sign | (norm & 0x7fu);
 }
 
-// f16 bit pattern of a finite f16-representable f32 (after rh(), so no rounding is left);
-// NaN -> 0x7e00, the pattern np.float16(NaN) produces on the feature path.
-uint f32_to_f16_bits(float x) {
-    uint b = floatBitsToUint(x);
-    uint s = (b >> 16u) & 0x8000u;
-    float a = abs(x);
-    if (a != a) return 0x7E00u;
-    if (a >= 6.103515625e-05) {                 // normal f16
-        uint e32 = (b >> 23u) & 0xffu;
-        uint m = b & 0x7fffffu;
-        return s | ((e32 - 112u) << 10u) | (m >> 13u);
-    }
-    if (a == 0.0) return s;
-    return s | uint(a * 16777216.0);            // subnormal f16: multiples of 2^-24
-}
-
-// f16 bits -> f32, exact (subnormals, +-inf, NaN).
+// f16 bits -> f32, exact (subnormals, +-inf, NaN) - the exposure decode below.
 float f16_bits_to_f32(uint h) {
     uint s = (h & 0x8000u) << 16u;
     uint e = (h >> 10u) & 31u;
@@ -129,12 +143,6 @@ float f16_bits_to_f32(uint h) {
     }
     if (e == 31u) return uintBitsToFloat(s | 0x7F800000u | (m << 13u));
     return uintBitsToFloat(s | ((e + 112u) << 23u) | (m << 13u));
-}
-
-// perm_invP: logical channel (mod 32) -> byte inside a P-permuted 32-block = m.IP (verified
-// against tools/sr/sr_stage_model.py's P/IP; sr_enc0.comp / sr_dec0.comp ship the same formula).
-uint perm_invP(uint c) {
-    return (((c >> 1u) & 7u) << 2u) | (c & 1u) | (((c >> 4u) & 1u) << 1u);
 }
 
 // perm_P: stored byte (mod 32) -> logical channel = the inverse of perm_invP (model l0_in():
@@ -153,55 +161,69 @@ int mirror2(int v, int n) {
 
 // ---------------------------------------------------------------- the MV fields (model mv_fields)
 
+void mvstep(float d, f16vec2 m,
+            inout float mxv, inout f16vec2 mxm,
+            inout float mnv, inout f16vec2 mnm) {
+    bool kp = mxv >= d;                     // keep the earlier element on ties
+    mxv = kp ? mxv : d;  mxm = kp ? mxm : m;
+    bool nw = d < mnv;
+    mnv = nw ? d : mnv;  mnm = nw ? m : mnm;
+}
+
 struct MVF {
     vec2 mn;        // min-depth 3x3 read (+mvoff) -> dhist sample 0, reset's mv, prev_mvec on reset
     vec2 mx;        // max-depth 3x3 read          -> dhist sample 2, mv_ero on non-reset
     vec2 ct;        // centre read                 -> mv_nondil, dhist sample 1 and 3
 };
 
-void mvstep(float d, int rr, int cc,
-            inout float mxv, inout int mxr, inout int mxc,
-            inout float mnv, inout int mnr, inout int mnc) {
-    bool kp = mxv >= d;                     // keep the earlier element on ties
-    mxv = kp ? mxv : d;  mxr = kp ? mxr : rr;  mxc = kp ? mxc : cc;
-    bool nw = d < mnv;
-    mnv = nw ? d : mnv;  mnr = nw ? rr : mnr;  mnc = nw ? cc : mnc;
-}
-
-MVF mvf(int x, int row) {
+// The 3x3 tournament from the wave's LDS copy of the tile's neighbourhood, in the model's exact
+// visit order (centre, then the eight neighbours) with the model's clamped image coordinates:
+// the window is staged at image coordinates, so the border lanes' reads are the oracle's cells
+// and the tie-break order matches it. The winning MV VALUES are tracked, not row/col.
+MVF mvf(int x, int row, int row0, int col0) {
     int xc = clamp(x, 0, W - 1);            // the padded grid's reads clamp to the render image
     int yc = clamp(row, 0, H - 1);
     int y1 = clamp(yc - 1, 0, H - 1), y2 = clamp(yc + 1, 0, H - 1);
     int x1 = clamp(xc - 1, 0, W - 1), x2 = clamp(xc + 1, 0, W - 1);
+    // six base offsets (three row bases + three columns) instead of eighteen index products
+    uint b0 = uint(yc - row0) * 10u, b1 = uint(y1 - row0) * 10u, b2 = uint(y2 - row0) * 10u;
+    uint lx0 = uint(xc - col0), lx1 = uint(x1 - col0), lx2 = uint(x2 - col0);
 
-    float d0 = g_dep[uint(yc * W + xc)];                 // centre
-    float d1 = g_dep[uint(y1 * W + x1)];                 // (y-1, x-1)
-    float d2 = g_dep[uint(y1 * W + xc)];                 // (y-1, x)
-    float d3 = g_dep[uint(y1 * W + x2)];                 // (y-1, x+1)
-    float d4 = g_dep[uint(yc * W + x1)];                 // (y, x-1)
-    float d5 = g_dep[uint(yc * W + x2)];                 // (y, x+1)
-    float d6 = g_dep[uint(y2 * W + x1)];                 // (y+1, x-1)
-    float d7 = g_dep[uint(y2 * W + xc)];                 // (y+1, x)
-    float d8 = g_dep[uint(y2 * W + x2)];                 // (y+1, x+1)
+    float d0 = sdep[b0 + lx0];                // centre
+    float d1 = sdep[b1 + lx1];                // (y-1, x-1)
+    float d2 = sdep[b1 + lx0];                // (y-1, x)
+    float d3 = sdep[b1 + lx2];                // (y-1, x+1)
+    float d4 = sdep[b0 + lx1];                // (y, x-1)
+    float d5 = sdep[b0 + lx2];                // (y, x+1)
+    float d6 = sdep[b2 + lx1];                // (y+1, x-1)
+    float d7 = sdep[b2 + lx0];                // (y+1, x)
+    float d8 = sdep[b2 + lx2];                // (y+1, x+1)
+
+    f16vec2 m0 = smv[b0 + lx0];
+    f16vec2 m1 = smv[b1 + lx1];
+    f16vec2 m2 = smv[b1 + lx0];
+    f16vec2 m3 = smv[b1 + lx2];
+    f16vec2 m4 = smv[b0 + lx1];
+    f16vec2 m5 = smv[b0 + lx2];
+    f16vec2 m6 = smv[b2 + lx1];
+    f16vec2 m7 = smv[b2 + lx0];
+    f16vec2 m8 = smv[b2 + lx2];
 
     bool ge = d0 >= d1, gt = d0 > d1;
-    float mxv = ge ? d0 : d1;  int mxr = ge ? yc : y1;  int mxc = ge ? xc : x1;
-    float mnv = gt ? d1 : d0;  int mnr = gt ? y1 : yc;  int mnc = gt ? x1 : xc;
-    mvstep(d2, y1, xc, mxv, mxr, mxc, mnv, mnr, mnc);
-    mvstep(d3, y1, x2, mxv, mxr, mxc, mnv, mnr, mnc);
-    mvstep(d4, yc, x1, mxv, mxr, mxc, mnv, mnr, mnc);
-    mvstep(d5, yc, x2, mxv, mxr, mxc, mnv, mnr, mnc);
-    mvstep(d6, y2, x1, mxv, mxr, mxc, mnv, mnr, mnc);
-    mvstep(d7, y2, xc, mxv, mxr, mxc, mnv, mnr, mnc);
-    mvstep(d8, y2, x2, mxv, mxr, mxc, mnv, mnr, mnc);
+    float mxv = ge ? d0 : d1;  f16vec2 mxm = ge ? m0 : m1;
+    float mnv = gt ? d1 : d0;  f16vec2 mnm = gt ? m1 : m0;
+    mvstep(d2, m2, mxv, mxm, mnv, mnm);
+    mvstep(d3, m3, mxv, mxm, mnv, mnm);
+    mvstep(d4, m4, mxv, mxm, mnv, mnm);
+    mvstep(d5, m5, mxv, mxm, mnv, mnm);
+    mvstep(d6, m6, mxv, mxm, mnv, mnm);
+    mvstep(d7, m7, mxv, mxm, mnv, mnm);
+    mvstep(d8, m8, mxv, mxm, mnv, mnm);
 
     MVF f;
-    f.ct = vec2(mvoffx, mvoffy) + vec2(float(g_mv[uint(yc * W + xc)].x),
-                                       float(g_mv[uint(yc * W + xc)].y));
-    f.mn = vec2(mvoffx, mvoffy) + vec2(float(g_mv[uint(mnr * W + mnc)].x),
-                                       float(g_mv[uint(mnr * W + mnc)].y));
-    f.mx = vec2(mvoffx, mvoffy) + vec2(float(g_mv[uint(mxr * W + mxc)].x),
-                                       float(g_mv[uint(mxr * W + mxc)].y));
+    f.ct = vec2(mvoffx, mvoffy) + vec2(float(m0.x), float(m0.y));
+    f.mn = vec2(mvoffx, mvoffy) + vec2(float(mnm.x), float(mnm.y));
+    f.mx = vec2(mvoffx, mvoffy) + vec2(float(mxm.x), float(mxm.y));
     return f;
 }
 
@@ -217,8 +239,7 @@ MVF mvf(int x, int row) {
 #define LN2     uintBitsToFloat(0x3F317218u)   // ln(2)
 
 // tm(v) (model colour feature pre-pass): fma(100, v, 1), max with 1e-4, log2*log10(2)*0.36,
-// NaN -> 0.  (sr_enc0_model's C_CLAMP is 0x46FFE000; both clamp the same values - the M port
-// measured 99.96% with 0x46FE0000 and nothing in either frame's range sits between them.)
+// NaN -> 0.
 float tm(float v) {
     float vc = (v > C_CLAMP) ? C_CLAMP : v;
     float t = fma(100.0, vc, 1.0);
@@ -240,9 +261,11 @@ vec2 axis_dhist(float C, int h) {
     return vec2(tp, s - tp);
 }
 
-// One bilinear dhist sample x 2.45 (model dhist_sample): taps = (word >> 10*chan) & 0x3ff,
-// t = bits * (1/1023), v = ((w00*t00+w01*t01)+w10*t10)+w11*t11.
-float dhsamp(vec2 C, int chan) {
+// One bilinear dhist sample x 2.45 (model dhist_sample), all three channels at once: the taps
+// and the bilinear weights are shared, only the 10-bit field of the loaded word moves (bits
+// 0/10/20). The f32 accumulation order per channel is the model's
+// ((w00*t00+w01*t01)+w10*t10)+w11*t11.
+vec3 dhsamp3(vec2 C) {
     vec2 tx = axis_dhist(C.x, hW15);
     vec2 ty = axis_dhist(C.y, hH15);
     int ix = int(tx.x), iy = int(ty.x);
@@ -251,16 +274,24 @@ float dhsamp(vec2 C, int chan) {
     int x1 = clamp(max(ix, -1) + 1, 0, hW15 - 1);
     int y0 = clamp(iy, 0, hH15 - 1);
     int y1 = clamp(max(iy, -1) + 1, 0, hH15 - 1);
-    uint sh = uint(chan) * 10u;
-    float t00 = float((in_dhist[uint(y0 * hW15 + x0)] >> sh) & 0x3FFu) * INV1023;
-    float t01 = float((in_dhist[uint(y0 * hW15 + x1)] >> sh) & 0x3FFu) * INV1023;
-    float t10 = float((in_dhist[uint(y1 * hW15 + x0)] >> sh) & 0x3FFu) * INV1023;
-    float t11 = float((in_dhist[uint(y1 * hW15 + x1)] >> sh) & 0x3FFu) * INV1023;
-    float w00 = (1.0 - fx) * (1.0 - fy);
-    float w01 = fx * (1.0 - fy);
-    float w10 = (1.0 - fx) * fy;
-    float w11 = fx * fy;
-    return (((w00 * t00 + w01 * t01) + w10 * t10) + w11 * t11) * C245;
+    uint w00 = in_dhist[uint(y0 * hW15 + x0)];
+    uint w01 = in_dhist[uint(y0 * hW15 + x1)];
+    uint w10 = in_dhist[uint(y1 * hW15 + x0)];
+    uint w11 = in_dhist[uint(y1 * hW15 + x1)];
+    float b00 = (1.0 - fx) * (1.0 - fy);
+    float b01 = fx * (1.0 - fy);
+    float b10 = (1.0 - fx) * fy;
+    float b11 = fx * fy;
+    vec3 v;
+    [[unroll]] for (uint ch = 0u; ch < 3u; ++ch) {
+        uint sh = ch * 10u;
+        float t00 = float((w00 >> sh) & 0x3FFu) * INV1023;
+        float t01 = float((w01 >> sh) & 0x3FFu) * INV1023;
+        float t10 = float((w10 >> sh) & 0x3FFu) * INV1023;
+        float t11 = float((w11 >> sh) & 0x3FFu) * INV1023;
+        v[ch] = (((b00 * t00 + b01 * t01) + b10 * t10) + b11 * t11) * C245;
+    }
+    return v;
 }
 
 // One axis of the prev_mvec interpolation (model reset_feature axis): clamp to [0,1] first,
@@ -294,9 +325,9 @@ float reset_feat(MVF f, float xx, float yy) {
     f16vec2 m10 = in_prev_mvec[uint(y1 * W + x0)];
     f16vec2 m11 = in_prev_mvec[uint(y1 * W + x1)];
     float w00 = (1.0 - fy) * (1.0 - fx);
-    float w01 = (1.0 - fy) * fx;
+    float w01 = fx * (1.0 - fy);
     float w10 = fy * (1.0 - fx);
-    float w11 = fy * fx;
+    float w11 = fx * fy;
     float ipx = ((w00 * float(m00.x) + w01 * float(m01.x))
                + w10 * float(m10.x)) + w11 * float(m11.x);
     float ipy = ((w00 * float(m00.y) + w01 * float(m01.y))
@@ -329,47 +360,89 @@ vec2 axis_hid(float C, int n, float inv15, float off) {
     return vec2(tp, s - tp);
 }
 
-float tap_hid(int r, int c, int k) {          // max(-1, i8/127)
-    return max(-1.0, float(int(in_hidden[uint((r * W + c) * 4 + k)])) * (1.0 / 127.0));
+// The four int8 taps at one position as f32 (max(-1, i8/127)): one dword load, four extracts.
+vec4 tap_hid4(int r, int c) {
+    uint u = in_h4[uint(r * W + c)];
+    return vec4(max(-1.0, float(int(int8_t(u        ))) * (1.0 / 127.0)),
+                max(-1.0, float(int(int8_t(u >>  8u))) * (1.0 / 127.0)),
+                max(-1.0, float(int(int8_t(u >> 16u))) * (1.0 / 127.0)),
+                max(-1.0, float(int(int8_t(u >> 24u))) * (1.0 / 127.0)));
 }
 
-// dq() (model dq -> q8r_code): x16 = rh(min(x, 1024)), dither into the exponent, two rh()
-// round trips, keep the three high mantissa bits, then e4m3_q8r. Returns the e4m3 CODE;
-// xi/yi are the |coord-2| dither-phase coordinates (model features()).
-uint dq(float x, uint xi, uint yi) {
-    float x16 = rh(min(x, 1024.0));
-    uint h = f32_to_f16_bits(x16);
-    uint idx = ((fc & 7u) << 8u) | ((yi & 15u) << 4u) | (xi & 15u);
-    uint d = (uint(enc0_w[2u * idx]) | (uint(enc0_w[2u * idx + 1u]) << 8u)) >> 9u;
-    uint E = h & 0xFC00u;
-    float K = f16_bits_to_f32(E | d);
-    float a = rh(x16 + K);
-    float b = rh(a - f16_bits_to_f32(E));
-    float t = f16_bits_to_f32(f32_to_f16_bits(b) & 0xFF80u);
-    float tc = (t != t) ? t : min(max(t, -448.0), 448.0);
-    return e4m3_q8r(tc);
+// dq() (model feature quantizer): x16 = f16(min(x, 1024)), the dither word OR-ed into the
+// exponent, an f16 add and an f16 subtract (the hardware's, both RNE - the same roundings the
+// bit-twiddled rh() chain spelled out, ~6x fewer instructions and no branch), the three high
+// mantissa bits kept by a bit mask, then the model's q8r_code (RNE e4m3, half-even subnormal
+// grid, software so the stored bytes keep the oracle's rounding). The dither word d =
+// dither[idx] >> 9 depends on (fc, y, x) only, so the caller fetches it once a pixel.
+uint dq_lo, dq_hi;                      // the two codes dq2 produces
+
+// The dithered quantizer for TWO features a call (the pixel's twenty features run as ten
+// pairs): identical per-value maths and rounding to the scalar dq(), but the f16 round trips
+// are packed instructions and each pack/unpack moves both halves. The q8r keeps its sub/normal
+// branch - the branchless spelling (attempt 2) measured SLOWER (0.546 vs 0.489): the branch is
+// near-uniform a wave and both-paths-always cost more than it saved.
+void dq2(vec2 x, uint d) {
+    f16vec2 x16 = f16vec2(min(x, vec2(1024.0)));
+    uint p = packHalf2x16(vec2(x16));
+    uint Ex = p & 0xFC00u, Ey = (p >> 16u) & 0xFC00u;
+    f16vec2 a = x16 + f16vec2(unpackHalf2x16(Ex | d).x, unpackHalf2x16(Ey | d).x);
+    f16vec2 b = a - f16vec2(unpackHalf2x16(Ex).x, unpackHalf2x16(Ey).x);
+    uint pb = packHalf2x16(vec2(b));
+    f16vec2 t = f16vec2(unpackHalf2x16(pb & 0xFF80u).x,
+                        unpackHalf2x16((pb >> 16u) & 0xFF80u).x);
+    dq_lo = e4m3_q8r(t.x);
+    dq_hi = e4m3_q8r(t.y);
 }
+#define DQ2(i0, v0, i1, v1) { dq2(vec2(v0, v1), dw); feat[i0] = dq_lo; feat[i1] = dq_hi; }
 
 // ---------------------------------------------------------------- dispatch
 
 void main() {
-    uint idx = gl_GlobalInvocationID.x;
-    uint gp = uint(W0 + 8) * uint(H0 + 8);
-    if (idx >= gp) return;
-    uint crp = uint(W0 + 8);
-    int r = int(idx / crp);
-    int c = int(idx % crp);
+    uint tid = gl_LocalInvocationIndex;
+    int r = int(gl_WorkGroupID.y * 8u + (tid >> 3));    // padded row
+    int c = int(gl_WorkGroupID.x * 8u + (tid & 7u));    // padded column
+    bool valid = (r < H0 + 8) && (c < W0 + 8);
+
+    // The tile's window in IMAGE coordinates: the min mirrored row/col of the tile's eight
+    // padded rows/cols, minus one - ten rows/cols cover every lane's +-1 neighbourhood whatever
+    // the mirror border folds (the eight mapped coords always span <= 8).
+    int r0p = int(gl_WorkGroupID.y * 8u) - 2;
+    int c0p = int(gl_WorkGroupID.x * 8u) - 2;
+    int row0 = mirror2(r0p, H);
+    int col0 = mirror2(c0p, W);
+    [[unroll]] for (int i = 1; i < 8; ++i) {
+        row0 = min(row0, mirror2(r0p + i, H));
+        col0 = min(col0, mirror2(c0p + i, W));
+    }
+    row0 -= 1;
+    col0 -= 1;
+
+    // The neighbourhood, every entry clamped at load time exactly as the tournament clamps its
+    // reads. 100 entries, 64 lanes.
+    [[loop]] for (uint i = tid; i < 100u; i += 64u) {
+        uint ty = i / 10u, tx = i % 10u;
+        int yy = clamp(row0 + int(ty), 0, H - 1);
+        int xx = clamp(col0 + int(tx), 0, W - 1);
+        uint gi = uint(yy * W + xx);
+        sdep[i] = g_dep[gi];
+        smv[i] = g_mv[gi];
+    }
+    if (tid == 0u) s_expo = in_expo[0];
+    barrier();
+
+    if (!valid) return;
     int yref = mirror2(r - 2, H);
     int xref = mirror2(c - 2, W);
     float xx = float(xref) + 0.5;
     float yy = float(yref) + 0.5;
 
     // e = expo[parity] as f16, 1.0 when the word is 0
-    uint ep = in_expo[0];
+    uint ep = s_expo;
     uint eb = ((uint(parity) & 1u) != 0u) ? (ep >> 16u) : (ep & 0xFFFFu);
     float e = (eb == 0u) ? 1.0 : f16_bits_to_f32(eb);
 
-    MVF m = mvf(xref, yref);
+    MVF m = mvf(xref, yref, row0, col0);
 
     // ---- the three MV outputs (model mv_outputs): stored for level-0 y in [0,H), x in [0,W) ----
     int yl = r - 2, xl = c - 2;
@@ -377,9 +450,10 @@ void main() {
         uint oi = uint(yl * W + xl);
         vec2 prev = (resetv != 0u) ? m.mx : m.mn;
         vec2 ero  = (resetv != 0u) ? m.mn : m.mx;
-        out_prev_mvec[oi] = f16vec2(float16_t(rh(3.0 * prev.x)), float16_t(rh(3.0 * prev.y)));
-        out_mv_ero[oi]    = f16vec2(float16_t(rh(3.0 * ero.x)), float16_t(rh(3.0 * ero.y)));
-        out_mv_nondil[oi] = f16vec2(float16_t(rh(3.0 * m.ct.x)), float16_t(rh(3.0 * m.ct.y)));
+        // the f16 conversion IS the model's rh(): v_cvt_f16_f32 rounds RNE
+        out_prev_mvec[oi] = f16vec2(3.0 * prev.x, 3.0 * prev.y);
+        out_mv_ero[oi]    = f16vec2(3.0 * ero.x, 3.0 * ero.y);
+        out_mv_nondil[oi] = f16vec2(3.0 * m.ct.x, 3.0 * m.ct.y);
     }
 
     // ---- l0_in: the 20 logical features, dq'd, stored P-permuted ----
@@ -393,9 +467,14 @@ void main() {
     float tm1 = tm(float(gc.y) * e);
     float tm2 = tm(float(gc.z) * e);
 
+    // one dither word for the pixel's twenty features (model dq: idx = fc, y, x)
+    uint didx = ((fc & 7u) << 8u) | ((yi & 15u) << 4u) | (xi & 15u);
+    uint dw = (uint(enc0_w[2u * didx]) | (uint(enc0_w[2u * didx + 1u]) << 8u)) >> 9u;
+
     // 3..14: four dhist samples x R,G,B. Samples 0..2 ride the min/centre/max MV reads with the
     // 3*((p+0.5) - F20) base; sample 3 has no -F20 term and uses the centre read again. A sample
-    // whose position word leaves [0,W15]x[0,H15] keeps the colour feature (model oob_mask).
+    // whose position word leaves [0,W15]x[0,H15] is not computed and keeps the colour feature
+    // (model oob_mask).
     float base_x = 3.0 * (xx - F20x);
     float base_y = 3.0 * (yy - F20y);
     vec2 P0 = vec2(base_x + 3.0 * m.mn.x, base_y + 3.0 * m.mn.y);
@@ -403,24 +482,24 @@ void main() {
     vec2 P2 = vec2(base_x + 3.0 * m.mx.x, base_y + 3.0 * m.mx.y);
     vec2 P3 = vec2(3.0 * xx + 3.0 * m.ct.x, 3.0 * yy + 3.0 * m.ct.y);
 
-    uint f0 = dq(tm0, xi, yi);
-    uint f1 = dq(tm1, xi, yi);
-    uint f2 = dq(tm2, xi, yi);
     uint feat[20];
-    feat[0] = f0; feat[1] = f1; feat[2] = f2;
-    [[loop]] for (uint s = 0u; s < 4u; ++s) {
-        vec2 C = (s == 0u) ? P0 : (s == 1u) ? P1 : (s == 2u) ? P2 : P3;
-        bool oob = (C.x < 0.0) || (C.x > float(W15)) || (C.y < 0.0) || (C.y > float(H15));
-        [[loop]] for (uint ch = 0u; ch < 3u; ++ch) {
-            float v = oob ? ((ch == 0u) ? tm0 : (ch == 1u) ? tm1 : tm2) : dhsamp(C, int(ch));
-            feat[3u + 3u * s + ch] = dq(v, xi, yi);
-        }
-    }
+    float fv[20];
+    fv[0] = tm0; fv[1] = tm1; fv[2] = tm2;
+#define DHSAMP(P, b0, b1, b2) { \
+        vec2 Cc = (P); \
+        bool oob = (Cc.x < 0.0) || (Cc.x > float(W15)) || (Cc.y < 0.0) || (Cc.y > float(H15)); \
+        vec3 v = oob ? vec3(b0, b1, b2) : dhsamp3(Cc); \
+        fv[k] = v.x; fv[k + 1u] = v.y; fv[k + 2u] = v.z; }
+    uint k = 3u; DHSAMP(P0, tm0, tm1, tm2)
+    k = 6u;  DHSAMP(P1, tm0, tm1, tm2)
+    k = 9u;  DHSAMP(P2, tm0, tm1, tm2)
+    k = 12u; DHSAMP(P3, tm0, tm1, tm2)
+#undef DHSAMP
 
-    // 15: reset (L's k/SC)
-    feat[15] = dq(reset_feat(m, xx, yy), xi, yi);
+    // 15: reset (L's k/SC, no position mask)
+    fv[15] = reset_feat(m, xx, yy);
 
-    // 16..19: the hidden warp at the sample-0 position
+    // 16..19: the hidden warp at the sample-0 position, four channels a tap position
     vec2 hx = axis_hid(P0.x, W, 1.0 / float(W15), F28x / float(W));
     vec2 hy = axis_hid(P0.y, H, 1.0 / float(H15), F28y / float(H));
     int hix = int(hx.x), hiy = int(hy.x);
@@ -429,21 +508,32 @@ void main() {
     int hy0 = clamp(hiy, 0, H - 1);
     int hy1 = clamp(max(hiy, -1) + 1, 0, H - 1);
     float hfx = hx.y, hfy = hy.y;
-    float w00 = (1.0 - hfy) * (1.0 - hfx);
-    float w01 = (1.0 - hfy) * hfx;
-    float w10 = hfy * (1.0 - hfx);
-    float w11 = hfy * hfx;
-    [[loop]] for (uint k = 0u; k < 4u; ++k) {
-        int kk = int(k);
-        float v = ((w00 * tap_hid(hy0, hx0, kk) + w01 * tap_hid(hy0, hx1, kk))
-                 + w10 * tap_hid(hy1, hx0, kk)) + w11 * tap_hid(hy1, hx1, kk);
-        feat[16u + k] = dq(v, xi, yi);
+    vec4 wv = vec4((1.0 - hfy) * (1.0 - hfx), (1.0 - hfy) * hfx,
+                   hfy * (1.0 - hfx), hfy * hfx);
+    vec4 t00 = tap_hid4(hy0, hx0), t01 = tap_hid4(hy0, hx1);
+    vec4 t10 = tap_hid4(hy1, hx0), t11 = tap_hid4(hy1, hx1);
+    [[unroll]] for (uint kk = 0u; kk < 4u; ++kk) {
+        fv[16u + kk] = ((wv.x * t00[kk] + wv.y * t01[kk])
+                      + wv.z * t10[kk]) + wv.w * t11[kk];
     }
 
-    // the store: byte j = logical feature P(j); logical 20..31 are never written -> 0
-    uint base = (idx * 32u);
-    [[loop]] for (uint j = 0u; j < 32u; ++j) {
-        uint L = perm_P(j);
-        out_l0_in[base + j] = uint8_t(L < 20u ? feat[L] : 0u);
+    // the twenty quantizers as ten independent pairs
+    DQ2(0, fv[0], 1, fv[1])     DQ2(2, fv[2], 3, fv[3])
+    DQ2(4, fv[4], 5, fv[5])     DQ2(6, fv[6], 7, fv[7])
+    DQ2(8, fv[8], 9, fv[9])     DQ2(10, fv[10], 11, fv[11])
+    DQ2(12, fv[12], 13, fv[13]) DQ2(14, fv[14], 15, fv[15])
+    DQ2(16, fv[16], 17, fv[17]) DQ2(18, fv[18], 19, fv[19])
+
+    // the store: byte j = logical feature P(j); logical 20..31 are never written -> 0; eight
+    // dwords a pixel (little-endian).
+    uint base4 = uint(r * int(W0 + 8) + c) * 8u;
+    [[unroll]] for (uint b = 0u; b < 8u; ++b) {
+        uint word = 0u;
+        [[unroll]] for (uint kk = 0u; kk < 4u; ++kk) {
+            uint L = perm_P(4u * b + kk);
+            uint code = (L < 20u) ? feat[L] : 0u;
+            word |= code << (8u * kk);
+        }
+        out_l0d[base4 + b] = word;
     }
 }

@@ -541,8 +541,9 @@ def make_test(name, out_dir):
             ]
         }
     elif name == "sr_enc0L_in":
-        # k_sr_enc0L_in (preset L, oracle launch 2): one thread per PADDED pixel, grid
-        # ((W0+8)*(H0+8)+63)/64 x 1, block 64; 12 bindings (0..5 inputs, 6..8 the MV outputs,
+        # k_sr_enc0L_in (preset L, oracle launch 2): one 8x8 tile of the PADDED grid a
+        # workgroup, grid ((W0+8)+7)/8 x ((H0+8)+7)/8 (tile-exact here: w0/h0 are 8-aligned),
+        # block 64; 12 bindings (0..5 inputs, 6..8 the MV outputs,
         # 9 l0_in, 10 the enc0L blob (only its dither table is read here), 11 expo).  The push
         # is 240 B at the oracle's own Enc0Args offsets incl. the preset-L constants the shader
         # reads: +0xd0 SC, +0xe8 k = 2774.359619140625/H (tools/sr/sr_enc0L_model.py).
@@ -578,7 +579,7 @@ def make_test(name, out_dir):
         struct.pack_into("<f", push, 232, 2774.359619140625 / h)  # +0xe8 k (preset L)
         total_l0 = (w0 + 8) * (h0 + 8) * 32
         cfg = {
-            "groups": [((w0 + 8) * (h0 + 8) + 63) // 64, 1, 1],
+            "groups": [(w0 + 8) // 8, (h0 + 8) // 8, 1],
             "push": push.hex(),
             "bindings": [
                 {"binding": 0, "file": "g_col.bin"},

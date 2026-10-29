@@ -1516,10 +1516,12 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                 const float enc0L_k = 2774.359619140625f / (float)H;
                 std::memcpy(push + 208, &enc0L_sc, 4);
                 std::memcpy(push + 232, &enc0L_k, 4);
-                // One thread per PADDED pixel: (W0+8)*(H0+8) = 264*168 on the oracle frames.
+                // One 8x8 tile of the PADDED grid a workgroup (64 lanes = one wave): (W0+8)*(H0+8)
+                // = 264*168 = 33x21 tiles on the oracle frames; the shader drops lanes beyond the
+                // grid when a dimension is not tile-aligned.
                 dispatch(cmd, "sr_enc0L_in", {&g_col, &g_dep, mvhi ? &g_mvhi : &g_mv, &prev_mvec[p], &dhist, &hidden[0],
                                      &prev_mvec[p ^ 1], &mv_ero, &mv_nondil, &ue["l0_in"], &w_enc0, &expo},
-                         push, 240, ((W0 + 8) * (H0 + 8) + 63) / 64, 1, 1);
+                         push, 240, ((W0 + 8) + 7) / 8, ((H0 + 8) + 7) / 8, 1);
                 // Oracle launch 3 (k_sr_l0<0,2>): l0_in -> embedding (ReLU clamp [0,448]) -> the
                 // C=32 block over the padded (+2) border -> mode-0 down projection -> t0
                 // (t_act[0]); l0_skip = the fp8 block output.  L0Args 0x48.. : (W0,H0) level-0
