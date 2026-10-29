@@ -1124,6 +1124,8 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
                     const size_t ub = c->rr_blob_off[u];
                     rr_repack_qkv(src, dst, ub + tabw[u * 32], offset, U.C, U.g);        // item 0: QKV
                     rr_repack_mat(src, dst, ub + tabw[u * 32 + 4], offset, 4 * U.C, U.C); // item 4: fc1
+                    rr_repack_mat(src, dst, ub + tabw[u * 32 + 6], offset, U.C, 4 * U.C);     // item 6: fc2 W2
+                    rr_repack_mat(src, dst, ub + tabw[u * 32 + 2], offset, U.C, 32 * U.g);   // item 2: Wo
                     if (U.mode == 5) {
                         rr_repack_mat(src, dst, ub + tabw[u * 32 + 16], offset, 64, 64);  // GEMM1
                         rr_repack_mat(src, dst, ub + tabw[u * 32 + 18], offset, U.C, 64); // GEMM2
@@ -1132,6 +1134,8 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
                     } else if (U.mode == 2) {
                         rr_repack_mat(src, dst, ub + tabw[u * 32 + 12], offset, 4 * U.C, U.Cup);
                     }
+                    if ((U.mode == 0 || U.mode == 1) && U.Cdown > 0)
+                        rr_repack_mat(src, dst, ub + tabw[u * 32 + 8], offset, U.Cdown, 4 * U.C);
                 }
             }
             auto bc = slurp(wdir + "/bicubic.bin");

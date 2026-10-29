@@ -390,9 +390,11 @@ void main() {
     const int mode = mode_in;
     const int ox = int(gl_WorkGroupID.x) * 8 - sx_in;
     const int oy = int(gl_WorkGroupID.y) * 8 - sy_in;
-    const uint npair = C / 4u;      // (token, channel) pairs owned by each thread: 64 C / 256
-    float acc[40];                  // per-thread accumulators of the owned pairs (attention, then the MLP)
-    [[unroll]] for (uint i = 0u; i < 40u; ++i) acc[i] = 0.0;
+    const uint npair = C / 4u;      // (token, channel) pairs per thread (the entry SNO loop)
+    NR_FRAG_ACC mv[5];              // phase 4: tile accumulators Wo -> attention out -> fc2 -> out,
+                                    // one 16x16 (token, channel) tile per wave-slot, NT = C/32 slots
+    const uint nt16 = C / 16u;      // 16-column tiles of the [64 x C] pair space (C % 16 == 0)
+    const uint NT = C / 32u;        // tiles owned by this wave: (4 * nt16) split over 8 waves, C % 32 == 0
     const uint wv = tid >> 5u;              // wave 0..7 (local_size 256, pinned wave32)
     const uint qh = wv >> 1u;               // 16-token quarter: two waves role-split across it
     const uint role = wv & 1u;              // 0: first 16-col tile of every pair, 1: second
@@ -542,9 +544,43 @@ void main() {
 
     // ---- 2. attention, one head at a time (Q/V projections, logits, softmax, PV, Wo). acc starts at f16(v128) and takes
     // a = f16(a + Wo_h ctx_h) per head (the model's head chain).
-    [[unroll]] for (uint i = 0u; i < 40u; ++i) {
-        if (i < npair) acc[i] = rh(vec16(3, (tid + 256u * i) % C));
+    // acc init (v128 per column) -> tile fragments
+    if (NT > 0u) {
+        const uint gs = wv + 0u;
+        const uint tks = 16u * (gs / nt16);
+        const uint c0 = 16u * (gs % nt16);
+    			const float bv = vec16(3, c0 + (gl_SubgroupInvocationID & 15u));
+			for (uint i = 0u; i < 8u; ++i) mv[0][i] = bv;
     }
+    if (NT > 1u) {
+        const uint gs = wv + 8u;
+        const uint tks = 16u * (gs / nt16);
+        const uint c0 = 16u * (gs % nt16);
+    			const float bv = vec16(3, c0 + (gl_SubgroupInvocationID & 15u));
+			for (uint i = 0u; i < 8u; ++i) mv[1][i] = bv;
+    }
+    if (NT > 2u) {
+        const uint gs = wv + 16u;
+        const uint tks = 16u * (gs / nt16);
+        const uint c0 = 16u * (gs % nt16);
+    			const float bv = vec16(3, c0 + (gl_SubgroupInvocationID & 15u));
+			for (uint i = 0u; i < 8u; ++i) mv[2][i] = bv;
+    }
+    if (NT > 3u) {
+        const uint gs = wv + 24u;
+        const uint tks = 16u * (gs / nt16);
+        const uint c0 = 16u * (gs % nt16);
+    			const float bv = vec16(3, c0 + (gl_SubgroupInvocationID & 15u));
+			for (uint i = 0u; i < 8u; ++i) mv[3][i] = bv;
+    }
+    if (NT > 4u) {
+        const uint gs = wv + 32u;
+        const uint tks = 16u * (gs / nt16);
+        const uint c0 = 16u * (gs % nt16);
+    			const float bv = vec16(3, c0 + (gl_SubgroupInvocationID & 15u));
+			for (uint i = 0u; i < 8u; ++i) mv[4][i] = bv;
+    }
+
     for (uint h = 0u; h < G; ++h) {
         const uint gb = wbase(0) + h * 64u * C;
         // 2a. Q/V projections (WMMA, phase 3a): A = s_n [token x C], B = wr [out x C] row-major
@@ -622,38 +658,177 @@ void main() {
             RRQ_STORE(af, s_q, t0 * 32u + 16u * role, 32u);
         }
         sync_lds();
-        // 2e. Wo (scalar): acc = acc + ctx . Wo_h over this thread's own (token, channel) pairs
+        // 2e. Wo (WMMA, phase 4): mv[slot] += ctx . Wo_h.  B = wr item 2 repacked [C x 32G]
+        // row-major, head h at weight rows [32h, 32h+32) (K = 32); mv accumulates over heads.
         const uint wo = wbase(2);
-        [[unroll]] for (uint i = 0u; i < 40u; ++i) {
-            if (i < npair) {
-                uint p = tid + 256u * i;
-                uint t = p / C, c = p % C;
-                float d = 0.0;
-                for (uint j = 0u; j < 32u; ++j)
-                    d += float(s_q[t * 32u + j]) * wfp8(wo + frag_off(c, 32u * h + j, 32u * G));
-                acc[i] = rh(acc[i] + d);
-            }
+        if (NT > 0u) {
+            const uint gs = wv + 0u;
+            const uint tks = 16u * (gs / nt16);
+            const uint c0 = 16u * (gs % nt16);
+        			for (uint k0 = 0u; k0 < 32u; k0 += 16u) {
+				NR_FRAG_A fa;
+				NR_LOAD_A(fa, s_q, tks * 32u + k0, 32u);
+				NR_FRAG_B fb;
+				NR_LOAD_B(fb, wr, wo + c0 * (32u * G) + 32u * h + k0, 32u * G);
+				NR_MMA(mv[0], fa, fb);
+			}
+        }
+        if (NT > 1u) {
+            const uint gs = wv + 8u;
+            const uint tks = 16u * (gs / nt16);
+            const uint c0 = 16u * (gs % nt16);
+        			for (uint k0 = 0u; k0 < 32u; k0 += 16u) {
+				NR_FRAG_A fa;
+				NR_LOAD_A(fa, s_q, tks * 32u + k0, 32u);
+				NR_FRAG_B fb;
+				NR_LOAD_B(fb, wr, wo + c0 * (32u * G) + 32u * h + k0, 32u * G);
+				NR_MMA(mv[1], fa, fb);
+			}
+        }
+        if (NT > 2u) {
+            const uint gs = wv + 16u;
+            const uint tks = 16u * (gs / nt16);
+            const uint c0 = 16u * (gs % nt16);
+        			for (uint k0 = 0u; k0 < 32u; k0 += 16u) {
+				NR_FRAG_A fa;
+				NR_LOAD_A(fa, s_q, tks * 32u + k0, 32u);
+				NR_FRAG_B fb;
+				NR_LOAD_B(fb, wr, wo + c0 * (32u * G) + 32u * h + k0, 32u * G);
+				NR_MMA(mv[2], fa, fb);
+			}
+        }
+        if (NT > 3u) {
+            const uint gs = wv + 24u;
+            const uint tks = 16u * (gs / nt16);
+            const uint c0 = 16u * (gs % nt16);
+        			for (uint k0 = 0u; k0 < 32u; k0 += 16u) {
+				NR_FRAG_A fa;
+				NR_LOAD_A(fa, s_q, tks * 32u + k0, 32u);
+				NR_FRAG_B fb;
+				NR_LOAD_B(fb, wr, wo + c0 * (32u * G) + 32u * h + k0, 32u * G);
+				NR_MMA(mv[3], fa, fb);
+			}
+        }
+        if (NT > 4u) {
+            const uint gs = wv + 32u;
+            const uint tks = 16u * (gs / nt16);
+            const uint c0 = 16u * (gs % nt16);
+        			for (uint k0 = 0u; k0 < 32u; k0 += 16u) {
+				NR_FRAG_A fa;
+				NR_LOAD_A(fa, s_q, tks * 32u + k0, 32u);
+				NR_FRAG_B fb;
+				NR_LOAD_B(fb, wr, wo + c0 * (32u * G) + 32u * h + k0, 32u * G);
+				NR_MMA(mv[4], fa, fb);
+			}
         }
         sync_lds();
     }
 
     // ---- 3. X1 = f16(X + f16(s1d2 * a)), a = the head chain; the MLP accumulator starts at f16(b2)
     const float ls1 = s1d(0), ls2 = s1d(1);
-    [[unroll]] for (uint i = 0u; i < 40u; ++i) {
-        if (i < npair) {
-            uint p = tid + 256u * i;
-            uint t = p / C, c = p % C;
-            float x1 = rh(float(s_a[t * CM + c]) + rh(ls1 * acc[i]));
-            s_a[t * CM + c] = float16_t(x1);
-            SNO(t * CM + c, x1);
-            acc[i] = rh(vec16(7, c));
-        }
+    // X1 tile epilogue (the fc2 accumulator re-initialises mv with b2 below)
+    if (NT > 0u) {
+        const uint gs = wv + 0u;
+        const uint tks = 16u * (gs / nt16);
+        const uint c0 = 16u * (gs % nt16);
+    			for (uint i = 0u; i < 8u; ++i) {
+				const uint t = tks + 8u * (gl_SubgroupInvocationID >> 4u) + i;
+				const uint c = c0 + (gl_SubgroupInvocationID & 15u);
+				float x1 = rh(float(s_a[t * CM + c]) + rh(ls1 * mv[0][i]));
+				s_a[t * CM + c] = float16_t(x1);
+				SNO(t * CM + c, x1);
+			}
     }
+    if (NT > 1u) {
+        const uint gs = wv + 8u;
+        const uint tks = 16u * (gs / nt16);
+        const uint c0 = 16u * (gs % nt16);
+    			for (uint i = 0u; i < 8u; ++i) {
+				const uint t = tks + 8u * (gl_SubgroupInvocationID >> 4u) + i;
+				const uint c = c0 + (gl_SubgroupInvocationID & 15u);
+				float x1 = rh(float(s_a[t * CM + c]) + rh(ls1 * mv[1][i]));
+				s_a[t * CM + c] = float16_t(x1);
+				SNO(t * CM + c, x1);
+			}
+    }
+    if (NT > 2u) {
+        const uint gs = wv + 16u;
+        const uint tks = 16u * (gs / nt16);
+        const uint c0 = 16u * (gs % nt16);
+    			for (uint i = 0u; i < 8u; ++i) {
+				const uint t = tks + 8u * (gl_SubgroupInvocationID >> 4u) + i;
+				const uint c = c0 + (gl_SubgroupInvocationID & 15u);
+				float x1 = rh(float(s_a[t * CM + c]) + rh(ls1 * mv[2][i]));
+				s_a[t * CM + c] = float16_t(x1);
+				SNO(t * CM + c, x1);
+			}
+    }
+    if (NT > 3u) {
+        const uint gs = wv + 24u;
+        const uint tks = 16u * (gs / nt16);
+        const uint c0 = 16u * (gs % nt16);
+    			for (uint i = 0u; i < 8u; ++i) {
+				const uint t = tks + 8u * (gl_SubgroupInvocationID >> 4u) + i;
+				const uint c = c0 + (gl_SubgroupInvocationID & 15u);
+				float x1 = rh(float(s_a[t * CM + c]) + rh(ls1 * mv[3][i]));
+				s_a[t * CM + c] = float16_t(x1);
+				SNO(t * CM + c, x1);
+			}
+    }
+    if (NT > 4u) {
+        const uint gs = wv + 32u;
+        const uint tks = 16u * (gs / nt16);
+        const uint c0 = 16u * (gs % nt16);
+    			for (uint i = 0u; i < 8u; ++i) {
+				const uint t = tks + 8u * (gl_SubgroupInvocationID >> 4u) + i;
+				const uint c = c0 + (gl_SubgroupInvocationID & 15u);
+				float x1 = rh(float(s_a[t * CM + c]) + rh(ls1 * mv[4][i]));
+				s_a[t * CM + c] = float16_t(x1);
+				SNO(t * CM + c, x1);
+			}
+    }
+
     barrier();
 
     // ---- 4. MLP per 32-hidden block jb: z = f16(b1 + K = 32 chunks of m68 . s_n), h = q8(nhgelu(z)), m = f16(m + h . W2_jb)
     {
         const uint mb = wbase(4), mb2 = wbase(6);
+        // fc2 accumulator init: m starts at f16(b2), per column
+        if (NT > 0u) {
+            const uint gs = wv + 0u;
+            const uint tks = 16u * (gs / nt16);
+            const uint c0 = 16u * (gs % nt16);
+        			const float bv7 = vec16(7, c0 + (gl_SubgroupInvocationID & 15u));
+			for (uint i = 0u; i < 8u; ++i) mv[0][i] = bv7;
+        }
+        if (NT > 1u) {
+            const uint gs = wv + 8u;
+            const uint tks = 16u * (gs / nt16);
+            const uint c0 = 16u * (gs % nt16);
+        			const float bv7 = vec16(7, c0 + (gl_SubgroupInvocationID & 15u));
+			for (uint i = 0u; i < 8u; ++i) mv[1][i] = bv7;
+        }
+        if (NT > 2u) {
+            const uint gs = wv + 16u;
+            const uint tks = 16u * (gs / nt16);
+            const uint c0 = 16u * (gs % nt16);
+        			const float bv7 = vec16(7, c0 + (gl_SubgroupInvocationID & 15u));
+			for (uint i = 0u; i < 8u; ++i) mv[2][i] = bv7;
+        }
+        if (NT > 3u) {
+            const uint gs = wv + 24u;
+            const uint tks = 16u * (gs / nt16);
+            const uint c0 = 16u * (gs % nt16);
+        			const float bv7 = vec16(7, c0 + (gl_SubgroupInvocationID & 15u));
+			for (uint i = 0u; i < 8u; ++i) mv[3][i] = bv7;
+        }
+        if (NT > 4u) {
+            const uint gs = wv + 32u;
+            const uint tks = 16u * (gs / nt16);
+            const uint c0 = 16u * (gs % nt16);
+        			const float bv7 = vec16(7, c0 + (gl_SubgroupInvocationID & 15u));
+			for (uint i = 0u; i < 8u; ++i) mv[4][i] = bv7;
+        }
         for (uint jb = 0u; jb < 4u * C / 32u; ++jb) {
             // fc1 (WMMA, phase 3b): A = s_n [token x C], B = wr [j x C] (item 4 repacked into
             // wrep), one 16-wide j-tile per role of this 32-hidden block; epilogue b1 + nh_gelu
@@ -676,16 +851,69 @@ void main() {
                 RRQ_STORE(zf, s_hh, t0 * 32u + 16u * role, 32u);
             }
             sync_lds();
-            [[unroll]] for (uint i = 0u; i < 40u; ++i) {
-                if (i < npair) {
-                    uint p = tid + 256u * i;
-                    uint t = p / C, c = p % C;
-                    float d = 0.0;
-                    for (uint jj = 0u; jj < 32u; ++jj)
-                        d += float(s_hh[t * 32u + jj]) * wfp8(mb2 + frag_off(c, jb * 32u + jj, 4u * C));
-                    acc[i] = rh(acc[i] + d);
-                }
+            // fc2 (WMMA, phase 4): B = wr item 6 repacked [C x 4C]; K is the jb block itself,
+            // so each jb is one 2x16 MMA pair per slot and mv keeps the running m.
+            if (NT > 0u) {
+                const uint gs = wv + 0u;
+                const uint tks = 16u * (gs / nt16);
+                const uint c0 = 16u * (gs % nt16);
+            			for (uint k0 = 0u; k0 < 32u; k0 += 16u) {
+				NR_FRAG_A fa;
+				NR_LOAD_A(fa, s_hh, tks * 32u + k0, 32u);
+				NR_FRAG_B fb;
+				NR_LOAD_B(fb, wr, mb2 + c0 * (4u * C) + jb * 32u + k0, 4u * C);
+				NR_MMA(mv[0], fa, fb);
+			}
             }
+            if (NT > 1u) {
+                const uint gs = wv + 8u;
+                const uint tks = 16u * (gs / nt16);
+                const uint c0 = 16u * (gs % nt16);
+            			for (uint k0 = 0u; k0 < 32u; k0 += 16u) {
+				NR_FRAG_A fa;
+				NR_LOAD_A(fa, s_hh, tks * 32u + k0, 32u);
+				NR_FRAG_B fb;
+				NR_LOAD_B(fb, wr, mb2 + c0 * (4u * C) + jb * 32u + k0, 4u * C);
+				NR_MMA(mv[1], fa, fb);
+			}
+            }
+            if (NT > 2u) {
+                const uint gs = wv + 16u;
+                const uint tks = 16u * (gs / nt16);
+                const uint c0 = 16u * (gs % nt16);
+            			for (uint k0 = 0u; k0 < 32u; k0 += 16u) {
+				NR_FRAG_A fa;
+				NR_LOAD_A(fa, s_hh, tks * 32u + k0, 32u);
+				NR_FRAG_B fb;
+				NR_LOAD_B(fb, wr, mb2 + c0 * (4u * C) + jb * 32u + k0, 4u * C);
+				NR_MMA(mv[2], fa, fb);
+			}
+            }
+            if (NT > 3u) {
+                const uint gs = wv + 24u;
+                const uint tks = 16u * (gs / nt16);
+                const uint c0 = 16u * (gs % nt16);
+            			for (uint k0 = 0u; k0 < 32u; k0 += 16u) {
+				NR_FRAG_A fa;
+				NR_LOAD_A(fa, s_hh, tks * 32u + k0, 32u);
+				NR_FRAG_B fb;
+				NR_LOAD_B(fb, wr, mb2 + c0 * (4u * C) + jb * 32u + k0, 4u * C);
+				NR_MMA(mv[3], fa, fb);
+			}
+            }
+            if (NT > 4u) {
+                const uint gs = wv + 32u;
+                const uint tks = 16u * (gs / nt16);
+                const uint c0 = 16u * (gs % nt16);
+            			for (uint k0 = 0u; k0 < 32u; k0 += 16u) {
+				NR_FRAG_A fa;
+				NR_LOAD_A(fa, s_hh, tks * 32u + k0, 32u);
+				NR_FRAG_B fb;
+				NR_LOAD_B(fb, wr, mb2 + c0 * (4u * C) + jb * 32u + k0, 4u * C);
+				NR_MMA(mv[4], fa, fb);
+			}
+            }
+
             barrier();
         }
     }
@@ -693,23 +921,108 @@ void main() {
     // ---- 5. out. Units 0..14: fp8 store (in-range tokens) and s_a = q8(out), kept for the down projection and the
     // heads. Unit 15: s_a = f16(X1 + f16(s1d4 mo)), the f16 block output the heads read (no clip, no fp8 store).
     const bool m4 = (mode == 4);
-    [[unroll]] for (uint i = 0u; i < 40u; ++i) {
-        if (i < npair) {
-            uint p = tid + 256u * i;
-            uint t = p / C, c = p % C;
-            float mo = acc[i];                                         // m = f16(b2 + chains), from the MLP loop
-            float x1 = float(s_a[t * CM + c]);
-            int tx = ox + int(t & 7u), ty = oy + int(t >> 3u);
-            bool in_range = tx >= 0 && tx < W && ty >= 0 && ty < H;
-            if (!m4) {
-                float ov = clamp(x1 + rh(ls2 * mo), -448.0, 448.0);
-                if (in_range) out_act[pidx(c, uint(tx), uint(ty), Wu, Hu)] = uint8_t(e4m3_enc(ov));
-                s_a[t * CM + c] = float16_t(q8f(ov));
-            } else {
-                s_a[t * CM + c] = float16_t(rh(x1 + rh(ls2 * mo)));
-            }
-        }
+    // out tile epilogue: mo straight from the fc2 fragment
+    if (NT > 0u) {
+        const uint gs = wv + 0u;
+        const uint tks = 16u * (gs / nt16);
+        const uint c0 = 16u * (gs % nt16);
+    			for (uint i = 0u; i < 8u; ++i) {
+				const uint t = tks + 8u * (gl_SubgroupInvocationID >> 4u) + i;
+				const uint c = c0 + (gl_SubgroupInvocationID & 15u);
+				float mo = mv[0][i];
+				float x1 = float(s_a[t * CM + c]);
+				int tx = ox + int(t & 7u), ty = oy + int(t >> 3u);
+				bool in_range = tx >= 0 && tx < W && ty >= 0 && ty < H;
+				if (!m4) {
+					float ov = clamp(x1 + rh(ls2 * mo), -448.0, 448.0);
+					if (in_range) out_act[pidx(c, uint(tx), uint(ty), Wu, Hu)] = uint8_t(e4m3_enc(ov));
+					s_a[t * CM + c] = float16_t(q8f(ov));
+				} else {
+					s_a[t * CM + c] = float16_t(rh(x1 + rh(ls2 * mo)));
+				}
+			}
     }
+    if (NT > 1u) {
+        const uint gs = wv + 8u;
+        const uint tks = 16u * (gs / nt16);
+        const uint c0 = 16u * (gs % nt16);
+    			for (uint i = 0u; i < 8u; ++i) {
+				const uint t = tks + 8u * (gl_SubgroupInvocationID >> 4u) + i;
+				const uint c = c0 + (gl_SubgroupInvocationID & 15u);
+				float mo = mv[1][i];
+				float x1 = float(s_a[t * CM + c]);
+				int tx = ox + int(t & 7u), ty = oy + int(t >> 3u);
+				bool in_range = tx >= 0 && tx < W && ty >= 0 && ty < H;
+				if (!m4) {
+					float ov = clamp(x1 + rh(ls2 * mo), -448.0, 448.0);
+					if (in_range) out_act[pidx(c, uint(tx), uint(ty), Wu, Hu)] = uint8_t(e4m3_enc(ov));
+					s_a[t * CM + c] = float16_t(q8f(ov));
+				} else {
+					s_a[t * CM + c] = float16_t(rh(x1 + rh(ls2 * mo)));
+				}
+			}
+    }
+    if (NT > 2u) {
+        const uint gs = wv + 16u;
+        const uint tks = 16u * (gs / nt16);
+        const uint c0 = 16u * (gs % nt16);
+    			for (uint i = 0u; i < 8u; ++i) {
+				const uint t = tks + 8u * (gl_SubgroupInvocationID >> 4u) + i;
+				const uint c = c0 + (gl_SubgroupInvocationID & 15u);
+				float mo = mv[2][i];
+				float x1 = float(s_a[t * CM + c]);
+				int tx = ox + int(t & 7u), ty = oy + int(t >> 3u);
+				bool in_range = tx >= 0 && tx < W && ty >= 0 && ty < H;
+				if (!m4) {
+					float ov = clamp(x1 + rh(ls2 * mo), -448.0, 448.0);
+					if (in_range) out_act[pidx(c, uint(tx), uint(ty), Wu, Hu)] = uint8_t(e4m3_enc(ov));
+					s_a[t * CM + c] = float16_t(q8f(ov));
+				} else {
+					s_a[t * CM + c] = float16_t(rh(x1 + rh(ls2 * mo)));
+				}
+			}
+    }
+    if (NT > 3u) {
+        const uint gs = wv + 24u;
+        const uint tks = 16u * (gs / nt16);
+        const uint c0 = 16u * (gs % nt16);
+    			for (uint i = 0u; i < 8u; ++i) {
+				const uint t = tks + 8u * (gl_SubgroupInvocationID >> 4u) + i;
+				const uint c = c0 + (gl_SubgroupInvocationID & 15u);
+				float mo = mv[3][i];
+				float x1 = float(s_a[t * CM + c]);
+				int tx = ox + int(t & 7u), ty = oy + int(t >> 3u);
+				bool in_range = tx >= 0 && tx < W && ty >= 0 && ty < H;
+				if (!m4) {
+					float ov = clamp(x1 + rh(ls2 * mo), -448.0, 448.0);
+					if (in_range) out_act[pidx(c, uint(tx), uint(ty), Wu, Hu)] = uint8_t(e4m3_enc(ov));
+					s_a[t * CM + c] = float16_t(q8f(ov));
+				} else {
+					s_a[t * CM + c] = float16_t(rh(x1 + rh(ls2 * mo)));
+				}
+			}
+    }
+    if (NT > 4u) {
+        const uint gs = wv + 32u;
+        const uint tks = 16u * (gs / nt16);
+        const uint c0 = 16u * (gs % nt16);
+    			for (uint i = 0u; i < 8u; ++i) {
+				const uint t = tks + 8u * (gl_SubgroupInvocationID >> 4u) + i;
+				const uint c = c0 + (gl_SubgroupInvocationID & 15u);
+				float mo = mv[4][i];
+				float x1 = float(s_a[t * CM + c]);
+				int tx = ox + int(t & 7u), ty = oy + int(t >> 3u);
+				bool in_range = tx >= 0 && tx < W && ty >= 0 && ty < H;
+				if (!m4) {
+					float ov = clamp(x1 + rh(ls2 * mo), -448.0, 448.0);
+					if (in_range) out_act[pidx(c, uint(tx), uint(ty), Wu, Hu)] = uint8_t(e4m3_enc(ov));
+					s_a[t * CM + c] = float16_t(q8f(ov));
+				} else {
+					s_a[t * CM + c] = float16_t(rh(x1 + rh(ls2 * mo)));
+				}
+			}
+    }
+
     barrier();
 
     // ---- 6. heads (flags bit 0 = o98 present). Encoders and decoders: 64 tokens x nrow gates (s_g), then the o98
@@ -871,28 +1184,44 @@ void main() {
         }
     }
 
-    // ---- 7. down projection (modes 0 / 1): 2 x 2 blocks of the window, each a whole down pixel
+    // ---- 7. down projection (WMMA, phase 5): stage the 2 x 2 tap merge of the window into
+    // s_n [16 pos x 4C] (free after the MLP), GEMM [16 x Cdown] against wr item 8 [Cdown x 4C]
+    // repacked, then scattered e4m3 stores with the model's +-6.28125 proj_clamp.  The window
+    // holds 4x4 down pixels (pos: ix = pos&3, iy = pos>>2); tap q picks token
+    // tk = (2iy + (q>>1))*8 + (2ix + (q&1)); value = the s_a q8 grid, so the e4m3 view is exact.
     if ((mode == 0 || mode == 1) && Cdown > 0u) {
-        for (uint i = 0u; i < 10u; ++i) {
-            uint p = tid + 256u * i;
-            if (p < 16u * Cdown) {
-                uint pos = p / Cdown, d = p % Cdown;
-                uint ix = pos & 3u, iy = pos >> 2u;
-                float y = vec16(9, d);
-                uint mb = wbase(8);
-                for (uint j0 = 0u; j0 < 4u * C; j0 += 32u) {          // bias first, then K = 32 chunks through f16
-                    float dd = 0.0;
-                    for (uint j = j0; j < j0 + 32u; ++j) {
-                        uint q = j / C, c = j % C;
-                        uint tk = (2u * iy + (q >> 1u)) * 8u + (2u * ix + (q & 1u));
-                        dd += float(s_a[tk * CM + c]) * wfp8(mb + frag_off(d, j, 4u * C));
-                    }
-                    y = rh(y + dd);
-                }
-                float dv = clamp(y, -6.28125, 6.28125);
+        for (uint idx = tid; idx < 16u * 4u * C; idx += 256u) {
+            const uint pos = idx / (4u * C), j = idx % (4u * C);
+            const uint q = j / C, c = j % C;
+            const uint ix = pos & 3u, iy = pos >> 2u;
+            const uint tk = (2u * iy + (q >> 1u)) * 8u + (2u * ix + (q & 1u));
+            s_n[idx] = NR_OPERAND(float(s_a[tk * CM + c]));
+        }
+        sync_lds();
+        const uint nT = (Cdown + 15u) / 16u;
+        const uint mb8 = wbase(8);
+        for (uint gtn = wv; gtn < nT; gtn += 8u) {
+            const uint d0 = 16u * gtn;
+            NR_FRAG_ACC af;
+            af = NR_ACC_ZERO;
+            for (uint k0 = 0u; k0 < 4u * C; k0 += 16u) {
+                NR_FRAG_A fa;
+                NR_LOAD_A(fa, s_n, k0, 4u * C);
+                NR_FRAG_B fb;
+                NR_LOAD_B(fb, wr, mb8 + d0 * (4u * C) + k0, 4u * C);
+                NR_MMA(af, fa, fb);
+            }
+            const uint lane = gl_SubgroupInvocationID;
+            const uint d = d0 + (lane & 15u);
+            const float bv = vec16(9, d);
+            for (uint i = 0u; i < 8u; ++i) {
+                const uint pos = 8u * (lane >> 4u) + i;
+                const uint ix = pos & 3u, iy = pos >> 2u;
                 int xd = ox / 2 + int(ix), yd = oy / 2 + int(iy);
-                if (xd >= 0 && xd < W / 2 && yd >= 0 && yd < H / 2)
+                if (d < Cdown && xd >= 0 && xd < W / 2 && yd >= 0 && yd < H / 2) {
+                    float dv = clamp(af[i] + bv, -6.28125, 6.28125);
                     out_b[pidx(d, uint(xd), uint(yd), Wu / 2u, Hu / 2u)] = uint8_t(e4m3_enc(dv));
+                }
             }
         }
     }
