@@ -1,0 +1,90 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_EXT_shader_8bit_storage : enable
+#extension GL_EXT_shader_16bit_storage : enable
+
+// sr_l0heads: preset L's dec0-family heads at the render crop (launch 14's last phase).
+// Spec: tools/sr/sr_l0_model.py heads_l0()/hidden_l0() (dec0's formulas at L's channels).
+// The head input is the mode-2 block output B (fp8, stored basis, W0xH0x32):
+//   gates   byte i = rndne(255 * clamp01(f16(sg(p_c)))) for c = 0, 1, 6, byte 3 = 0
+//   factors byte i = rndne(255 * clamp01(e_c / (e_7+e_8+e_9))), e_c = exp(p_c - max), c = 7,8,9
+//   aniso   A = s0*f16(sg(clamp(p10, +-20))), B likewise p11,
+//           stored f16(A*A), f16(B*B), f16((A*B) * tanh(f0 * p12)), element 3 = 0
+//   hidden0 rndne(127 * clamp(tanh(p_(2+k)), -1, 1)), k = 0..3 (channels 2..5)
+// Scalar per-pixel VALU (no GEMM: WMMA does not apply); hardware exp/tanh.
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer InB { uvec4 bin4[]; };
+layout(set = 0, binding = 1) buffer OutGates { uint8_t gates[]; };
+layout(set = 0, binding = 2) buffer OutFactors { uint8_t factors[]; };
+layout(set = 0, binding = 3) buffer OutAniso { float16_t aniso[]; };
+layout(set = 0, binding = 4) buffer OutHidden { int8_t hidden[]; };
+
+layout(push_constant) uniform HeadsArgs {
+    uint blkW;      // B tensor width (W0)
+    uint blkH;      // B tensor height (H0)
+    uint renW;      // render crop width (Wr)
+    uint renH;      // render crop height (Hr)
+    float s0;       // aniso scale
+    float f0;       // aniso rho
+};
+
+float e4m3_to_f32(uint b) {
+    uint e = (b >> 3u) & 15u;
+    float v = (e == 0u) ? float(b & 7u) * 0.001953125
+                        : uintBitsToFloat(((e + 120u) << 23u) | ((b & 7u) << 20u));
+    return ((b & 0x80u) != 0u) ? -v : v;
+}
+uint perm_invP(uint c) { return (((c >> 1u) & 7u) << 2u) | (c & 1u) | (((c >> 4u) & 1u) << 1u); }
+float sigm(float x) { return 1.0 / (1.0 + exp(-x)); }
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint NP = renW * renH;
+    uint idx = gl_WorkGroupID.x * 64u + tid;
+    if (idx >= NP) return;
+    uint tx = idx % renW;
+    uint ty = idx / renW;
+    uint base = (ty * blkW + tx) * 32u;
+    uvec4 q0 = bin4[base >> 4u];
+    uvec4 q1 = bin4[(base >> 4u) + 1u];
+    uint w_[8]; w_[0] = q0.x; w_[1] = q0.y; w_[2] = q0.z; w_[3] = q0.w;
+                w_[4] = q1.x; w_[5] = q1.y; w_[6] = q1.z; w_[7] = q1.w;
+    float p[13];
+    for (uint c = 0u; c < 13u; ++c) {
+        uint j = perm_invP(c);
+        p[c] = e4m3_to_f32((w_[j >> 2u] >> (8u * (j & 3u))) & 0xffu);
+    }
+
+    uint o4 = idx * 4u;
+    gates[o4 + 0u] = uint8_t(uint(roundEven(255.0 * clamp(float16_t(sigm(p[0])), float16_t(0.0), float16_t(1.0)))));
+    gates[o4 + 1u] = uint8_t(uint(roundEven(255.0 * clamp(float16_t(sigm(p[1])), float16_t(0.0), float16_t(1.0)))));
+    gates[o4 + 2u] = uint8_t(uint(roundEven(255.0 * clamp(float16_t(sigm(p[6])), float16_t(0.0), float16_t(1.0)))));
+    gates[o4 + 3u] = uint8_t(0u);
+
+    float xm = max(p[7], max(p[8], p[9]));
+    float ea = exp(p[7] - xm);
+    float eb = exp(p[8] - xm);
+    float ec = exp(p[9] - xm);
+    float esum = (ea + eb) + ec;
+    factors[o4 + 0u] = uint8_t(uint(roundEven(255.0 * clamp(ea / esum, 0.0, 1.0))));
+    factors[o4 + 1u] = uint8_t(uint(roundEven(255.0 * clamp(eb / esum, 0.0, 1.0))));
+    factors[o4 + 2u] = uint8_t(uint(roundEven(255.0 * clamp(ec / esum, 0.0, 1.0))));
+    factors[o4 + 3u] = uint8_t(0u);
+
+    float A = s0 * float16_t(sigm(clamp(p[10], -20.0, 20.0)));
+    float B = s0 * float16_t(sigm(clamp(p[11], -20.0, 20.0)));
+    float T = tanh(f0 * p[12]);
+    aniso[o4 + 0u] = float16_t(A * A);
+    aniso[o4 + 1u] = float16_t(B * B);
+    aniso[o4 + 2u] = float16_t((A * B) * T);
+    aniso[o4 + 3u] = float16_t(0.0);
+
+    for (uint k = 0u; k < 4u; ++k) {
+        float th = tanh(p[2u + k]);
+        hidden[o4 + k] = int8_t(int(roundEven(127.0 * clamp(th, -1.0, 1.0))));
+    }
+}

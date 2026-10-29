@@ -275,6 +275,9 @@ struct SrStageShape { uint32_t C, g, Cn, mode; };
 const SrStageShape kSrStageShape[10] = {
     {64, 2, 96, 0}, {96, 4, 128, 0}, {128, 4, 0, 1}, {128, 4, 0, 1}, {128, 4, 0, 1},
     {128, 4, 0, 1}, {128, 4, 0, 1}, {128, 4, 0, 1}, {96, 4, 128, 2}, {64, 2, 96, 2}};
+// Preset L's level-0 layers (perf mu_l0): enc0L (w_enc0+6272, 24192 B, mode 0) and dec0L
+// (w_dec0+0, 24320 B, mode 2), both C=32, g=2, Cn=64. New array (kSrStageShape is shared).
+const SrStageShape kSrL0Shape[2] = {{32, 2, 64, 0}, {32, 2, 64, 2}};
 
 uint32_t sr_frag_off(uint32_t r, uint32_t c, uint32_t cols) {
     uint32_t u1 = ((r & 0x7FFFFFE1u) | ((r >> 3) & 2u)) + (r & 0xEu) * 2u;
@@ -468,6 +471,18 @@ void sr_repack_enc0(const uint8_t* blob, uint8_t* dst) {
         for (uint32_t c = 0; c < 128; ++c)
             dst[size_t(r) * 128 + c] = blob[4096 + sr_frag_off(r, c, 128)];
 }
+
+// Preset L's enc0L embedding matrices for sr_l0emb (perf mu_l0): W1s/W2s [32][32] row-major in
+// the activation's STORED basis on both axes (Ws[s][t] = frag(perm_P(s), perm_P(t))), so the
+// kernel's B loads are K-contiguous and no per-lane permutation is needed.
+void sr_repack_l0emb(const uint8_t* blob, uint8_t* dst) {
+    auto perm_P = [](uint32_t i) { return ((i >> 2u) << 1u) | (i & 1u) | (((i >> 1u) & 1u) << 4u); };
+    for (uint32_t s = 0; s < 32; ++s)
+        for (uint32_t t = 0; t < 32; ++t) {
+            dst[size_t(s) * 32 + t] = blob[4096 + sr_frag_off(perm_P(s), perm_P(t), 32)];
+            dst[1024 + size_t(s) * 32 + t] = blob[5184 + sr_frag_off(perm_P(s), perm_P(t), 32)];
+        }
+}
 } // namespace
 
 FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
@@ -580,6 +595,15 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
             // the port's mode word at 0x68 (0 = k_sr_l0<0,2>, 1 = k_sr_l0<2,2> - the template
             // parameter has no slot in the oracle's 104-byte args).
             add_pipe("sr_l0", 7, 112);
+            // Preset L's WMMA rewrite (perf mu_l0): the two sr_l0 launches as small specialised
+            // dispatches - sr_l0emb (l0_in -> E), sr_l0blk_pad (E -> l0_skip), sr_l0dn
+            // (l0_skip -> t0), sr_l0up (t8 + l0_skip -> U), sr_l0blk (U -> B), sr_l0heads.
+            add_pipe("sr_l0emb", 4, 24);
+            add_pipe("sr_l0blk_pad", 6, 64);
+            add_pipe("sr_l0blk", 6, 64);
+            add_pipe("sr_l0dn", 4, 56);
+            add_pipe("sr_l0up", 5, 56);
+            add_pipe("sr_l0heads", 5, 24);
         }
     } else {
         add_pipe("rr_gather", 14, 8);
@@ -854,6 +878,19 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
                                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         c->ue["l0_skip"] = create_buffer(dev, phys, size_t(W0) * H0 * 32,
                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        // Perf mu_l0's sr_l0 intermediates: E (embed output, padded fp8), U (mode-2 block
+        // input, fp8), B (mode-2 block output = heads input, fp8), plus the repacked L0
+        // weights (tiled blocks + f32 vector tables + row-major layer copies + embed mats).
+        c->ue["l0_emb"] = create_buffer(dev, phys, size_t(W0 + 8) * (H0 + 8) * 32,
+                                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        c->ue["l0_up"] = create_buffer(dev, phys, size_t(W0) * H0 * 32,
+                                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        c->ue["l0_blk"] = create_buffer(dev, phys, size_t(W0) * H0 * 32,
+                                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        c->ue["wL0tab"] = create_buffer(dev, phys, 2 * 16384, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        c->ue["wL0T"] = create_buffer(dev, phys, 2 * 131072, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        c->ue["wL0repE"] = create_buffer(dev, phys, 32768, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        c->ue["wL0repD"] = create_buffer(dev, phys, 24320, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     }
 
     if (mode == "rr") {
@@ -939,6 +976,30 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
                 // reading the original blob out of w_dec0)
                 if (!sr_repack_dec0(blob[11].data(), static_cast<uint8_t*>(c->w_dec0rep.mapped), blob[11].size()))
                     std::fprintf(stderr, "SR dec0: blob size %zu is smaller than its 8192+256 layout\n", blob[11].size());
+            }
+            // Preset L's level-0 repacks (perf mu_l0). blob[10] = enc0L (30464 B, layer at
+            // +6272), blob[11] = dec0L (24320 B, layer at +0). Guards check the exact sizes.
+            if (preset == "L" && blob[10].size() == 30464 && blob[11].size() == 24320) {
+                const uint8_t* enc0L = blob[10].data() + 6272;
+                const uint8_t* dec0L = blob[11].data();
+                uint8_t* tab = static_cast<uint8_t*>(c->ue["wL0tab"].mapped);
+                uint8_t* til = static_cast<uint8_t*>(c->ue["wL0T"].mapped);
+                uint8_t* repE = static_cast<uint8_t*>(c->ue["wL0repE"].mapped);
+                uint8_t* repD = static_cast<uint8_t*>(c->ue["wL0repD"].mapped);
+                sr_repack_tiles(enc0L, til, 0, kSrL0Shape[0]);
+                sr_repack_tiles(dec0L, til + 131072, 0, kSrL0Shape[1]);
+                if (!sr_fill_vec_table(enc0L, 24192, tab, kSrL0Shape[0]))
+                    std::fprintf(stderr, "SR L0: enc0L vector table walk failed\n");
+                if (!sr_fill_vec_table(dec0L, 24320, tab + 16384, kSrL0Shape[1]))
+                    std::fprintf(stderr, "SR L0: dec0L vector table walk failed\n");
+                if (!sr_repack_stage(enc0L, repE + 6272, 0, 24192, kSrL0Shape[0]))
+                    std::fprintf(stderr, "SR L0: enc0L row-major walk failed\n");
+                if (!sr_repack_stage(dec0L, repD, 0, 24320, kSrL0Shape[1]))
+                    std::fprintf(stderr, "SR L0: dec0L row-major walk failed\n");
+                sr_repack_l0emb(blob[10].data(), repE);
+            } else if (preset == "L") {
+                std::fprintf(stderr, "SR L0: unexpected blob sizes %zu %zu (want 30464 24320)\n",
+                             blob[10].size(), blob[11].size());
             }
             auto pj_raw = slurp(wdir + "/params.json");
             if (!pj_raw.empty()) {
@@ -1088,6 +1149,11 @@ void FrameChain::set_injection(const std::string& dir, const std::string& mask) 
         // 003.l0_skip.bin at the l0<0> point; without these targets the enc0/l0 masks have nothing
         // to inject (the flat rows of the 2026-10-27 L leverage table).
         for (const char* nm : {"l0_in", "l0_skip"}) {
+            auto it = ue.find(nm);
+            if (it != ue.end()) inj_targets[nm] = &it->second;
+        }
+        // Perf mu_l0's intermediates (dump-only; the oracle has no files for them).
+        for (const char* nm : {"l0_emb", "l0_up", "l0_blk", "wL0tab", "wL0T", "wL0repE", "wL0repD"}) {
             auto it = ue.find(nm);
             if (it != ue.end()) inj_targets[nm] = &it->second;
         }
@@ -1526,15 +1592,35 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                 // C=32 block over the padded (+2) border -> mode-0 down projection -> t0
                 // (t_act[0]); l0_skip = the fp8 block output.  L0Args 0x48.. : (W0,H0) level-0
                 // grid, (sx,sy) window shift (f0 (2,2), f1 (0,2)), (Wr,Hr) render grid.
-                uint8_t lpush[112] = {0};
-                const int l0sx = (p == 0) ? 2 : 0, l0sy = 2, l0mode = 0;
-                std::memcpy(lpush + 0x48, &W0, 4); std::memcpy(lpush + 0x4c, &H0, 4);
-                std::memcpy(lpush + 0x50, &l0sx, 4); std::memcpy(lpush + 0x54, &l0sy, 4);
-                std::memcpy(lpush + 0x58, &W, 4); std::memcpy(lpush + 0x5c, &H, 4);
-                std::memcpy(lpush + 0x68, &l0mode, 4);
-                dispatch(cmd, "sr_l0", {&w_enc0, &ue["l0_in"], &ue["l0_skip"], &t_act[0],
-                                        &ue["l0_skip"], &ue["l0_in"], &ue["l0_in"]},
-                         lpush, 112, (W0 + l0sx + 7) / 8, (H0 + l0sy + 3) / 4, 1);
+                // Perf mu_l0: three WMMA dispatches replace the bit-exact launch (~630 ms).
+                {
+                    // 1. embedding: l0_in (padded fp8) -> l0_emb (padded fp8, stored basis)
+                    uint8_t epush[24] = {0};
+                    const uint32_t ew1 = 0, ew2 = 1024, eb1 = 2560, eb2 = 3104;
+                    const uint32_t eIW = uint32_t(W0 + 8), eIH = uint32_t(H0 + 8);
+                    std::memcpy(epush + 0, &ew1, 4); std::memcpy(epush + 4, &ew2, 4);
+                    std::memcpy(epush + 8, &eb1, 4); std::memcpy(epush + 12, &eb2, 4);
+                    std::memcpy(epush + 16, &eIW, 4); std::memcpy(epush + 20, &eIH, 4);
+                    dispatch(cmd, "sr_l0emb", {&w_enc0, &ue["l0_in"], &ue["l0_emb"], &ue["wL0repE"]},
+                             epush, 24, (eIW + 15) / 16, eIH, 1);
+                    // 2. block (PAD input): l0_emb -> l0_skip
+                    const int l0sx = (p == 0) ? 2 : 0, l0sy = 2;
+                    const uint32_t blo = 6272, bvo = 0;
+                    uint8_t bpush[64] = {0};
+                    std::memcpy(bpush + 0, &blo, 4); std::memcpy(bpush + 8, &bvo, 4);
+                    std::memcpy(bpush + 40, &eIW, 4); std::memcpy(bpush + 44, &eIH, 4);
+                    std::memcpy(bpush + 48, &l0sx, 4); std::memcpy(bpush + 52, &l0sy, 4);
+                    std::memcpy(bpush + 56, &W0, 4); std::memcpy(bpush + 60, &H0, 4);
+                    dispatch(cmd, "sr_l0blk_pad", {&w_enc0, &ue["l0_emb"], &ue["l0_skip"],
+                                                   &ue["wL0repE"], &ue["wL0tab"], &ue["wL0T"]},
+                             bpush, 64, (W0 + l0sx + 3) / 4, (H0 + l0sy + 3) / 4, 1);
+                    // 3. down projection: l0_skip -> t0 (t_act[0], stage0's input)
+                    uint8_t dpush[56] = {0};
+                    std::memcpy(dpush + 0, &blo, 4);
+                    std::memcpy(dpush + 40, &W0, 4); std::memcpy(dpush + 44, &H0, 4);
+                    dispatch(cmd, "sr_l0dn", {&w_enc0, &ue["l0_skip"], &t_act[0], &ue["wL0repE"]},
+                             dpush, 56, ((W0 >> 1) + 3) / 4, ((H0 >> 1) + 3) / 4, 1);
+                }
                 inject_after(cmd, "l0", 3);
             } else {
                 // One workgroup = 4 waves = 4 tiles stacked vertically (H0 is a multiple of 32,
@@ -1669,19 +1755,36 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                 // L0Args 0x48.. : (W0,H0), window shift (f0 (0,0), f1 (2,0)), (Wr,Hr),
                 // +0x60 s0 / +0x64 f0 = params.json dec0_s0 / dec0_f0 (the aniso scales;
                 // dec0_f1 is not passed to this kernel), +0x68 the port's mode word.
-                uint8_t lpush[112] = {0};
-                const int l2sx = (p != 0) ? 2 : 0, l2sy = 0, l2mode = 1;
-                std::memcpy(lpush + 0x48, &W0, 4); std::memcpy(lpush + 0x4c, &H0, 4);
-                std::memcpy(lpush + 0x50, &l2sx, 4); std::memcpy(lpush + 0x54, &l2sy, 4);
-                std::memcpy(lpush + 0x58, &W, 4); std::memcpy(lpush + 0x5c, &H, 4);
-                std::memcpy(lpush + 0x60, &dec0_s0, 4);
-                std::memcpy(lpush + 0x64, &dec0_f0, 4);
-                std::memcpy(lpush + 0x68, &l2mode, 4);
-                // The dump writes hidden0 (0x40) on both frames; L0Args 0x18/0x20 are NULL, so
-                // the hidden head has no hin/mv input (no warp, no z gate).
-                dispatch(cmd, "sr_l0", {&w_dec0, &t_act[8], &ue["l0_skip"], &gates, &factors,
-                                        &aniso, &hidden[0]},
-                         lpush, 112, (W0 + l2sx + 7) / 8, (H0 + l2sy + 3) / 4, 1);
+                // Perf mu_l0: three WMMA dispatches replace the bit-exact k_sr_l0<2,2>.
+                const int l2sx = (p != 0) ? 2 : 0;
+                {
+                    // 4. up projection + skip: t8 + l0_skip -> l0_up
+                    const uint32_t ulo = 0;
+                    uint8_t upush[56] = {0};
+                    std::memcpy(upush + 0, &ulo, 4);
+                    std::memcpy(upush + 40, &W0, 4); std::memcpy(upush + 44, &H0, 4);
+                    dispatch(cmd, "sr_l0up", {&w_dec0, &t_act[8], &ue["l0_skip"], &ue["l0_up"],
+                                              &ue["wL0repD"]},
+                             upush, 56, (W0 + 7) / 8, (H0 + 7) / 8, 1);
+                    // 5. block (reflect input): l0_up -> l0_blk
+                    const uint32_t bvo = 16384;
+                    const int l2sy = 0;
+                    uint8_t bpush[64] = {0};
+                    std::memcpy(bpush + 0, &ulo, 4); std::memcpy(bpush + 8, &bvo, 4);
+                    std::memcpy(bpush + 40, &W0, 4); std::memcpy(bpush + 44, &H0, 4);
+                    std::memcpy(bpush + 48, &l2sx, 4); std::memcpy(bpush + 52, &l2sy, 4);
+                    std::memcpy(bpush + 56, &W0, 4); std::memcpy(bpush + 60, &H0, 4);
+                    dispatch(cmd, "sr_l0blk", {&w_dec0, &ue["l0_up"], &ue["l0_blk"],
+                                               &ue["wL0repD"], &ue["wL0tab"], &ue["wL0T"]},
+                             bpush, 64, (W0 + l2sx + 3) / 4, (H0 + l2sy + 3) / 4, 1);
+                    // 6. heads at the render crop (hidden has no warp: L0Args 0x18/0x20 NULL)
+                    uint8_t hpush[24] = {0};
+                    std::memcpy(hpush + 0, &W0, 4); std::memcpy(hpush + 4, &H0, 4);
+                    std::memcpy(hpush + 8, &W, 4); std::memcpy(hpush + 12, &H, 4);
+                    std::memcpy(hpush + 16, &dec0_s0, 4); std::memcpy(hpush + 20, &dec0_f0, 4);
+                    dispatch(cmd, "sr_l0heads", {&ue["l0_blk"], &gates, &factors, &aniso, &hidden[0]},
+                             hpush, 24, (W * H + 63) / 64, 1, 1);
+                }
                 inject_after(cmd, "dec0", sr_l[12]);
             } else {
             uint8_t push[160] = {0};

@@ -1,0 +1,164 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_EXT_shader_8bit_storage : enable
+#extension GL_EXT_shader_16bit_storage : enable
+#include "nh_mm.glsl"
+
+// sr_l0up: preset L's mode-2 up projection + skip (perf mu_l0). A copy of sr_swin_up.comp with
+// C=32, Cn=64 hardcoded (tail owns that file - it is not edited here). Reads the (W0/2)x(H0/2)
+// t8 tensor + W0xH0 l0_skip, writes the W0xH0 U block-input tensor (fp8). Same two-pass WMMA
+// dataflow as the original.
+
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer InW16       { float16_t  wbuf16[]; };
+layout(set = 0, binding = 1) readonly buffer InLow       { uvec4 in_low4[]; };
+layout(set = 0, binding = 2) readonly buffer InSkip      { uvec4 skip4[]; };
+layout(set = 0, binding = 3) writeonly buffer OutAct     { NR_OPERAND out_act[]; };
+layout(set = 0, binding = 4, std430) readonly buffer WRep { NR_OPERAND wrep[]; };
+
+layout(push_constant) uniform StageArgs {
+    uint wbuf_lo;
+    uint wbuf_hi;
+    layout(offset = 40) int dimW;
+    int dimH;
+    int shiftX;                     // unused: per-pixel semantics
+    int shiftY;
+};
+
+// [16 parents][Cn] de-permuted gather (stays live for every K step), the up product staged f16 as
+// [16 parents][2C] per parity half (staging fp8 would quantise before the bias the model folds in
+// at its single up8 quantisation point), plus up_b (4C halfs).
+shared NR_OPERAND sLow[16 * 128];
+shared float16_t  sUp[16 * 192];
+shared float16_t  sUpb[4 * 96];
+
+float quant8(float x) { return clamp(x, -448.0, 448.0); }
+
+float read_f16(uint byte_off) { return float(wbuf16[byte_off >> 1u]); }
+uint perm_P(uint i)    { return ((i >> 2u) << 1) | (i & 1u) | (((i >> 1u) & 1u) << 4u); }
+uint perm_invP(uint c) { return (((c >> 1u) & 7u) << 2u) | (c & 1u) | (((c >> 4u) & 1u) << 1u); }
+uint vidx(uint c)      { return (c & ~31u) | perm_invP(c); }
+
+int reflect_coord(int p, int dim) {
+    int a = abs(p);
+    int b = 2 * (dim - 1) - a;
+    int r = min(min(a, b), dim - 1);
+    return (b < 0) ? dim - 1 : r;
+}
+
+
+// Byte helpers, copied from sr_stage.comp's GROUP_BYTES pattern: the 32 bytes of a channel group
+// arrive as two uvec4 loads (contiguous, coalesced) instead of 32 scalar byte loads - measured on
+// the VRAM base, proj's scalar staging reads were 73% of the dispatch.
+uint byte_of(uint w, uint k) { return (w >> (8u * k)) & 0xffu; }
+float e4m3_to_f32(uint b) {
+    uint e = (b >> 3u) & 15u;
+    float v = (e == 0u) ? float(b & 7u) * 0.001953125
+                        : uintBitsToFloat(((e + 120u) << 23u) | ((b & 7u) << 20u));
+    return ((b & 0x80u) != 0u) ? -v : v;
+}
+#define BYTES_OF(WD, WI, BODY) \
+    BODY(4u * WI + 0u, byte_of(WD, 0u)); BODY(4u * WI + 1u, byte_of(WD, 1u)); \
+    BODY(4u * WI + 2u, byte_of(WD, 2u)); BODY(4u * WI + 3u, byte_of(WD, 3u));
+#define GROUP_BYTES(VA, VB, BODY) \
+    BYTES_OF(VA.x, 0u, BODY) BYTES_OF(VA.y, 1u, BODY) BYTES_OF(VA.z, 2u, BODY) BYTES_OF(VA.w, 3u, BODY) \
+    BYTES_OF(VB.x, 4u, BODY) BYTES_OF(VB.y, 5u, BODY) BYTES_OF(VB.z, 6u, BODY) BYTES_OF(VB.w, 7u, BODY)
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint w_off = wbuf_lo & 0x1fffffu;
+    uint C  = 32u;      // L0 up projection: C=32, Cn=64 (skip the stage dispatch)
+    uint Cn = 64u;
+    uint HW  = uint(dimH * dimW);
+    int  W2 = dimW >> 1;
+    int  H2 = dimH >> 1;
+    uint HW2 = uint(W2 * H2);
+    int  LX0 = int(gl_WorkGroupID.x) * 4;            // 8x8 render tile -> 4x4 parent tile
+    int  LY0 = int(gl_WorkGroupID.y) * 4;
+
+    // ---- gather the 16 parents (reflect in LOW coordinates, de-P-permuted). Nested loops with
+    // the parent as the outer index: the flat i-loop divided by Cn every element (~40 cycles a
+    // piece) - perm_P folds on the literal byte and the parent's coordinate is computed once.
+    {
+        uint Cg = Cn / 32u;
+        uint par = tid & 15u;
+        uint h = tid >> 4u;            // cg-parity split across both lane halves
+        int qx = reflect_coord(LX0 + int(par & 3u), W2);
+        int qy = reflect_coord(LY0 + int(par >> 2u), H2);
+        uint lpos = uint(qy * uint(W2) + qx);
+        for (uint cg = h; cg < Cg; cg += 2u) {
+            uint grp = (cg * HW2 + lpos) * 32u;
+            uint dst = par * Cn + cg * 32u;
+            uvec4 va = in_low4[grp >> 4u];
+            uvec4 vb = in_low4[(grp >> 4u) + 1u];
+#define PT(j, bv) sLow[dst + perm_P(j)] = NR_OPERAND(e4m3_to_f32(bv));
+            GROUP_BYTES(va, vb, PT)
+#undef PT
+        }
+    }
+    // up_b (4C halfs), de-P-permuted on demand (vidx)
+    for (uint c = tid; c < 4u * C; c += 32u) sUpb[c] = float16_t(read_f16(w_off + 4u * C * Cn + 2u * vidx(c)));
+
+    uint NH2  = C / 8u;            // N tiles (16 outputs) per parity half: 4C outputs / 2 halves
+    uint stag = 16u * Cn;          // up staging lives after the gather
+
+    for (uint hf = 0u; hf < 2u; ++hf) {
+        // ---- GEMM: M = 16 parents, K = Cn (unrolled by 2), N = this half's output tiles
+        for (uint n0 = hf * NH2; n0 < hf * NH2 + NH2; n0 += 4u) {
+            // four N tiles = 8 v_wmma per K step (NH2 = C/8 = 8 or 12, both multiples of 4)
+            NR_FRAG_ACC p0 = NR_ACC_ZERO, p1 = NR_ACC_ZERO, p2 = NR_ACC_ZERO, p3 = NR_ACC_ZERO;
+            for (uint k = 0u; k < Cn; k += 32u) {
+                NR_FRAG_A fa0, fa1;
+                NR_LOAD_A(fa0, sLow, k, Cn);
+                NR_LOAD_A(fa1, sLow, k + 16u, Cn);
+                NR_FRAG_B b0, b1, b2, b3, e0, e1, e2, e3;
+                NR_LOAD_B(b0, wrep, w_off + 16u * n0 * Cn + k, Cn);
+                NR_LOAD_B(b1, wrep, w_off + 16u * n0 * Cn + k + 16u, Cn);
+                NR_LOAD_B(b2, wrep, w_off + 16u * (n0 + 1u) * Cn + k, Cn);
+                NR_LOAD_B(b3, wrep, w_off + 16u * (n0 + 1u) * Cn + k + 16u, Cn);
+                NR_LOAD_B(e0, wrep, w_off + 16u * (n0 + 2u) * Cn + k, Cn);
+                NR_LOAD_B(e1, wrep, w_off + 16u * (n0 + 2u) * Cn + k + 16u, Cn);
+                NR_LOAD_B(e2, wrep, w_off + 16u * (n0 + 3u) * Cn + k, Cn);
+                NR_LOAD_B(e3, wrep, w_off + 16u * (n0 + 3u) * Cn + k + 16u, Cn);
+                NR_MMA(p0, fa0, b0); NR_MMA(p0, fa1, b1);
+                NR_MMA(p1, fa0, b2); NR_MMA(p1, fa1, b3);
+                NR_MMA(p2, fa0, e0); NR_MMA(p2, fa1, e1);
+                NR_MMA(p3, fa0, e2); NR_MMA(p3, fa1, e3);
+            }
+            uint bo = 16u * (n0 - hf * NH2);
+            NR_STORE_ACC(NR_NARROW_ACC(p0), sUp, bo, 2u * C);
+            NR_STORE_ACC(NR_NARROW_ACC(p1), sUp, bo + 16u, 2u * C);
+            NR_STORE_ACC(NR_NARROW_ACC(p2), sUp, bo + 32u, 2u * C);
+            NR_STORE_ACC(NR_NARROW_ACC(p3), sUp, bo + 48u, 2u * C);
+        }
+        memoryBarrierShared();
+
+        // ---- consume this half's tokens: out = f16(up8 + skip), 2 tokens a lane
+        for (uint s = 0u; s < 2u; ++s) {
+            uint tok = tid + s * 32u;
+            if (tok >= 64u) continue;
+            int x = int(gl_WorkGroupID.x) * 8 + int(tok & 7u);
+            int y = int(gl_WorkGroupID.y) * 8 + int(tok >> 3u);
+            if (x >= dimW || y >= dimH) continue;
+            uint q = uint((x & 1) + 2 * (y & 1));
+            if ((q >> 1u) != hf) continue;
+            uint slot = 4u * uint((y & 7u) >> 1) + uint((x & 7u) >> 1);   // tile-local parent row
+            uint base = uint(y * dimW + x);
+            for (uint cg = 0u; cg < C / 32u; ++cg) {
+                uint v16 = ((cg * HW + base) * 32u) >> 4u;
+                uvec4 va = skip4[v16];
+                uvec4 vb = skip4[v16 + 1u];
+                // stored byte j = logical channel perm_P(j); the output byte for logical c is
+                // perm_invP(c) = j, so the stores land contiguous (two uvec4-sized runs).
+#define SK(j, bv) { uint c = cg * 32u + perm_P(j); \
+    float uv = quant8(float(sUp[slot * 2u * C + (q & 1u) * C + c]) + float(sUpb[q * C + c])); \
+    out_act[cg * HW * 32u + base * 32u + j] = NR_OPERAND(quant8(uv + e4m3_to_f32(bv))); }
+                GROUP_BYTES(va, vb, SK)
+#undef SK
+            }
+        }
+    }
+}
