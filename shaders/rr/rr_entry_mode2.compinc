@@ -48,12 +48,7 @@
                 if (p_ == pp) {
                     // B: K-tile kc's 16 low channels of my parent, raw stored bytes
                     uint byte_ = ((kc >> 1u) * HW2_ + lpos_) * 32u + (kc & 1u) * 16u + rowh * 8u;
-                    uvec4 eq_ = in_act4[byte_ >> 4u];
-                    uvec2 eh_ = ((byte_ & 8u) != 0u) ? eq_.zw : eq_.xy;
-                    Q8P(bk_, 0u, e4m3_to_f32(byte_of(eh_.x, 0u)), e4m3_to_f32(byte_of(eh_.x, 1u)))
-                    Q8P(bk_, 2u, e4m3_to_f32(byte_of(eh_.x, 2u)), e4m3_to_f32(byte_of(eh_.x, 3u)))
-                    Q8P(bk_, 4u, e4m3_to_f32(byte_of(eh_.y, 0u)), e4m3_to_f32(byte_of(eh_.y, 1u)))
-                    Q8P(bk_, 6u, e4m3_to_f32(byte_of(eh_.y, 2u)), e4m3_to_f32(byte_of(eh_.y, 3u)))
+                    RR_LD8B(bk_, byte_)   // opus_impl: typed fp8 copy (no decode + requant)
                 } else {
                     Q8P(bk_, 0u, 0.0, 0.0) Q8P(bk_, 2u, 0.0, 0.0)
                     Q8P(bk_, 4u, 0.0, 0.0) Q8P(bk_, 6u, 0.0, 0.0)
@@ -83,13 +78,13 @@
             Q8P(qb_, 6u, up##t[6] + wtab[vbb_ + ((j0_ + 6u) & 31u)], \
                         up##t[7] + wtab[vbb_ + ((j0_ + 7u) & 31u)]) \
             uint sb_ = ((uint(t) >> 1u) * HW + spos_) * 32u + (uint(t) & 1u) * 16u + rowh * 8u; \
-            st##t[0] = float(qb_[0]) + s6v_ * e4m3_to_f32(skip_act[sb_]); \
-            st##t[1] = float(qb_[1]) + s6v_ * e4m3_to_f32(skip_act[sb_ + 1u]); \
-            st##t[2] = float(qb_[2]) + s6v_ * e4m3_to_f32(skip_act[sb_ + 2u]); \
-            st##t[3] = float(qb_[3]) + s6v_ * e4m3_to_f32(skip_act[sb_ + 3u]); \
-            st##t[4] = float(qb_[4]) + s6v_ * e4m3_to_f32(skip_act[sb_ + 4u]); \
-            st##t[5] = float(qb_[5]) + s6v_ * e4m3_to_f32(skip_act[sb_ + 5u]); \
-            st##t[6] = float(qb_[6]) + s6v_ * e4m3_to_f32(skip_act[sb_ + 6u]); \
-            st##t[7] = float(qb_[7]) + s6v_ * e4m3_to_f32(skip_act[sb_ + 7u]); }
+            st##t[0] = float(qb_[0]) + s6v_ * RR_SKIPF(sb_); \
+            st##t[1] = float(qb_[1]) + s6v_ * RR_SKIPF(sb_ + 1u); \
+            st##t[2] = float(qb_[2]) + s6v_ * RR_SKIPF(sb_ + 2u); \
+            st##t[3] = float(qb_[3]) + s6v_ * RR_SKIPF(sb_ + 3u); \
+            st##t[4] = float(qb_[4]) + s6v_ * RR_SKIPF(sb_ + 4u); \
+            st##t[5] = float(qb_[5]) + s6v_ * RR_SKIPF(sb_ + 5u); \
+            st##t[6] = float(qb_[6]) + s6v_ * RR_SKIPF(sb_ + 6u); \
+            st##t[7] = float(qb_[7]) + s6v_ * RR_SKIPF(sb_ + 7u); }
         RR_FOR_NT(RR_M2_T)
     }

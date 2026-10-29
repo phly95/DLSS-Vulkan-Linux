@@ -1,4 +1,5 @@
 #version 460
+#extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
@@ -28,10 +29,12 @@ layout(set = 0, binding = 6) readonly buffer InRough { uint in_rough[]; };
 layout(set = 0, binding = 7) writeonly buffer OutCol { f16vec4 out_col[]; };  // E0c6e
 layout(set = 0, binding = 8) writeonly buffer OutDep { float out_dep[]; };    // E0c72
 layout(set = 0, binding = 9) writeonly buffer OutMv  { f16vec2 out_mv[]; };    // E0c76
-layout(set = 0, binding = 10) writeonly buffer OutNorm { f16vec4 out_norm[]; };// E0c7a
-layout(set = 0, binding = 11) writeonly buffer OutAlb  { vec4 out_alb[]; };    // E0c7e
-layout(set = 0, binding = 12) writeonly buffer OutSpa  { vec4 out_spa[]; };   // E0c82
-layout(set = 0, binding = 13) writeonly buffer OutRough{ float out_rough[]; };// E0c8e
+// PERF (opus_impl): bindings 10..13 (E0c7a normals, E0c7e albedo f32x4, E0c82 specular albedo
+// f32x4, E0c8e roughness) are no longer written. Normals and roughness had no consumer in the
+// port's chain; albedo and specular albedo had one, rr_enc0_feat, which now decodes the raw
+// inputs itself (rr_texfmt.glsl). The gather -> enc0_feat handoff is DRAM-bound (rs_amd:
+// 620 GB/s), and this drops 24 B/px of raw reads + 44 B/px of writes here and 32 B/px of
+// reads in rr_enc0_feat. Bindings 3..6 stay declared for layout parity (unused).
 
 layout(push_constant) uniform RrGatherArgs {
     layout(offset = 0) uint pitch_col;
@@ -53,113 +56,7 @@ layout(push_constant) uniform RrGatherArgs {
     int H;
 };
 
-// Bytes per texel of each RR format code (tools/verify/texfmt.py RR_BPP).
-uint rr_bpp(int code) {
-    if (code == 0) return 8u;
-    if (code == 1) return 4u;
-    if (code == 2) return 4u;
-    if (code == 3) return 4u;
-    if (code == 4) return 2u;
-    if (code == 5) return 4u;
-    if (code == 6) return 4u;
-    if (code == 7) return 4u;
-    if (code == 8) return 1u;
-    if (code == 9) return 2u;
-    if (code == 10) return 8u;
-    if (code == 11) return 16u;
-    if (code == 12) return 4u;
-    if (code == 13) return 4u;
-    if (code == 14) return 8u;
-    if (code == 15) return 8u;
-    if (code == 16) return 4u;
-    if (code == 17) return 4u;
-    if (code == 18) return 4u;
-    if (code == 19) return 4u;
-    if (code == 20) return 2u;
-    if (code == 21) return 2u;
-    if (code == 22) return 2u;
-    return 1u; // code == 23
-}
-
-float snorm_f(uint v, uint bits) {
-    uint h = 1u << (bits - 1u);
-    int s = (v >= h) ? int(v - (h << 1u)) : int(v);
-    float m = float(h - 1u);
-    return clamp(float(s) / m, -1.0, 1.0);
-}
-
-// Decode one texel of the shared 24-code table. c0..c3 are the four consecutive words
-// from the texel's byte offset (missing channels pad as texfmt.encode does: 0,0,0,1).
-vec4 dec_rr(int code, uint c0, uint c1, uint c2, uint c3) {
-    if (code == 0) { // RGBA16F
-        return vec4(float(uint16BitsToFloat16(uint16_t(c0 & 0xffffu))),
-                    float(uint16BitsToFloat16(uint16_t((c0 >> 16) & 0xffffu))),
-                    float(uint16BitsToFloat16(uint16_t(c1 & 0xffffu))),
-                    float(uint16BitsToFloat16(uint16_t((c1 >> 16) & 0xffffu))));
-    } else if (code == 1) { // R11G11B10F
-        uint16_t r = uint16_t((c0 << 4) & 0x7ff0u);
-        uint16_t g = uint16_t((c0 >> 7) & 0x7ff0u);
-        uint16_t b = uint16_t((c0 >> 17) & 0x7fe0u);
-        return vec4(float(uint16BitsToFloat16(r)), float(uint16BitsToFloat16(g)),
-                    float(uint16BitsToFloat16(b)), 1.0);
-    } else if (code == 2) { // RG16F
-        return vec4(float(uint16BitsToFloat16(uint16_t(c0 & 0xffffu))),
-                    float(uint16BitsToFloat16(uint16_t((c0 >> 16) & 0xffffu))), 0.0, 1.0);
-    } else if (code == 3) { // R32F
-        return vec4(uintBitsToFloat(c0), 0.0, 0.0, 1.0);
-    } else if (code == 4) { // R16F
-        return vec4(float(uint16BitsToFloat16(uint16_t(c0 & 0xffffu))), 0.0, 0.0, 1.0);
-    } else if (code == 5) { // RGBA8 UNORM
-        return vec4(float(c0 & 0xffu), float((c0 >> 8) & 0xffu),
-                    float((c0 >> 16) & 0xffu), float(c0 >> 24)) / 255.0;
-    } else if (code == 6) { // BGRA8 (byte0=b): r=byte2, g=byte1, b=byte0, a=byte3
-        return vec4(float((c0 >> 16) & 0xffu), float((c0 >> 8) & 0xffu),
-                    float(c0 & 0xffu), float(c0 >> 24)) / 255.0;
-    } else if (code == 7) { // RGB10A2 UNORM
-        return vec4(float(c0 & 0x3ffu) / 1023.0, float((c0 >> 10) & 0x3ffu) / 1023.0,
-                    float((c0 >> 20) & 0x3ffu) / 1023.0, float(c0 >> 30) / 3.0);
-    } else if (code == 8) { // R8 UNORM
-        return vec4(float(c0 & 0xffu) / 255.0, 0.0, 0.0, 1.0);
-    } else if (code == 9) { // R16 UNORM
-        return vec4(float(c0 & 0xffffu) / 65535.0, 0.0, 0.0, 1.0);
-    } else if (code == 10) { // RG32F
-        return vec4(uintBitsToFloat(c0), uintBitsToFloat(c1), 0.0, 1.0);
-    } else if (code == 11) { // RGBA32F
-        return vec4(uintBitsToFloat(c0), uintBitsToFloat(c1),
-                    uintBitsToFloat(c2), uintBitsToFloat(c3));
-    } else if (code == 12) { // RGB9E5
-        int exp_val = int((c0 >> 27) & 0x1fu) - 24;
-        float scale = ldexp(1.0, exp_val);
-        return vec4(float(c0 & 0x1ffu) * scale, float((c0 >> 9) & 0x1ffu) * scale,
-                    float((c0 >> 18) & 0x1ffu) * scale, 1.0);
-    } else if (code == 13) { // RGBA8 SNORM
-        return vec4(snorm_f(c0 & 0xffu, 8u), snorm_f((c0 >> 8) & 0xffu, 8u),
-                    snorm_f((c0 >> 16) & 0xffu, 8u), snorm_f(c0 >> 24, 8u));
-    } else if (code == 14) { // RGBA16 UNORM
-        return vec4(float(c0 & 0xffffu), float(c0 >> 16),
-                    float(c1 & 0xffffu), float(c1 >> 16)) / 65535.0;
-    } else if (code == 15) { // RGBA16 SNORM
-        return vec4(snorm_f(c0 & 0xffffu, 16u), snorm_f(c0 >> 16, 16u),
-                    snorm_f(c1 & 0xffffu, 16u), snorm_f(c1 >> 16, 16u));
-    } else if (code == 16) { // D24 (low 24 bits)
-        return vec4(float(c0 & 0xffffffu) / 16777215.0, 0.0, 0.0, 1.0);
-    } else if (code == 17) { // BGRX8: r=byte2, g=byte1, b=byte0, a=1
-        return vec4(float((c0 >> 16) & 0xffu) / 255.0, float((c0 >> 8) & 0xffu) / 255.0,
-                    float(c0 & 0xffu) / 255.0, 1.0);
-    } else if (code == 18) { // RG16 UNORM
-        return vec4(float(c0 & 0xffffu) / 65535.0, float(c0 >> 16) / 65535.0, 0.0, 1.0);
-    } else if (code == 19) { // RG16 SNORM
-        return vec4(snorm_f(c0 & 0xffffu, 16u), snorm_f(c0 >> 16, 16u), 0.0, 1.0);
-    } else if (code == 20) { // RG8 UNORM
-        return vec4(float(c0 & 0xffu) / 255.0, float((c0 >> 8) & 0xffu) / 255.0, 0.0, 1.0);
-    } else if (code == 21) { // RG8 SNORM
-        return vec4(snorm_f(c0 & 0xffu, 8u), snorm_f((c0 >> 8) & 0xffu, 8u), 0.0, 1.0);
-    } else if (code == 22) { // R16 SNORM
-        return vec4(snorm_f(c0 & 0xffffu, 16u), 0.0, 0.0, 1.0);
-    } else { // code == 23, R8 SNORM
-        return vec4(snorm_f(c0 & 0xffu, 8u), 0.0, 0.0, 1.0);
-    }
-}
+#include "rr_texfmt.glsl"
 
 // Fetch the texel at (x, y) of one input: byte offset, word-aligned window, decode.
 void main() {
@@ -169,7 +66,7 @@ void main() {
     int out_idx = y * W + x;
 
     // Per-slot fetch: byte offset, word-aligned window, decode.
-    vec4 col, mv4, dep4, nrm, alb, spa, rgh4;
+    vec4 col, mv4, dep4;
 
     { uint o = uint(y) * pitch_col + uint(x) * rr_bpp(fmt_col);
       uint base = o >> 2u; uint s = (o & 3u) * 8u;
@@ -201,53 +98,8 @@ void main() {
       uint c2 = (s == 0u) ? w2 : ((w2 >> s) | (w3 << (32u - s)));
       uint c3 = (s == 0u) ? w3 : (w3 >> s);
       dep4 = dec_rr(fmt_dep, c0, c1, c2, c3); }
-    { uint o = uint(y) * pitch_nrm + uint(x) * rr_bpp(fmt_nrm);
-      uint base = o >> 2u; uint s = (o & 3u) * 8u;
-      uint w0 = in_norm[base], w1 = in_norm[base + 1u];
-      uint w2 = (rr_bpp(fmt_nrm) > 8u) ? in_norm[base + 2u] : 0u;
-      uint w3 = (rr_bpp(fmt_nrm) > 8u) ? in_norm[base + 3u] : 0u;
-      uint c0 = (s == 0u) ? w0 : ((w0 >> s) | (w1 << (32u - s)));
-      uint c1 = (s == 0u) ? w1 : ((w1 >> s) | (w2 << (32u - s)));
-      uint c2 = (s == 0u) ? w2 : ((w2 >> s) | (w3 << (32u - s)));
-      uint c3 = (s == 0u) ? w3 : (w3 >> s);
-      nrm = dec_rr(fmt_nrm, c0, c1, c2, c3);
-      if (normals_unorm != 0) nrm.xyz = nrm.xyz * 2.0 - 1.0; }
-    { uint o = uint(y) * pitch_alb + uint(x) * rr_bpp(fmt_alb);
-      uint base = o >> 2u; uint s = (o & 3u) * 8u;
-      uint w0 = in_alb[base], w1 = in_alb[base + 1u];
-      uint w2 = (rr_bpp(fmt_alb) > 8u) ? in_alb[base + 2u] : 0u;
-      uint w3 = (rr_bpp(fmt_alb) > 8u) ? in_alb[base + 3u] : 0u;
-      uint c0 = (s == 0u) ? w0 : ((w0 >> s) | (w1 << (32u - s)));
-      uint c1 = (s == 0u) ? w1 : ((w1 >> s) | (w2 << (32u - s)));
-      uint c2 = (s == 0u) ? w2 : ((w2 >> s) | (w3 << (32u - s)));
-      uint c3 = (s == 0u) ? w3 : (w3 >> s);
-      alb = dec_rr(fmt_alb, c0, c1, c2, c3); }
-    { uint o = uint(y) * pitch_spa + uint(x) * rr_bpp(fmt_spa);
-      uint base = o >> 2u; uint s = (o & 3u) * 8u;
-      uint w0 = in_spa[base], w1 = in_spa[base + 1u];
-      uint w2 = (rr_bpp(fmt_spa) > 8u) ? in_spa[base + 2u] : 0u;
-      uint w3 = (rr_bpp(fmt_spa) > 8u) ? in_spa[base + 3u] : 0u;
-      uint c0 = (s == 0u) ? w0 : ((w0 >> s) | (w1 << (32u - s)));
-      uint c1 = (s == 0u) ? w1 : ((w1 >> s) | (w2 << (32u - s)));
-      uint c2 = (s == 0u) ? w2 : ((w2 >> s) | (w3 << (32u - s)));
-      uint c3 = (s == 0u) ? w3 : (w3 >> s);
-      spa = dec_rr(fmt_spa, c0, c1, c2, c3); }
-    { uint o = uint(y) * pitch_rgh + uint(x) * rr_bpp(fmt_rgh);
-      uint base = o >> 2u; uint s = (o & 3u) * 8u;
-      uint w0 = in_rough[base], w1 = in_rough[base + 1u];
-      uint w2 = (rr_bpp(fmt_rgh) > 8u) ? in_rough[base + 2u] : 0u;
-      uint w3 = (rr_bpp(fmt_rgh) > 8u) ? in_rough[base + 3u] : 0u;
-      uint c0 = (s == 0u) ? w0 : ((w0 >> s) | (w1 << (32u - s)));
-      uint c1 = (s == 0u) ? w1 : ((w1 >> s) | (w2 << (32u - s)));
-      uint c2 = (s == 0u) ? w2 : ((w2 >> s) | (w3 << (32u - s)));
-      uint c3 = (s == 0u) ? w3 : (w3 >> s);
-      rgh4 = dec_rr(fmt_rgh, c0, c1, c2, c3); }
 
     out_col[out_idx]   = f16vec4(col);
     out_dep[out_idx]   = dep4.x;
     out_mv[out_idx]    = f16vec2(mv4.xy);
-    out_norm[out_idx]  = f16vec4(nrm);
-    out_alb[out_idx]   = alb;
-    out_spa[out_idx]   = spa;
-    out_rough[out_idx] = rgh4.x;
 }

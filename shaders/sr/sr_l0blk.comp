@@ -51,7 +51,14 @@
 layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) readonly buffer InW16       { float16_t  wbuf16[]; };
+#ifdef NR_OPERAND_F16
 layout(set = 0, binding = 1) readonly buffer InAct       { uvec4 in_act4[]; };
+#else
+// opus_impl: typed e4m3 view (sr_swin's P1 step 2, ported): the staging copies keep the codes
+// as they are (no decode -> f32 -> requant round trip) and float(in_act[j]) is the hardware
+// v_cvt_pk_f32_fp8 instead of the scalar e4m3_to_f32 arithmetic.
+layout(set = 0, binding = 1) readonly buffer InAct       { NR_OPERAND in_act[]; };
+#endif
 layout(set = 0, binding = 2) writeonly buffer OutAct     { NR_OPERAND out_act[]; };
 layout(set = 0, binding = 3, std430) readonly buffer WRep { NR_OPERAND wrep[]; };
 // Brief item (b): per-stage f32 vector TABLE (host-built from the blob): gain1, v270, gain2,
@@ -81,7 +88,11 @@ layout(set = 0, binding = 6) writeonly buffer OutT0 { NR_OPERAND out_t0[]; };
 // Step (b1) (sr_swin64m2's pattern): the up projection + skip are folded into this block's
 // prologue - binding 1 carries the low tensor t8 (was the U input), binding 6 the encoder
 // skip l0_skip. The l0up dispatch and the U tensor round trip are gone.
+#ifdef NR_OPERAND_F16
 layout(set = 0, binding = 6) readonly buffer InSkip { uvec4 skip4[]; };
+#else
+layout(set = 0, binding = 6) readonly buffer InSkip { NR_OPERAND skip8[]; };   // typed view
+#endif
 // Step (b2): the heads (sr_l0heads) folded into this block's epilogue - the render-crop
 // head outputs, written from the staged sOut bytes (the Q8P-through-LDS path, NOT direct
 // fragment reads: that is what F2's parked attempt miscompiled on).
@@ -110,7 +121,13 @@ layout(push_constant) uniform StageArgs {
 #if SR_L0_PAD
 shared NR_OPERAND sEX[16 * 32];   // fused-emb layer-1 A tile (raw fp8)
 shared NR_OPERAND sEE[16 * 32];   // fused-emb layer-1 output tile (quantised fp8)
-shared float sE2[16 * 32];        // fused-emb layer-2 output (f32 + bias, block input)
+// (opus_impl: the RADV build's f32 sE2 staging tile is gone - layer 2 is computed transposed,
+// straight into st. The lavapipe f16 build keeps the declaration so its LDS layout is unchanged:
+// without it O7 saw run-to-run differences in sr_l0blk_pad's skip output, i.e. the fallback path
+// reads LDS it never wrote and sE2's never-written bytes used to make that read deterministic.)
+#ifdef NR_OPERAND_F16
+shared float sE2[16 * 32];
+#endif
 shared NR_OPERAND sCat[16 * 4 * SR_C];   // step (a): [16 low pixels][4C] concat tile, LOGICAL order
 #else
 shared NR_OPERAND sLow[16 * 2 * SR_C];   // step (b1): the group's 16 parents [16][Cn=64]
@@ -287,11 +304,8 @@ void main() {
         for (uint cg = h; cg < CN / 32u; cg += 2u) {
             uint grp = (cg * HW2 + lpos) * 32u;
             uint dst = par * CN + cg * 32u;
-            uvec4 va = in_act4[grp >> 4u];
-            uvec4 vb = in_act4[(grp >> 4u) + 1u];
-#define SLP(j, bv) sLow[dst + perm_P(j)] = NR_OPERAND(e4m3_to_f32(bv));
-            GROUP_BYTES(va, vb, SLP)
-#undef SLP
+            // codes are e4m3 already: store them without the decode->f32->requant round trip
+            for (uint j = 0u; j < 32u; ++j) sLow[dst + perm_P(j)] = in_act[grp + j];
         }
         uint upW = w_off;                    // Wup, row-major [4C][Cn] at the blob head
         uint upb = w_off + K4 * CN;          // up_b, f16 [4C]
@@ -327,12 +341,10 @@ void main() {
             uint spos = uint(ry) * uint(dimW) + uint(rx);
             for (uint cg = 0u; cg < SR_C / 32u; ++cg) {
                 uint grp = (cg * HW + spos) * 32u;
-                uvec4 va = skip4[grp >> 4u];
-                uvec4 vb = skip4[(grp >> 4u) + 1u];
-#define SKIP_ADD(j, bv) { uint bi_ = tk * SR_C + cg * 32u + j; \
-    sIn[bi_] = NR_OPERAND(quant8(float(sIn[bi_]) + e4m3_to_f32(bv))); }
-                GROUP_BYTES(va, vb, SKIP_ADD)
-#undef SKIP_ADD
+                for (uint j = 0u; j < 32u; ++j) {
+                    uint bi_ = tk * SR_C + cg * 32u + j;
+                    sIn[bi_] = NR_OPERAND(quant8(float(sIn[bi_]) + float(skip8[grp + j])));
+                }
             }
         }
         memoryBarrierShared();
@@ -365,23 +377,7 @@ void main() {
         uint hh = tid & 1u;
         uint p = uint((y0 + int(pix >> 2u) + 2) * dimW + (x0 + int(pix & 3u) + 2));
         uint byte = p * 32u + hh * 16u;
-        uvec4 q = in_act4[byte >> 4u];
-        sEX[pix * 32u + hh * 16u + 0u] = NR_OPERAND(e4m3_to_f32(byte_of(q.x, 0u)));
-        sEX[pix * 32u + hh * 16u + 1u] = NR_OPERAND(e4m3_to_f32(byte_of(q.x, 1u)));
-        sEX[pix * 32u + hh * 16u + 2u] = NR_OPERAND(e4m3_to_f32(byte_of(q.x, 2u)));
-        sEX[pix * 32u + hh * 16u + 3u] = NR_OPERAND(e4m3_to_f32(byte_of(q.x, 3u)));
-        sEX[pix * 32u + hh * 16u + 4u] = NR_OPERAND(e4m3_to_f32(byte_of(q.y, 0u)));
-        sEX[pix * 32u + hh * 16u + 5u] = NR_OPERAND(e4m3_to_f32(byte_of(q.y, 1u)));
-        sEX[pix * 32u + hh * 16u + 6u] = NR_OPERAND(e4m3_to_f32(byte_of(q.y, 2u)));
-        sEX[pix * 32u + hh * 16u + 7u] = NR_OPERAND(e4m3_to_f32(byte_of(q.y, 3u)));
-        sEX[pix * 32u + hh * 16u + 8u] = NR_OPERAND(e4m3_to_f32(byte_of(q.z, 0u)));
-        sEX[pix * 32u + hh * 16u + 9u] = NR_OPERAND(e4m3_to_f32(byte_of(q.z, 1u)));
-        sEX[pix * 32u + hh * 16u + 10u] = NR_OPERAND(e4m3_to_f32(byte_of(q.z, 2u)));
-        sEX[pix * 32u + hh * 16u + 11u] = NR_OPERAND(e4m3_to_f32(byte_of(q.z, 3u)));
-        sEX[pix * 32u + hh * 16u + 12u] = NR_OPERAND(e4m3_to_f32(byte_of(q.w, 0u)));
-        sEX[pix * 32u + hh * 16u + 13u] = NR_OPERAND(e4m3_to_f32(byte_of(q.w, 1u)));
-        sEX[pix * 32u + hh * 16u + 14u] = NR_OPERAND(e4m3_to_f32(byte_of(q.w, 2u)));
-        sEX[pix * 32u + hh * 16u + 15u] = NR_OPERAND(e4m3_to_f32(byte_of(q.w, 3u)));
+        for (uint j = 0u; j < 16u; ++j) sEX[pix * 32u + hh * 16u + j] = in_act[byte + j];
     }
     memoryBarrierShared();
     barrier();
@@ -409,23 +405,22 @@ void main() {
     }
     memoryBarrierShared();
     barrier();
-    for (uint n0 = 0u; n0 < 32u; n0 += 16u) {
-        NR_FRAG_ACC acc = NR_ACC_ZERO;
+    // opus_impl: layer 2 TRANSPOSED (sr_swin's register-resident form): A = W2s rows [out][k]
+    // (the same wrep bytes the old B operand read), B = sEE [token][k] -> the accumulator rows
+    // are channels and its lane column is the token, i.e. exactly st[t]'s layout. No f32 sE2
+    // staging tile (-2 KB LDS, 16 LDS stores + 16 loads + a barrier a window); same f32 sums
+    // (two K=16 steps in the same order) and the same f32 bias add, so st is unchanged.
+    for (uint t = 0u; t < NT; ++t) {
+        st[t] = NR_ACC_ZERO;
         for (uint k = 0u; k < 32u; k += 16u) {
-            NR_FRAG_A fa;
-            NR_LOAD_A(fa, sEE, k, 32u);
+            NR_FRAG_A wa;
+            NR_LOAD_A(wa, wrep, 1024u + 16u * t * 32u + k, 32u);
             NR_FRAG_B fb;
-            NR_LOAD_B(fb, wrep, 1024u + 16u * (n0 >> 4u) * 32u + k, 32u);
-            NR_MMA(acc, fa, fb);
+            NR_LOAD_B(fb, sEE, k, 32u);
+            NR_MMA(st[t], wa, fb);
         }
-        float g = float(wbuf16[3104u + n0 + m]);
-        for (uint i = 0u; i < 8u; ++i) sE2[(8u * h + i) * 32u + n0 + m] = acc[i] + g;
+        for (uint i = 0u; i < 8u; ++i) st[t][i] = st[t][i] + float(wbuf16[3104u + 16u * t + 8u * rowh + i]);
     }
-    memoryBarrierShared();
-    barrier();
-    for (uint t = 0u; t < NT; ++t)
-        for (uint i = 0u; i < 8u; ++i)
-            st[t][i] = sE2[col * 32u + 16u * t + 8u * rowh + i];
 #else
     // Step (b1): the block's input is the prologue's sIn at this window's group-token slot
     // (sr_swin64m2's read; the up+skip chain is already embedded there).
@@ -582,6 +577,11 @@ void main() {
     }
 
     // ---- out: this lane's token, 8 channels a tile (output grid outW x outH)
+    // opus_impl: mode 0 only. Mode 2's block output (l0_blk, 64 MiB at 1080p) has had no
+    // consumer since the heads were folded into this kernel's epilogue (step b2, which reads
+    // the sIn staging below) - the RADV build no longer writes it. (The lavapipe fallback
+    // still does, so the O7 fixture keeps a non-constant output there.)
+#if SR_L0_PAD
     {
         uint OHW = uint(outW * outH);
         int rx = x0 + int(col & 3u);
@@ -601,6 +601,7 @@ void main() {
             }
         }
     }
+#endif
 #if !SR_L0_PAD
     // Step (b2): stage this window's 16 tokens' block output into sIn - Q8P into a LOCAL
     // pair first, then to LDS (the pattern F2's parked attempt needed: never read matrix

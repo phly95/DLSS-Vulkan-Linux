@@ -1299,11 +1299,7 @@ def make_test(name, out_dir):
                 {"binding": 6, "file": "in_rough.bin"},
                 {"binding": 7, "bytes": n_pix * 8, "output": "out_col", "type": "f16"},
                 {"binding": 8, "bytes": n_pix * 4, "output": "out_dep", "type": "f32"},
-                {"binding": 9, "bytes": n_pix * 4, "output": "out_mv", "type": "f16"},
-                {"binding": 10, "bytes": n_pix * 8, "output": "out_norm", "type": "f16"},
-                {"binding": 11, "bytes": n_pix * 16, "output": "out_alb", "type": "f32"},
-                {"binding": 12, "bytes": n_pix * 16, "output": "out_spa", "type": "f32"},
-                {"binding": 13, "bytes": n_pix * 4, "output": "out_rough", "type": "f32"}
+                {"binding": 9, "bytes": n_pix * 4, "output": "out_mv", "type": "f16"}
             ]
         }
     elif name == "rr_ae_block":
@@ -1344,8 +1340,9 @@ def make_test(name, out_dir):
         mv = np.linspace(0.01, 0.5, n_pix * 2, dtype=np.float16).tobytes()
         dep = np.linspace(0.1, 100.0, n_pix, dtype=np.float32).tobytes()
         norm = np.linspace(0.1, 1.0, n_pix * 4, dtype=np.float16).tobytes()
-        alb = np.linspace(0.1, 1.0, n_pix * 4, dtype=np.float32).tobytes()
-        spa = np.linspace(0.1, 1.0, n_pix * 4, dtype=np.float32).tobytes()
+        # opus_impl: bindings 4/5 are the RAW inputs now (format 0 = RGBA16F, pitch w * 8)
+        alb = np.linspace(0.1, 1.0, n_pix * 4, dtype=np.float16).tobytes()
+        spa = np.linspace(0.1, 1.0, n_pix * 4, dtype=np.float16).tobytes()
         rgh = np.linspace(0.1, 1.0, n_pix, dtype=np.float32).tobytes()
         # e_prev != e_cur so the history branch's e_cur*h/e_prev path is really exercised
         expo = np.array([1.25, 0.8, 0.8, 0.0], dtype=np.float32).tobytes()
@@ -1382,9 +1379,10 @@ def make_test(name, out_dir):
         open(os.path.join(out_dir, "in_c02.bin"), "wb").write(c02)
         # 68-byte push; rst = 0 so the lavapipe run takes the HISTORY branch (O7 must see it).
         # +0x38 SC1, +0x3c/+0x40 pj_prev (the E0c02 texel offset).
-        push = bytearray(68)
+        push = bytearray(84)
         struct.pack_into("<4iIIIf2f2f2if2f", push, 0, w0, h0, w, h, 3, 0, 0, -0.43359375,
                          0.125, -0.2, 0.05, -0.03, w15, h15, -0.2198486328125, 0.1, -0.15)
+        struct.pack_into("<2I2i", push, 68, w * 8, w * 8, 0, 0)   # raw alb/spa pitch + format
         cfg = {
             "groups": [(w0 + 15) // 16, (h0 + 15) // 16, 1],
             "push": push.hex(),

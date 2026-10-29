@@ -93,6 +93,19 @@ layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) readonly buffer WTrep { NR_OPERAND wT[]; };
 layout(set = 0, binding = 1) readonly buffer InAct  { uvec4 in_act4[]; };
+#ifndef NR_OPERAND_F16
+// opus_impl: typed e4m3 view of the same bytes (sr_swin's P1 step 2): the entries read their
+// 8 bytes as elements - a byte-for-byte copy into fp8 B fragments, or float(.) = the hardware
+// v_cvt_pk_f32_fp8 - instead of the scalar e4m3_to_f32 decode (+ requantise for B operands).
+layout(set = 0, binding = 1) readonly buffer InActE { NR_OPERAND in_act8[]; };
+layout(set = 0, binding = 3) readonly buffer InSkipE { NR_OPERAND skip8[]; };   // mode-2 skip, typed
+#define RR_SKIPF(B) float(skip8[(B)])
+layout(set = 0, binding = 4) writeonly buffer OutBE { NR_OPERAND out_b8[]; };  // down output, typed
+#define RR_DN_STORE(POS, V) out_b8[(POS)] = NR_OPERAND(V)
+#else
+#define RR_SKIPF(B) e4m3_to_f32(skip_act[(B)])
+#define RR_DN_STORE(POS, V) out_b[(POS)] = uint8_t(RR_DN_E8(V))
+#endif
 layout(set = 0, binding = 2) writeonly buffer OutAct { NR_OPERAND out_act[]; };
 layout(set = 0, binding = 3) readonly buffer InSkip { uint8_t skip_act[]; };
 layout(set = 0, binding = 4) writeonly buffer OutB { uint8_t out_b[]; };
@@ -139,6 +152,30 @@ float e4m3_to_f32(uint b) {
                         : uintBitsToFloat(((e + 120u) << 23u) | ((b & 7u) << 20u));
     return ((b & 0x80u) != 0u) ? -v : v;
 }
+// opus_impl: 8 consecutive activation bytes at BYTE (8-aligned) -> f32 x8 (RR_LD8F) or straight
+// into an fp8 B fragment (RR_LD8B). The f16 build keeps the uvec4 decode path.
+#ifndef NR_OPERAND_F16
+#define RR_LD8F(D, BYTE) { uint b8_ = (BYTE); \
+    D[0] = float(in_act8[b8_]); D[1] = float(in_act8[b8_ + 1u]); D[2] = float(in_act8[b8_ + 2u]); \
+    D[3] = float(in_act8[b8_ + 3u]); D[4] = float(in_act8[b8_ + 4u]); D[5] = float(in_act8[b8_ + 5u]); \
+    D[6] = float(in_act8[b8_ + 6u]); D[7] = float(in_act8[b8_ + 7u]); }
+#define RR_LD8B(FB, BYTE) { uint b8_ = (BYTE); \
+    FB[0] = in_act8[b8_]; FB[1] = in_act8[b8_ + 1u]; FB[2] = in_act8[b8_ + 2u]; FB[3] = in_act8[b8_ + 3u]; \
+    FB[4] = in_act8[b8_ + 4u]; FB[5] = in_act8[b8_ + 5u]; FB[6] = in_act8[b8_ + 6u]; FB[7] = in_act8[b8_ + 7u]; }
+#else
+#define RR_LD8F(D, BYTE) { uint b8_ = (BYTE); uvec4 eq_ = in_act4[b8_ >> 4u]; \
+    uvec2 eh_ = ((b8_ & 8u) != 0u) ? eq_.zw : eq_.xy; \
+    D[0] = e4m3_to_f32(byte_of(eh_.x, 0u)); D[1] = e4m3_to_f32(byte_of(eh_.x, 1u)); \
+    D[2] = e4m3_to_f32(byte_of(eh_.x, 2u)); D[3] = e4m3_to_f32(byte_of(eh_.x, 3u)); \
+    D[4] = e4m3_to_f32(byte_of(eh_.y, 0u)); D[5] = e4m3_to_f32(byte_of(eh_.y, 1u)); \
+    D[6] = e4m3_to_f32(byte_of(eh_.y, 2u)); D[7] = e4m3_to_f32(byte_of(eh_.y, 3u)); }
+#define RR_LD8B(FB, BYTE) { uint b8_ = (BYTE); uvec4 eq_ = in_act4[b8_ >> 4u]; \
+    uvec2 eh_ = ((b8_ & 8u) != 0u) ? eq_.zw : eq_.xy; \
+    Q8P(FB, 0u, e4m3_to_f32(byte_of(eh_.x, 0u)), e4m3_to_f32(byte_of(eh_.x, 1u))) \
+    Q8P(FB, 2u, e4m3_to_f32(byte_of(eh_.x, 2u)), e4m3_to_f32(byte_of(eh_.x, 3u))) \
+    Q8P(FB, 4u, e4m3_to_f32(byte_of(eh_.y, 0u)), e4m3_to_f32(byte_of(eh_.y, 1u))) \
+    Q8P(FB, 6u, e4m3_to_f32(byte_of(eh_.y, 2u)), e4m3_to_f32(byte_of(eh_.y, 3u))) }
+#endif
 float quant8(float x) { return clamp(x, -448.0, 448.0); }
 #ifdef NR_OPERAND_F16
 #define Q8P(F, i, a, b) { F[i] = NR_OPERAND(quant8(a)); F[(i) + 1u] = NR_OPERAND(quant8(b)); }
@@ -186,7 +223,7 @@ shared float16_t s_QT[32 * 64];
 shared float16_t s_VB[64 * 32];
 #if RR_DOWN
 // Down-projection merge buffer (enc0's design): [merge j = 0..4C-1][16 down pixels].
-shared NR_OPERAND s_MT[4 * 160 * 16];
+shared NR_OPERAND s_MT[4 * RR_C * 16];   // opus_impl: sized by the unit (was 4*160*16 for every C)
 #endif
 #ifndef RR_CUP
 #define RR_CUP 160
@@ -223,7 +260,14 @@ float rr_q8dec(uint c) {
     float v = (e == 0u) ? float(m) * (1.0 / 512.0) : uintBitsToFloat(((e + 120u) << 23u) | (m << 20u));
     return ((c & 0x80u) != 0u) ? -v : v;
 }
+#ifdef NR_OPERAND_F16
 float rr_q8grid(float x) { return rr_q8dec(rr_q8enc(x)); }
+#else
+// opus_impl: the hardware round trip (v_cvt_pk_fp8_f32 + v_cvt_f32_fp8) is the same RNE grid as
+// rr_q8enc/rr_q8dec (incl. the half-even subnormal grid and the 448 saturation, made explicit by
+// the clamp) in ~3 instructions instead of ~20; u15 runs it on every V and P element.
+float rr_q8grid(float x) { return float(NR_OPERAND(clamp(x, -448.0, 448.0))); }
+#endif
 #if RR_PRECISE
 // f16 round of 8 fragment elements. Must be the opaque bit-twiddle: a plain
 // float16_t() round trip is folded away by ACO, silently un-applying the recipe.

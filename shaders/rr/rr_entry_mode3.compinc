@@ -18,12 +18,7 @@
         uint pos = uint(reflect_coord(tyr, H) * W + reflect_coord(txl, W));
         #define RR_ENTRY3_T(t) { \
             uint byte = ((uint(t) >> 1u) * HW + pos) * 32u + (uint(t) & 1u) * 16u + rowh * 8u; \
-            uvec4 eq = in_act4[byte >> 4u]; \
-            uvec2 eh = ((byte & 8u) != 0u) ? eq.zw : eq.xy; \
-            st##t[0] = e4m3_to_f32(byte_of(eh.x, 0u)); st##t[1] = e4m3_to_f32(byte_of(eh.x, 1u)); \
-            st##t[2] = e4m3_to_f32(byte_of(eh.x, 2u)); st##t[3] = e4m3_to_f32(byte_of(eh.x, 3u)); \
-            st##t[4] = e4m3_to_f32(byte_of(eh.y, 0u)); st##t[5] = e4m3_to_f32(byte_of(eh.y, 1u)); \
-            st##t[6] = e4m3_to_f32(byte_of(eh.y, 2u)); st##t[7] = e4m3_to_f32(byte_of(eh.y, 3u)); }
+            RR_LD8F(st##t, byte) }
         RR_FOR_NT(RR_ENTRY3_T)
         #undef RR_ENTRY3_T
     }

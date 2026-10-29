@@ -86,7 +86,7 @@
                     const uint d = d0 + 8u * (lane >> 4u) + (i); \
                     const float dv = clamp(acc[i] + RR_DN_BV(d), -6.28125, 6.28125); \
                     const uint pos = (d >> 5u) * pl + rowb + RR_DN_PINV(d & 31u); \
-                    out_b[pos] = uint8_t(RR_DN_E8(dv)); }
+                    RR_DN_STORE(pos, dv); }   /* opus_impl: hardware e4m3 store (|dv| <= 6.28) */
                 RR_UNROLL8(RR_DN_EPI)
                 #undef RR_DN_EPI
             }

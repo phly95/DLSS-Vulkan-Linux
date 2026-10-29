@@ -29,12 +29,7 @@
         uint sx = uint(2 * rtx + int(qq & 1u)); \
         uint sy = uint(2 * rty + int(qq >> 1u)); \
         uint pos2 = sy * uint(2 * W) + sx; \
-        uvec4 fq = in_act4[pos2 * 2u + (uint(kt) & 1u)]; \
-        uvec2 fh = (rowh != 0u) ? fq.zw : fq.xy; \
-        Q8P(fb, 0u, e4m3_to_f32(byte_of(fh.x, 0u)), e4m3_to_f32(byte_of(fh.x, 1u))) \
-        Q8P(fb, 2u, e4m3_to_f32(byte_of(fh.x, 2u)), e4m3_to_f32(byte_of(fh.x, 3u))) \
-        Q8P(fb, 4u, e4m3_to_f32(byte_of(fh.y, 0u)), e4m3_to_f32(byte_of(fh.y, 1u))) \
-        Q8P(fb, 6u, e4m3_to_f32(byte_of(fh.y, 2u)), e4m3_to_f32(byte_of(fh.y, 3u))) \
+        RR_LD8B(fb, (pos2 * 2u + (uint(kt) & 1u)) * 16u + 8u * rowh) \
         NR_FRAG_A fa0; NR_LOAD_A(fa0, wT, mC8T + 256u * (uint(kt)), 16u); NR_MMA(st0, fa0, fb); \
         NR_FRAG_A fa1; NR_LOAD_A(fa1, wT, mC8T + 256u * (8u + uint(kt)), 16u); NR_MMA(st1, fa1, fb); \
         NR_FRAG_A fa2; NR_LOAD_A(fa2, wT, mC8T + 256u * (16u + uint(kt)), 16u); NR_MMA(st2, fa2, fb); \

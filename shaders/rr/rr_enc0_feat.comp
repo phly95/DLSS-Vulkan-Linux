@@ -1,6 +1,7 @@
 #version 460
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
 #extension GL_EXT_shader_16bit_storage : enable
 #extension GL_EXT_shader_8bit_storage : enable
 #extension GL_GOOGLE_include_directive : require
@@ -10,6 +11,7 @@
 // conversion), plain f16 under the offline f16-operand build (lavapipe has no Float8). R1 lint
 // allows it: my file names neither the fp8 spellings nor the wrapper's internals.
 #include "nh_mm.glsl"
+#include "rr_texfmt.glsl"
 
 // k_enc0_feat (RR preset F, oracle launches 3/4): the producer of E0be8, the [2][H0][W0][32] fp8
 // feature tensor.  SPEC: tools/rr/rr_enc0feat_model.py (frame0 100.0000% bit-exact vs the oracle;
@@ -41,8 +43,10 @@ layout(set = 0, binding = 0) readonly buffer InCol   { f16vec4 g_col[]; };
 layout(set = 0, binding = 1) readonly buffer InMv    { f16vec2 g_mv[]; };
 layout(set = 0, binding = 2) readonly buffer InDep   { float g_dep[]; };
 layout(set = 0, binding = 3) readonly buffer InNrm   { f16vec4 g_nrm[]; };
-layout(set = 0, binding = 4) readonly buffer InAlb   { vec4 g_alb[]; };
-layout(set = 0, binding = 5) readonly buffer InSpa   { vec4 g_spa[]; };
+// opus_impl: bindings 4/5 are the RAW albedo / specular-albedo inputs (any RR format code),
+// decoded here with rr_gather's decoder (rr_texfmt.glsl) - no f32x4 gather copy any more.
+layout(set = 0, binding = 4) readonly buffer InAlb   { uint in_alb[]; };
+layout(set = 0, binding = 5) readonly buffer InSpa   { uint in_spa[]; };
 layout(set = 0, binding = 6) readonly buffer InRgh   { float g_rgh[]; };
 layout(set = 0, binding = 7) readonly buffer InExpo  { vec4 in_expo[]; };
 
@@ -87,6 +91,10 @@ layout(push_constant) uniform RrE0Args {
     float SC1;            // +0x38 E0Args +0x204: the c22-family coefficient (-0.2198486328125)
     float pjpx;           // +0x3c E0Args +0x1a8: the PREVIOUS frame's jitter (E0c02 texel offset)
     float pjpy;           // +0x40 E0Args +0x1ac
+    uint pitch_alb;       // +0x44 opus_impl: raw albedo row pitch (W x bpp of its format)
+    uint pitch_spa;       // +0x48 raw specular-albedo row pitch
+    int fmt_alb;          // +0x4c RR format codes (rr_gather's table)
+    int fmt_spa;          // +0x50
 };
 
 // ---------------------------------------------------------------- helpers
@@ -203,8 +211,11 @@ void main() {
     float tm_g = 0.36 * (log2(max(1.0 + 100.0 * col_g, 0.0001)) * 0.3010299956639812);
     float tm_b = 0.36 * (log2(max(1.0 + 100.0 * col_b, 0.0001)) * 0.3010299956639812);
 
-    vec4 a_val = (x < W && y_src < H) ? g_alb[in_idx] : vec4(0.0);
-    vec4 s_val = (x < W && y_src < H) ? g_spa[in_idx] : vec4(0.0);
+    vec4 a_val = vec4(0.0), s_val = vec4(0.0);
+    if (x < W && y_src < H) {
+        RR_FETCH(in_alb, pitch_alb, fmt_alb, x, y_src, a_val)
+        RR_FETCH(in_spa, pitch_spa, fmt_spa, x, y_src, s_val)
+    }
     float dep_val = (x < W && y_src < H) ? g_dep[in_idx] : 0.0;
 
     float scr = SC0 * tm_r;                 // SC_TM: SC0 * tm(col_c * expo)

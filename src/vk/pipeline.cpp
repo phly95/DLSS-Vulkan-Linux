@@ -882,7 +882,7 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
         // push 68 B = the oracle's E0Args words 0x00..0x1c (W0/H0/W/H, fc, rst, dither offset,
         // SC0) plus the history words +0x20/+0x24 pj, +0x28/+0x2c bev, +0x30/+0x34 W15/H15,
         // +0x38 SC1, +0x3c/+0x40 pj_prev (the c22-family E0c02 texel offset).
-        add_pipe("rr_enc0_feat", 17, 68);
+        add_pipe("rr_enc0_feat", 17, 84);   // opus_impl: +16 B (raw alb/spa pitch + format)
         add_pipe("rr_level", 15, 80, 32);   // +binding 14 = wrep (item 0 row-major); pin wave32:
                                              // 4 waves of the 128-thread WMMA path, and ACO may pick
                                              // wave64 at this VGPR pressure (sr_stage's lesson)
@@ -2286,7 +2286,7 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
                     std::fclose(f);
                 }
             }
-            uint8_t push[68] = {0};
+            uint8_t push[84] = {0};
             std::memcpy(push + 0, &W0, 4); std::memcpy(push + 4, &H0, 4);
             std::memcpy(push + 8, &W, 4); std::memcpy(push + 12, &H, 4);
             // E0Args +0x10 fc = E[0x19] & 7 (the dq() dither row; this->fc is the same 8-frame
@@ -2328,11 +2328,19 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             std::memcpy(push + 56, &sc1, 4);
             std::memcpy(push + 60, &pjpx_, 4);
             std::memcpy(push + 64, &pjpy_, 4);
+            {   // opus_impl: raw albedo / specular-albedo pitch + format (rr_gather's table)
+                static const int kRrBppE[24] = {8,4,4,4,2,4,4,4,1,2,8,16,4,4,8,8,4,4,4,4,2,2,2,1};
+                const uint32_t pa = uint32_t(W) * uint32_t(kRrBppE[fmt_alb]);
+                const uint32_t ps = uint32_t(W) * uint32_t(kRrBppE[fmt_spa]);
+                const int32_t fa = fmt_alb, fs = fmt_spa;
+                std::memcpy(push + 68, &pa, 4); std::memcpy(push + 72, &ps, 4);
+                std::memcpy(push + 76, &fa, 4); std::memcpy(push + 80, &fs, 4);
+            }
             s_prev_jx = jx; s_prev_jy = jy;          // remember for the next frame's pj_prev
             trace_label = "launch " + std::to_string(3 + roff) + " k_enc0_feat";
-            dispatch(cmd, "rr_enc0_feat", {&g_col, &g_mv, &g_dep, &out_norm, &out_alb, &out_spa, &out_rough_, &expo,
+            dispatch(cmd, "rr_enc0_feat", {&g_col, &g_mv, &g_dep, &out_norm, &in_alb, &in_spa, &out_rough_, &expo,
                                      &t_act[0], &bec, &bf6, &bfa, &bfe, &wbuf, &c0e, &ue.at("E0c12"),
-                                     &ue.at("E0c02")}, push, 68,
+                                     &ue.at("E0c02")}, push, 84,
                      (W0 + 15) / 16, (H0 + 15) / 16, 1);
             inject_after(cmd, "enc0_feat", 3 + roff);
         }
