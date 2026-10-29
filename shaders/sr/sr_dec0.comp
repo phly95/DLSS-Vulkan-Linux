@@ -30,8 +30,9 @@
 //     src/vk/pipeline.cpp) into [q][n][k] f16 - every e4m3 value is exactly representable in f16 -
 //     so the kernel loads two k per instruction with a linear index and no conversion at all.
 //
-// Heads (p channels): gates = rndne(255*clamp01(f16(sg(p_c)))), c = 0, 1, 10; factors =
-// rndne(255*clamp01(e_c/(e_11+e_12+e_13))), e_c = exp(p_c - max) in f32, byte 3 = 0; aniso =
+// Heads (p channels): gates = rndne(255*clamp01(f16(sg(p_c)))), c = 0, 1, 10; factors are
+// NOT computed (no shader reads them: sr_post binds but never reads binding 3 - the model records
+// them and never consumes them); aniso =
 // f16(A*A), f16(B*B), f16((A*B)*tanh(f0*p16)), A = s0*f16(sg(clamp(p14, +-20))), B likewise p15,
 // element 3 = 0. Hidden: z <- p(6+k), h <- p(2+k), k = 0..3:
 //   z = 0.5 + 0.5*tanh(0.5*p_z), h = z*th(p_h) + (1-z)*warp_k,
@@ -55,7 +56,7 @@ layout(set = 0, binding = 1) readonly buffer InPrevMv    { f16vec2 in_prev_mv[];
 // in both builds, so the fixture does not change.
 layout(set = 0, binding = 2) readonly buffer InHidden    { uint in_hidden32[]; };
 layout(set = 0, binding = 3) writeonly buffer OutGates   { u8vec4 out_gates[]; };
-layout(set = 0, binding = 4) writeonly buffer OutFactors { u8vec4 out_factors[]; };
+// binding 4 (factors) removed 2026-10-28: dead (see header)
 layout(set = 0, binding = 5) writeonly buffer OutAniso   { f16vec4 out_aniso[]; };
 layout(set = 0, binding = 6) writeonly buffer OutHidden  { int8_t out_hidden[]; };
 // binding 8: t0's next door - the SAME t8 buffer again, viewed as 16-byte vectors. A t8 pixel's
@@ -274,16 +275,7 @@ void main() {
         uint g2 = uint(roundEven(255.0 * clamp(sigm(p[10]), 0.0, 1.0)));
         out_gates[idx] = u8vec4(uint8_t(g0), uint8_t(g1), uint8_t(g2), uint8_t(0));
 
-        // ---- factors: channels 11, 12, 13, f32 softmax ----
-        float xm = max(p[11], max(p[12], p[13]));
-        float ea = exp(p[11] - xm);
-        float eb = exp(p[12] - xm);
-        float ec = exp(p[13] - xm);
-        float esum = (ea + eb) + ec;
-        uint fa = uint(roundEven(255.0 * clamp(ea / esum, 0.0, 1.0)));
-        uint fb = uint(roundEven(255.0 * clamp(eb / esum, 0.0, 1.0)));
-        uint fc = uint(roundEven(255.0 * clamp(ec / esum, 0.0, 1.0)));
-        out_factors[idx] = u8vec4(uint8_t(fa), uint8_t(fb), uint8_t(fc), uint8_t(0));
+        // ---- factors: REMOVED (dead store + dead softmax; see header) ----
 
         // ---- aniso: channels 14, 15, 16 ----
         float A = s0 * sigm(clamp(p[14], -20.0, 20.0));
