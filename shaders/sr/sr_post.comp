@@ -409,9 +409,16 @@ void main() {
     float wsumE[2], wsumO[2];
     for (int c = 0; c < 2; ++c) { nE[c] = vec3(0.0); nO[c] = vec3(0.0); gE[c] = vec3(0.0); gO[c] = vec3(0.0); wsumE[c] = 0.0; wsumO[c] = 0.0; }
 
-    for (int k = 0; k < ntaps; ++k) {
-        const int kx = k / nrt - 1;
-        const int ky = k - (k / nrt) * nrt - 1;
+    // PERF (2026-10-28, sr_post L-vs-M phase): the taps run as nested kx/ky loops (kx-major,
+    // ky inner - the exact (kx, ky) sequence of the old flat k loop, kx = k/nrt - 1,
+    // ky = k%nrt - 1) instead of a flat loop with two per-tap k/nrt integer DIVIDES; ntaps ==
+    // nrt*nrt in both instances (16 = 4^2, 9 = 3^2) so the two forms are identical. Measured:
+    // sr_post L 1.037 -> 1.024, M 0.886 -> 0.874 (two runs each; the shipped control repeated
+    // 1.037 three times). The L-vs-M gap itself is spec work, not code: L's model splats a 4x4
+    // (16-tap) grid where M splats 3x3 (9 taps) - tools/sr/sr_postL_model.py, "144 v_pk_fma_f16
+    // = 81 * 16/9" - at an identical per-tap rate (forcing L to 9 taps measured 0.828).
+    for (int kx = -1; kx < nrt - 1; ++kx)
+    for (int ky = -1; ky < nrt - 1; ++ky) {
         const int rowi = (by + ky) * ST_C;
         const float dyE = dybE + float(ky);
         const float dyO = dybO + float(ky);
