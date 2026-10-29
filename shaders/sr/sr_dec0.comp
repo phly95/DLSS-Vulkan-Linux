@@ -225,6 +225,7 @@ void main() {
         uint gx = (tile_x >> 1) + (pix & 3u);
         uint gy = (tile_y >> 1) + (pix >> 2);
         uint byteoff = gp * h_half * row_bytes + (gy * w_half + gx) * 32u + hb * 16u;
+#ifdef NR_OPERAND_F16
         uvec4 v = in_t8v4[byteoff >> 4];    // 32 B block => 16 B halves are 16 B aligned
         [[unroll]] for (uint b = 0u; b < 16u; ++b) {
             uint st = hb * 16u + b;       // stored byte index in the block
@@ -233,6 +234,15 @@ void main() {
             uint by = (word >> (8u * (b & 3u))) & 0xFFu;
             s_t8[pix * 64u + gp * 32u + perm_P(st)] = NR_OPERAND(e4m3_to_f32(by));
         }
+#else
+        // RADV: typed copy through binding 0 (the same bytes as fp8). Bit-for-bit identical to
+        // the decode->f32->requant round trip (every e4m3 code round-trips exactly; NaN payloads
+        // aside, verified by kernel_run), minus the software e4m3_to_f32 + re-encode per byte.
+        [[unroll]] for (uint b = 0u; b < 16u; ++b) {
+            uint st = hb * 16u + b;       // stored byte index in the block
+            s_t8[pix * 64u + gp * 32u + perm_P(st)] = in_t8[byteoff + b];
+        }
+#endif
     }
     // s_t8 is written by one lane and read by others through the A-fragment loads: without a
     // barrier the order is not guaranteed (lavapipe's O7 runs differed run to run).
