@@ -329,7 +329,15 @@ static int run_d3d12(Run& r) {
             for (unsigned y = 0; y < oh; ++y) {
                 const uint16_t* row = reinterpret_cast<const uint16_t*>(static_cast<uint8_t*>(m) + size_t(y) * opitch);
                 float* dstrow = host.data() + size_t(y) * ow * 4;
-                for (unsigned x = 0; x < ow; ++x) dstrow[x] = h2f_(row[x]);   // widen: out_<i>.f32 stays f32
+                // The row is ow*4 halfs (RGBA16F = 4 channels per pixel) and dstrow is ow*4 floats,
+                // so widen the whole row.  The loop bound used to be `ow`, i.e. one float written per
+                // pixel: every out_<i>.f32 after the f16 (M2) change carried only the left quarter of
+                // its rows, which turns a correct port into a V4 failure and wastes every V9 cell
+                // (measured: port 16 dB vs oracle instead of 57-59 dB, the rest zeros).
+                // FREEZE DEVIATION (post caa7472 'verify: freeze v2', the newest one) - approved by
+                // the user, on the rule that a wrong number is worse than a broken provenance claim:
+                // V10 now reports tools/verify as not matching the frozen tree.
+                for (unsigned i = 0; i < ow * 4; ++i) dstrow[i] = h2f_(row[i]);   // widen: out_<i>.f32 stays f32
             }
 #else
             for (unsigned y = 0; y < oh; ++y) std::memcpy(host.data() + size_t(y) * ow * 4, static_cast<uint8_t*>(m) + size_t(y) * opitch, ow * 16);
