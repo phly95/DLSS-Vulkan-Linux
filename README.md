@@ -1,4 +1,4 @@
-# DLSS5-AMD-Linux
+# DLSS-Vulkan-Linux
 
 Add DLSS Super Resolution (presets M/L) and Ray Reconstruction (preset F) to games on Linux/Proton:
 a Vulkan reimplementation of NeuralHub's DLSS SR/RR compute pipeline for AMD RDNA4 (plus the MIT
@@ -8,10 +8,13 @@ SPIR-V shaders and weight symlinks, installed into a game folder by `install.sh`
 
 **Status (honest):** the whole path works — measured under Proton 10.0 with
 `tools/verify/ngx_client --api {vulkan,d3d12}`, where RR output is byte-identical to the native chain
-on both APIs and SR matches it within its own run-to-run drift — but quality is not finished: in the
-referee's V4 gate SR M and SR L pass while RR F sits 0.54 dB under the mean bar; in the full 25-cell
-matrix only 5 static, default-format cells pass (the format-variant cells fail at 4-19 dB), and
-performance misses the V8 bar. Measured numbers: [docs/PORT-STATUS.md](docs/PORT-STATUS.md); open
+on both APIs and SR matches it within its own run-to-run drift — but quality is not finished (as of
+the last full referee run, 2026-10-28): in the V4 gate SR M and SR L pass while RR F sits 0.54 dB
+under the mean bar; in the full 25-cell matrix only 5 static, default-format cells pass (the
+format-variant cells fail at 4-19 dB). The performance campaign that followed (RR F 86.6 → 10.0 ms
+per frame, SR M 6.04 → 4.36, SR L → 6.09) passed the quality guard's no-regression bars on every
+landed patch, but did not re-run the V4/V8 gates — those verdicts predate it and the current numbers
+are unmeasured. Measured numbers: [docs/PORT-STATUS.md](docs/PORT-STATUS.md); open
 items: [docs/OPEN.md](docs/OPEN.md).
 
 ## Requirements
@@ -161,7 +164,8 @@ build/venv/bin/python -I tools/report/quality_guard.py   # quality bars against 
 
 - `docs/inventory/`: every HIP kernel and interop call of NeuralHub v0.8.0, mapped to Vulkan.
 - `docs/harness/`, `tools/harness/`: dump format and the per-layer compare tool.
-- `tools/exe/`: extraction and analysis of the installer.
+- `tools/exe/`: the bring-your-own entry point (`fetch_neuralhub.sh`) plus installer extraction and
+  analysis tooling.
 - `tools/radv-offline/`: compile SPIR-V for an RX 9070 XT (RADV GFX1201) without the card.
 - `reference-nr-vulkan/`: the reference Vulkan NR port (submodule, MIT) — see its
   `linux/package/README.txt` for installing NR into a game.

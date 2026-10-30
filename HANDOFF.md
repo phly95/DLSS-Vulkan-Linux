@@ -335,7 +335,7 @@ extractor with only the whole-file hash check relaxed; every weight entry is sti
 - Reference build: `cd reference-nr-vulkan && bash fetch_deps.sh && python3 linux/build/build_network.py rdna4`
   (pinned glslang 16.5.0, needed for byte-identical SPIR-V).
 
-## Artifacts (private repository; binaries are intentional)
+## Artifacts (binaries are intentional; NeuralHub is BYO)
 
 | path | what |
 | --- | --- |
