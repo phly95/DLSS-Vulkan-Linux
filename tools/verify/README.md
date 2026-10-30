@@ -84,6 +84,26 @@ From `phly95/dlss5-private-storage` (its README), plus the two DLLs only V9's wr
     cp $S/nvidia/310.9.16/nvngx_dlss.dll   build/re/nvngx_dlss_310.9.16.dll
     cp $S/nvidia/310.9.16/nvngx_dlssd.dll  build/re/nvngx_dlssd_310.9.16.dll
 
+NeuralHub's own code objects are bring-your-own: its license forbids redistributing it, so this
+repository holds neither the installer nor anything extracted from it. Download
+`NeuralHub_v0.8.0_setup.exe` from the official release
+<https://github.com/danielblnc/DLSS-NR-on-AMD/releases/tag/v0.8.0>, then:
+
+    NH_INSTALLER=/path/to/NeuralHub_v0.8.0_setup.exe tools/exe/fetch_neuralhub.sh build/nh
+
+Without `NH_INSTALLER` the script downloads that release asset itself (`curl -L`). Either way it
+checks the SHA-256 it pins before unpacking and stops with expected vs actual on a mismatch. It
+writes `build/nh` only (git-ignored; a destination the repository tracks is refused): the `<net>.co`
+code objects, `neuralhub_host.dll` and `manifest.json` from `tools/exe/extract.py`, plus the
+reference inputs `host_strings.txt.xz` (needs `strings`) and, when an `llvm-objdump` with
+`--mcpu=gfx1201` is installed, `kernels.json` and the `*.s.xz` disassembly — those last steps print
+the exact command to run later and exit 0 when the tool is missing. Everything that runs NeuralHub's
+kernels reads `build/nh` (`DLSS5_AMD_NH=DIR` points them at another directory inside the checkout):
+`run_all.sh`, `tools/gpu/collect_oracle.sh`, `tools/sr/sr_probe.py`, `tools/re/patchprobe.py` and
+`tools/re/fn.sh`; `run_all.sh` and `offline_check.sh` invoke `fetch_neuralhub.sh` when it is empty.
+A copy of any of NeuralHub's twelve files anywhere in the tree fails R2: `r2scan.py` bans their
+digests, it does not pin them any more.
+
 `run_all.sh` also needs Blender 4.2.3, the Sponza / DamagedHelmet assets and `localhost/rocm-blender:1`
 (`tools/scenes/README.md`), `localhost/nrbuild:2` (`tools/hwtest/build_native.sh`), podman with
 `docker.io/rocm/dev-ubuntu-24.04:7.2.4` for the oracles, and a Proton under `~/.local/share/Steam`.

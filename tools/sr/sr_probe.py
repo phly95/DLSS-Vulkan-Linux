@@ -67,13 +67,28 @@ def isolate(out, preset, stages):
         print(f"stage{i} {name}: zeroed v270 {a0}..{a1} and MLP+fc2_bias {m0}..{m1}; kept {tail} tail bytes")
 
 
+def nh_co(name):
+    """NeuralHub's code object, unpacked locally by tools/exe/fetch_neuralhub.sh (DLSS5_AMD_NH
+    overrides build/nh). The ROCm container mounts this checkout at /w, so it must live inside."""
+    d = Path(os.environ.get("DLSS5_AMD_NH", "build/nh"))
+    co = (d if d.is_absolute() else REPO / d) / name
+    if not co.exists():
+        raise SystemExit(f"{co} missing: run tools/exe/fetch_neuralhub.sh (NeuralHub's license "
+                         f"forbids shipping its code objects; see tools/verify/README.md)")
+    try:
+        return co.relative_to(REPO)
+    except ValueError:
+        raise SystemExit(f"{co} is outside {REPO}: the container only mounts the checkout as /w")
+
+
 def run(out, frames):
     out = out.resolve()
     rel = out.relative_to(REPO)
+    co = nh_co("sr.gfx1201.co")
     cmd = ["podman", "run", "--rm", "--device", "/dev/kfd", "--device", "/dev/dri",
            "--group-add", "keep-groups", "--security-opt", "label=disable", "-v", f"{REPO}:/w",
            "docker.io/rocm/dev-ubuntu-24.04:7.2.4", "bash", "-c",
-           f"cd /w && build/work/srref artifacts/neuralhub-v0.8.0/gfx1201/sr.gfx1201.co {rel} {frames} "
+           f"cd /w && build/work/srref {co} {rel} {frames} "
            f"{rel}_out --dump {rel}_dump"]
     r = subprocess.run(cmd, capture_output=True, text=True)
     sys.stdout.write(r.stdout[-2000:])

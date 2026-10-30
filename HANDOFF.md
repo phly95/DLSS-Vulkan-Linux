@@ -272,8 +272,8 @@ by 0.001-0.109). V8 perf unchanged-fail (49-170x, OPEN.md).
 
 An RX 9070 XT under SteamOS 3.9 (`docs/hardware/RX9070XT-STEAMOS.md`). SteamOS's root is immutable and has
 no compiler: everything is built in podman containers and the binaries run on the host. Everything
-generated goes under `build/` (ignored by git); nothing from NVIDIA or NeuralHub may be committed except
-the NeuralHub installer and the artifacts already listed below.
+generated goes under `build/` (ignored by git); nothing from NVIDIA or NeuralHub may be committed —
+NeuralHub is bring-your-own, see "Provenance & license" below.
 
 ### Setting up from a fresh clone
 
@@ -281,8 +281,13 @@ the NeuralHub installer and the artifacts already listed below.
 git submodule update --init                       # reference-nr-vulkan (MIT), pinned at c71b0f4
 (cd reference-nr-vulkan && bash fetch_deps.sh && python3 linux/build/build_network.py rdna4)
 python3 -m venv build/venv && build/venv/bin/pip install numpy pillow pefile msgpack capstone
-build/venv/bin/python -I tools/exe/extract.py artifacts/neuralhub-v0.8.0/NeuralHub_v0.8.0_setup.exe build/nh
-#   -> build/nh/{neuralhub_host.dll, sr|rr|nr|fg.<target>.co}
+NH_INSTALLER=/path/to/NeuralHub_v0.8.0_setup.exe tools/exe/fetch_neuralhub.sh build/nh
+#   BYO: NeuralHub_v0.8.0_setup.exe is NOT in this repository — fetch it from the official release
+#   https://github.com/danielblnc/DLSS-NR-on-AMD/releases/tag/v0.8.0 (sha256 aae53654…0b834);
+#   the script verifies the hash, extracts and regenerates the reference inputs (omit NH_INSTALLER
+#   to let it download the installer)
+#   -> build/nh/{neuralhub_host.dll, sr|rr|nr|fg.<target>.co}; oracle/referee runs only, not needed
+#      to build the package or run a game
 podman pull docker.io/rocm/dev-ubuntu-24.04:7.2.4   # ROCm for the reference harness (/dev/kfd is usable as deck)
 tools/hwtest/build_native.sh && tools/hwtest/build_plan.sh && tools/hwtest/build_probe.sh   # NR runner etc. -> build/hwtest/
 ```
@@ -334,19 +339,39 @@ extractor with only the whole-file hash check relaxed; every weight entry is sti
 
 | path | what |
 | --- | --- |
-| `artifacts/neuralhub-v0.8.0/NeuralHub_v0.8.0_setup.exe` | the only Windows input (sha256 `aae53654…0b834`) |
-| `artifacts/neuralhub-v0.8.0/gfx1201/{nr,sr,rr,fg}.gfx1201.co` | the RX 9070 XT code objects out of `neuralhub_host.dll`'s `.hip_fat` |
-| `artifacts/neuralhub-v0.8.0/gfx1201/*.s.xz` | their `llvm-objdump --mcpu=gfx1201` disassembly |
-| `artifacts/neuralhub-v0.8.0/gfx1201/kernels.json` | per-kernel metadata, kernarg reads, instruction profile (`tools/exe/kernels.py`) |
-| `artifacts/neuralhub-v0.8.0/host_strings.txt.xz` | strings of `neuralhub_host.dll` (log messages, ini/env keys, source expressions of its error-check macro) |
 | `artifacts/isa/amdgpu_isa_rdna4.xml.xz` | AMD's machine-readable RDNA4 ISA (GPUOpen): encodings + prose, no pseudocode, no WMMA lane map |
 | `artifacts/isa/radv_nir_lower_cooperative_matrix.c` | Mesa source with the GFX12 WMMA lane layout comment |
 | `artifacts/mesa/*.tar.xz` | prebuilt Mesa install (RADV, lavapipe, drm-shim) used by `build.sh` |
 | `artifacts/reference-nr/` | ACO ISA + statistics of all 64 reference NR pipelines on GFX1201 |
+| NeuralHub v0.8.0 (BYO, not in this repository) | its license forbids redistribution and instructs linking to the official release: fetch `NeuralHub_v0.8.0_setup.exe` from https://github.com/danielblnc/DLSS-NR-on-AMD/releases/tag/v0.8.0 (sha256 `aae53654…0b834`), then `tools/exe/fetch_neuralhub.sh build/nh` verifies, extracts and regenerates kernels.json / strings / disassembly — needed only for the oracle/referee reference runs |
 
-`neuralhub.exe` (167 MB) and `neuralhub_host.dll` (98 MB) are not committed (GitHub's 100 MB limit);
-`python3 -I tools/exe/extract.py artifacts/neuralhub-v0.8.0/NeuralHub_v0.8.0_setup.exe out/` recreates
-them and every code object in seconds (needs `7z`, `pip install pefile msgpack`).
+Nothing of NeuralHub's is committed: the installer, its extracted binaries and the disassembly are
+not redistributed here. `NH_INSTALLER=<local path> tools/exe/fetch_neuralhub.sh build/nh` (or let the
+script download the installer) verifies the hash and recreates `neuralhub_host.dll`, every code
+object, and best-effort kernels.json / strings / disassembly in seconds (needs `7z`,
+`pip install pefile msgpack`). The RE-derived documentation in `docs/` ships unredacted by design —
+see "Provenance & license" below.
+
+## Provenance & license (DLSS-Vulkan-Linux)
+
+- **License**: this repository's original code is GPL-3.0-or-later (LICENSE); the choice permits
+  bundling GPL components such as OptiScaler later. BYO'd third-party binaries (NeuralHub's
+  installer, NVIDIA's DLSS DLLs) remain under their own terms; vendored toolchains and submodules
+  keep their own licenses (MIT/Apache, e.g. `reference-nr-vulkan/`).
+- **BYO policy**: no NeuralHub binaries ship in this repository (installer, code objects,
+  disassembly). Its license forbids redistribution and instructs linking to the official release:
+  https://github.com/danielblnc/DLSS-NR-on-AMD/releases/tag/v0.8.0 (`NeuralHub_v0.8.0_setup.exe`,
+  sha256 `aae53654…0b834`), fetched/verified/extracted into `build/nh` by
+  `tools/exe/fetch_neuralhub.sh`. The BYO exe is required only to run the oracle / regenerate
+  reference inputs — never to build the package, never to use it in a game, never to read the docs.
+- **Docs ruling**: the RE-derived docs ship unredacted: they contain facts and observations (kernel
+  names, register counts, layouts, function addresses), not NeuralHub code text;
+  reverse-engineering for interoperability is lawful in the relevant jurisdictions;
+  pointer-redaction would force readers to import the exe to read a doc while reducing real risk
+  little. Guarantees: no NeuralHub binaries in the repo (migration-stripped from all history), no
+  NeuralHub code/data in the product (weights come from the user's own NVIDIA DLLs).
+- **Migration**: history was recreated under phly95/DLSS-Vulkan-Linux (origin on branch `main`) with
+  the NeuralHub binaries stripped from all of it; the old repository is retained untouched.
 
 ## Key findings (details in docs/inventory/KERNELS.md)
 
@@ -382,7 +407,7 @@ them and every code object in seconds (needs `7z`, `pip install pefile msgpack`)
 
     git fetch origin ccr-a7b81023-mipeai && git checkout ccr-a7b81023-mipeai
     # inputs: tools/verify/README.md "Restoring the inputs"; build/venv as in "Setting up from a fresh clone"
-    python3 -I tools/exe/extract.py artifacts/neuralhub-v0.8.0/NeuralHub_v0.8.0_setup.exe build/nh
+    NH_INSTALLER=/path/to/NeuralHub_v0.8.0_setup.exe tools/exe/fetch_neuralhub.sh build/nh   # BYO from the official release, see "Setting up from a fresh clone"
     bash tools/gpu/collect_oracle.sh
     # then follow the printed commands: copy build/oracle/<id>.tar.xz.part* and README into
     # phly95/dlss5-private-storage under oracle/, commit, push
@@ -490,7 +515,7 @@ Open items are tracked in `docs/OPEN.md`; do not wait on answers before continui
 
 ## SR: how to continue (2026-10-24)
 
-1. `python3 -I tools/exe/extract.py artifacts/neuralhub-v0.8.0/NeuralHub_v0.8.0_setup.exe build/nh` (code objects, host DLL).
+1. `NH_INSTALLER=/path/to/NeuralHub_v0.8.0_setup.exe tools/exe/fetch_neuralhub.sh build/nh` (code objects, host DLL; BYO from the official release, sha256 `aae53654…0b834`).
 2. Weights: `build/venv/bin/python -I tools/sr/sr_weights.py <Crimson Desert>/bin64/nvngx_dlss.dll --out build/re/weights`,
    then `tools/sr/sr_pack.py build/re/weights {M,L} build/re/packed/{M,L}`.
 3. Reference: see `docs/sr/HOST-RE.md` (ROCm 7.2.4 in podman; `srref ... --dump` writes every stage tensor and the

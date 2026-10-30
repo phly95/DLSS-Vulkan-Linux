@@ -118,8 +118,18 @@ run "$PY" -I tools/rr/rr_weights.py build/re/nvngx_dlssd_310.9.1.dll --dither "$
 run "$PY" -I tools/rr/rr_pack.py "$W/rr_raw" "$W/rr_F" >> "$SCRATCH/weights.log" 2>&1 || fail "rr_pack.py"
 grep -q "preset L: .*NeuralHub checksum matches" "$SCRATCH/weights.log" || fail "SR preset L weights do not match NeuralHub's checksum"
 grep -q "fingerprint .*: matches NeuralHub" "$SCRATCH/weights.log" || fail "RR weights do not match NeuralHub's fingerprint"
-SR_CO=artifacts/neuralhub-v0.8.0/gfx1201/sr.gfx1201.co
-RR_CO=artifacts/neuralhub-v0.8.0/gfx1201/rr.gfx1201.co
+# NeuralHub's code objects are bring-your-own: its license forbids shipping them, so the repository
+# holds none and tools/exe/fetch_neuralhub.sh unpacks them into build/nh (DLSS5_AMD_NH points at
+# another directory inside the checkout). The oracles run in a container that mounts this tree at /w,
+# so the paths below are repository-relative.
+NH=${DLSS5_AMD_NH:-build/nh}
+[[ $NH == "$ROOT"/* ]] && NH=${NH#"$ROOT"/}
+[[ $NH != /* ]] || fail "$NH is outside the repository: the oracle container only mounts $ROOT as /w"
+SR_CO=$NH/sr.gfx1201.co
+RR_CO=$NH/rr.gfx1201.co
+for f in "$SR_CO" "$RR_CO"; do
+    [[ -f $f ]] || fail "missing $f: run tools/exe/fetch_neuralhub.sh (bring your own NeuralHub v0.8.0; tools/verify/README.md: restoring the inputs)"
+done
 mkdir -p "$SCRATCH/bin"
 rocm "$SCRATCH/oracle_build.log" "hipcc -O2 -std=c++17 tools/sr/srref/srref.cpp -o $(cpath "$SCRATCH/bin")/srref && \
     hipcc -O2 -std=c++17 tools/rr/rrref/rrref.cpp -o $(cpath "$SCRATCH/bin")/rrref" \

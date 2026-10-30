@@ -38,9 +38,14 @@ git submodule update --init                                # reference-nr-vulkan
 python3 -m venv build/venv
 build/venv/bin/pip install numpy pillow pefile msgpack capstone
 
-# 3. NeuralHub's installer -> reference inputs only (the code objects the shaders are scored against)
-build/venv/bin/python -I tools/exe/extract.py \
-    artifacts/neuralhub-v0.8.0/NeuralHub_v0.8.0_setup.exe build/nh
+# 3. (oracle/referee reference runs ONLY — not needed to build the package or run a game)
+#    NeuralHub's installer is bring-your-own: its license forbids redistribution and instructs
+#    linking to the official release, so fetch NeuralHub_v0.8.0_setup.exe yourself from
+#    https://github.com/danielblnc/DLSS-NR-on-AMD/releases/tag/v0.8.0 (sha256 aae53654…0b834),
+#    then verify the hash, extract it, and regenerate the reference inputs into build/nh:
+NH_INSTALLER=/path/to/NeuralHub_v0.8.0_setup.exe tools/exe/fetch_neuralhub.sh build/nh
+#    (omit NH_INSTALLER to let the script download it; only §5's referee runs read build/nh —
+#     building and using the package does not need NeuralHub at all)
 
 # 4. reference harness: NeuralHub's kernels run unchanged under ROCm on this GPU
 podman pull docker.io/rocm/dev-ubuntu-24.04:7.2.4
@@ -140,6 +145,9 @@ bash tools/verify/run_all.sh           # the referee on the card: V1-V10 -> "VER
 build/venv/bin/python -I tools/report/quality_guard.py   # quality bars against ground truth
 ```
 
+- `run_all.sh` scores the port against NeuralHub's own kernels as the referee, so it needs the
+  oracle inputs in `build/nh` first: bring your own `NeuralHub_v0.8.0_setup.exe` (official release,
+  see build step 3) and run `tools/exe/fetch_neuralhub.sh build/nh`.
 - `run_all.sh` needs a clean working tree and a SteamOS host; `PROTON=<path>` pins the Proton (10.0
   works; 11 / Experimental hang), `PORT_RUNNER=<path>` overrides the runner. It deletes the previous
   runs' oracle outputs, so copy anything you intend to cite right after the run.
@@ -157,7 +165,9 @@ build/venv/bin/python -I tools/report/quality_guard.py   # quality bars against 
 - `tools/radv-offline/`: compile SPIR-V for an RX 9070 XT (RADV GFX1201) without the card.
 - `reference-nr-vulkan/`: the reference Vulkan NR port (submodule, MIT) — see its
   `linux/package/README.txt` for installing NR into a game.
-- `artifacts/`: binaries for this private repository (see HANDOFF.md).
+- `artifacts/`: only redistributable reference material — AMD's RDNA4 ISA, the prebuilt Mesa for
+  offline compiles, and the reference NR pipeline statistics; no NeuralHub content by design (its
+  license forbids redistribution — bring your own, build step 3).
 
 ## Acknowledgements and attribution
 
@@ -167,11 +177,20 @@ recovered from NeuralHub's code objects and host DLL (`docs/inventory/`, `docs/*
 `tools/re/`); the shaders and host are an independent reimplementation in GLSL/C++ whose numerics are
 scored per launch against NeuralHub's own kernels running under ROCm on the same GPU. No NeuralHub
 code and no NeuralHub-derived data ship in the product: model weights are read at install time from
-your own NVIDIA DLSS DLLs. The NeuralHub installer, its extracted code objects and their disassembly
-live in `artifacts/` as reference inputs. This repository is private; any public copy must exclude
-`artifacts/neuralhub-v0.8.0/`.
+your own NVIDIA DLSS DLLs. NeuralHub's installer, code objects and disassembly are NOT
+redistributed in this repository (its license forbids redistribution and instructs linking to the
+official release); bring your own to run the oracle.
 
 NR is provided by `reference-nr-vulkan/`, the reference Vulkan NR port (MIT license, submodule).
+
+## License
+
+This project is licensed **GPL-3.0-or-later** (see [LICENSE](LICENSE)). The license covers this
+repository's original code only: the third-party binaries you bring in yourself (NeuralHub's
+installer, NVIDIA's DLSS DLLs) remain under their own terms, and the vendored toolchains and
+submodules keep their own licenses (MIT/Apache, e.g. `reference-nr-vulkan/`). GPL-3.0-or-later was
+chosen to permit bundling GPL components such as OptiScaler later (a combination distributes under
+GPLv3).
 
 ## Learn more
 

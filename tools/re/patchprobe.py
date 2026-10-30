@@ -32,6 +32,7 @@ Writing a patch:
   100% (docs/notes/k_sr_post.md, Review R5).
 """
 import argparse
+import os
 import re
 import struct
 import subprocess
@@ -39,10 +40,14 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-CO = REPO / "artifacts/neuralhub-v0.8.0/gfx1201/sr.gfx1201.co"
-NETS = {"sr": dict(co=REPO / "artifacts/neuralhub-v0.8.0/gfx1201/sr.gfx1201.co", ref="build/work/srref",
+# NeuralHub's code objects are bring-your-own: tools/exe/fetch_neuralhub.sh unpacks them into
+# build/nh (DLSS5_AMD_NH overrides it); this repository holds none, its license forbids that.
+NH = Path(os.environ.get("DLSS5_AMD_NH", "build/nh"))
+NH = NH if NH.is_absolute() else REPO / NH
+CO = NH / "sr.gfx1201.co"
+NETS = {"sr": dict(co=NH / "sr.gfx1201.co", ref="build/work/srref",
                    weights="build/re/packed/M", frames="build/work/probe/frames1"),
-        "rr": dict(co=REPO / "artifacts/neuralhub-v0.8.0/gfx1201/rr.gfx1201.co", ref="build/work/rrref",
+        "rr": dict(co=NH / "rr.gfx1201.co", ref="build/work/rrref",
                    weights="build/rr/packed", frames="build/work/review/rrframes1")}
 OUT = REPO / "build/work/review/patch/runs"
 IMG = "docker.io/rocm/dev-ubuntu-24.04:7.2.4"
@@ -83,6 +88,9 @@ def assemble(asm):
 
 def run(kernel, at, asm, name, frames=None, weights=None, net="sr", tolerant=False):
     cfg = NETS[net]
+    if not cfg["co"].exists():
+        raise SystemExit(f"{cfg['co']} missing: run tools/exe/fetch_neuralhub.sh (bring your own "
+                         f"NeuralHub v0.8.0; tools/verify/README.md)")
     frames, weights = frames or cfg["frames"], weights or cfg["weights"]
     data = bytearray(cfg["co"].read_bytes())
     off, size = elf_symbol(data, kernel)

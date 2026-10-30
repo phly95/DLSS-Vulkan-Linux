@@ -37,6 +37,14 @@ RW=256 RH=144 OW=512 OH=288 FRAMES=9 DUMP_FRAMES=0,1
 for f in build/re/nvngx_dlss_310.9.1.dll build/re/nvngx_dlssd_310.9.1.dll "$PIC" "$PY"; do
     [[ -e "$f" ]] || { echo "missing $f (HANDOFF.md; tools/verify/README.md, restoring the inputs)" >&2; exit 1; }
 done
+# NeuralHub's code objects are bring-your-own (its license forbids shipping them): fetch_neuralhub.sh
+# unpacks them into build/nh, and the container script below runs with the repository as its cwd.
+NH=${DLSS5_AMD_NH:-build/nh}
+[[ $NH == "$ROOT"/* ]] && NH=${NH#"$ROOT"/}
+[[ $NH != /* ]] || { echo "DLSS5_AMD_NH=$NH is outside the repository: the container mounts only $ROOT as /w" >&2; exit 1; }
+for f in "$NH/sr.gfx1201.co" "$NH/rr.gfx1201.co"; do
+    [[ -e "$f" ]] || { echo "missing $f: run tools/exe/fetch_neuralhub.sh (bring your own NeuralHub v0.8.0)" >&2; exit 1; }
+done
 [[ -e "$O" ]] && { echo "$O exists" >&2; exit 1; }
 mkdir -p "$O"
 echo "collecting $O"
@@ -59,12 +67,12 @@ hipcc -O2 -std=c++17 tools/sr/srref/srref.cpp -o $(c "$O/bin")/srref
 hipcc -O2 -std=c++17 tools/rr/rrref/rrref.cpp -o $(c "$O/bin")/rrref
 for p in M L; do
     mkdir -p $(c "$O")/sr_\$p
-    $(c "$O/bin")/srref artifacts/neuralhub-v0.8.0/gfx1201/sr.gfx1201.co $(c "$W")/sr_\$p $(c "$O/frames/sr") \\
+    $(c "$O/bin")/srref $NH/sr.gfx1201.co $(c "$W")/sr_\$p $(c "$O/frames/sr") \\
         $(c "$O")/sr_\$p \$( [ \$p = L ] && echo --L ) --dump $(c "$O")/sr_\$p/dump --dump-frames $DUMP_FRAMES \\
         > $(c "$O")/sr_\$p/oracle.log 2>&1
 done
 mkdir -p $(c "$O")/rr_F
-$(c "$O/bin")/rrref artifacts/neuralhub-v0.8.0/gfx1201/rr.gfx1201.co $(c "$W")/rr_F $(c "$O/frames/rr") $(c "$O")/rr_F \\
+$(c "$O/bin")/rrref $NH/rr.gfx1201.co $(c "$W")/rr_F $(c "$O/frames/rr") $(c "$O")/rr_F \\
     --dump $(c "$O")/rr_F/dump --dump-frames $DUMP_FRAMES > $(c "$O")/rr_F/oracle.log 2>&1
 rm -rf $(c "$O/bin")"
 if (( DRY )); then

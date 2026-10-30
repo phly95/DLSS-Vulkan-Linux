@@ -6,8 +6,11 @@
 #
 # Steps (any failure is reported, the rest still run, the last line is the verdict):
 #   O1  setup: venv, reference deps (pinned glslang, Vulkan headers), the offline Mesa (RADV on a
-#       shimmed GFX1201 + lavapipe), NeuralHub's extracted binaries, weights from the user's DLLs
-#       (restored from the private storage repository into build/re per HANDOFF.md)
+#       shimmed GFX1201 + lavapipe), NeuralHub's code objects brought your own into build/nh by
+#       tools/exe/fetch_neuralhub.sh (its license forbids shipping them: the installer comes from the
+#       official v0.8.0 release, NH_INSTALLER=/path/to/NeuralHub_v0.8.0_setup.exe skips the download),
+#       weights from the user's DLLs (restored from the private storage repository into build/re per
+#       HANDOFF.md)
 #   O2  the referee's own tools: self-tests of texfmt, eval_verify (V4/V5/V7/V8 logic; V7's parser also
 #       on a real RADV_DEBUG=shaderstats log), diffdump; srref / rrref syntax (declaration-only HIP stub,
 #       nothing linked or run), vkprobe, ngx_client (mingw), every shell script (bash -n)
@@ -53,8 +56,14 @@ fi
 "$GLSLANG" --version | head -1
 [[ -f toolchain/mesa/install/share/vulkan/icd.d/radeon_icd.x86_64.json && -x tools/radv-offline/pipestats ]] \
     || bash tools/radv-offline/build.sh || fail "tools/radv-offline/build.sh"
-[[ -f build/nh/sr.gfx1201.co ]] \
-    || "$PY" -I tools/exe/extract.py artifacts/neuralhub-v0.8.0/NeuralHub_v0.8.0_setup.exe build/nh >/dev/null || fail "extract.py"
+if [[ -f build/nh/sr.gfx1201.co ]]; then
+    :   # bring your own, already unpacked (tools/exe/fetch_neuralhub.sh)
+elif bash tools/exe/fetch_neuralhub.sh build/nh; then
+    echo "  build/nh: NeuralHub v0.8.0 unpacked by tools/exe/fetch_neuralhub.sh"
+else
+    fail "NeuralHub code objects: tools/exe/fetch_neuralhub.sh failed (its license forbids shipping them: get NeuralHub_v0.8.0_setup.exe from https://github.com/danielblnc/DLSS-NR-on-AMD/releases/tag/v0.8.0 or set NH_INSTALLER=/path/to/it; tools/verify/README.md)"
+fi
+[[ -f build/nh/sr.gfx1201.co ]] || fail "build/nh/sr.gfx1201.co missing: run tools/exe/fetch_neuralhub.sh"
 if [[ ! -f build/re/nvngx_dlss_310.9.1.dll || ! -f build/re/nvngx_dlssd_310.9.1.dll ]]; then
     fail "build/re/nvngx_dlss{,d}_310.9.1.dll missing: restore them from phly95/dlss5-private-storage (its README)"
 else
@@ -104,7 +113,7 @@ if command -v x86_64-w64-mingw32-g++ >/dev/null; then
 else
     fail "x86_64-w64-mingw32-g++ missing (apt-get install g++-mingw-w64-x86-64)"
 fi
-for s in tools/verify/*.sh tools/verify/ngx_client/*.sh tools/gpu/*.sh src/vk/*.sh; do
+for s in tools/verify/*.sh tools/verify/ngx_client/*.sh tools/gpu/*.sh tools/exe/*.sh src/vk/*.sh; do
     [[ -f "$s" ]] || continue
     bash -n "$s" && echo "  $s: bash -n ok" || fail "bash -n $s"
 done

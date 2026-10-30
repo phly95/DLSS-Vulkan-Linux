@@ -1,5 +1,7 @@
-# Private repository: artifacts/ deliberately holds binaries (the NeuralHub installer, its extracted
-# gfx1201 code objects, a prebuilt Mesa). A public copy must be a new repository without artifacts/.
+# Private repository: artifacts/ deliberately holds binaries (a prebuilt Mesa, the ISA and reference
+# dumps). NeuralHub's installer and everything extracted from it are absent on purpose: its license
+# forbids redistribution and links to its release instead (tools/exe/fetch_neuralhub.sh fetches it
+# into build/nh, which is ignored below). A public copy must be a new repository without artifacts/.
 # NVIDIA's DLLs and weights are never committed, here or anywhere.
 nvngx_*.dll
 dlssnr*.bin
@@ -14,3 +16,9 @@ __pycache__/
 # Downloaded third-party pieces (the reference's fetch_deps.sh writes them here): pinned glslang,
 # Vulkan-Headers, GE-Proton. Reproducible, not worth a copy in git.
 artifacts/ref/
+
+# NeuralHub's license forbids redistribution and tells users to link to the release instead, so a
+# stray copy of it must never reach the index: fetch it with tools/exe/fetch_neuralhub.sh (the
+# official v0.8.0 release, SHA-256 pinned there) into build/nh.
+artifacts/neuralhub-v0.8.0/
+NeuralHub_*_setup.exe

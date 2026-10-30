@@ -6,7 +6,8 @@
                                         installed game folder), following no symlinks
     --secrets S [--secrets S ...]       files or directories whose content must not appear (default:
                                         the user's DLLs, extracted and packed weights, NeuralHub's
-                                        extracted binaries, oracle dumps, wherever they exist in build/)
+                                        extracted binaries under build/nh and the fetched installer,
+                                        oracle dumps, wherever they exist in build/)
     --allow-file PATH                   (with --dir) skip exactly this file: the user's own DLL a game
                                         folder legitimately holds
 
@@ -16,6 +17,10 @@ A scanned file fails when
     or the hex spelling of such a window;
   * it is text and contains the hex SHA-256 of a secret file (no committed hashes of weights), except
     the PREEXISTING integrity checks below, each pinned to the one file that held it before R2;
+  * it holds the bytes of one of the BANNED files, or its text names one of their digests (NeuralHub
+    v0.8.0's own files: its license forbids redistribution, so since the migration removed them from
+    the history nothing of NeuralHub may be tracked anywhere -- not under artifacts/, not anywhere
+    else; declares() below names the handful of files allowed to *name* a banned digest);
   * it is an AMDGPU ELF (e_machine 0xE0), or is named nvngx*.dll / *.co;
   * with --tracked: it lies under artifacts/ and is not one of the pinned files below with exactly
     this SHA-256 (the intentional binaries the repository already holds; changing them is the user's
@@ -33,25 +38,47 @@ import sys
 import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# The binaries this repository holds on purpose, each only at this path with exactly this SHA-256:
+# ISA dumps, a prebuilt Mesa, the reference's own outputs. (Everything of NeuralHub's used to be
+# pinned here too; the migration struck it out -- see BANNED.)
 ARTIFACTS = {
     "artifacts/isa/amdgpu_isa_rdna4.xml.xz": "1e61ec15026d239d4e9571b1df97e443995a758a4a3a877d8217f566b1a94b4d",
     "artifacts/isa/radv_nir_lower_cooperative_matrix.c": "dae99f350528dc9f15d3e3dedc8540bccf71ad67b05601b278acdaa18cea82cf",
     "artifacts/mesa/mesa-e2ab668-libdrm-b97cbde-ubuntu24.04-x86_64.tar.xz": "c3087150c6d9e93aca33605c4d9e062075fabcffde59bb8f091cd05125801419",
-    "artifacts/neuralhub-v0.8.0/NeuralHub_v0.8.0_setup.exe": "aae53654001bf7345dc5b2e621a3f9018f4a5735760a1572a7532180249b0834",
-    "artifacts/neuralhub-v0.8.0/gfx1201/fg.gfx1201.co": "f77362c3b821c71a754f2a6b2f668bd94b8180fdd10437ea79da57c088a570eb",
-    "artifacts/neuralhub-v0.8.0/gfx1201/fg.s.xz": "ca9de44017f8f5ba2c45cf13e80b61dc7827d6651684248da38ca5c2af5e11fb",
-    "artifacts/neuralhub-v0.8.0/gfx1201/kernels.json": "e5d3495150eaf79b4c5f60b6040386ac48543c84c49d7bb1d449dd942f45dbf0",
-    "artifacts/neuralhub-v0.8.0/gfx1201/manifest.json": "813788b2156e5c0a4580766213bfe86b43969efac756f348a8725f5fd9cae972",
-    "artifacts/neuralhub-v0.8.0/gfx1201/nr.gfx1201.co": "0566a2d1cf71e29d3921aa075afac176e36dbf0364d88aa7de025cf9d2637340",
-    "artifacts/neuralhub-v0.8.0/gfx1201/nr.s.xz": "9bd629a2d79529ea43045334f1766a9bc4ae668876dafe33028d498dba3b848e",
-    "artifacts/neuralhub-v0.8.0/gfx1201/rr.gfx1201.co": "8fc1a110f5dbe4e938fb0010f6608ae9fb1b59aa511becfcd08c1794d0035dfd",
-    "artifacts/neuralhub-v0.8.0/gfx1201/rr.s.xz": "421ecf6b2422e7d5eee691a032771fe362067758aac9f63f2dec7ee172deb914",
-    "artifacts/neuralhub-v0.8.0/gfx1201/sr.gfx1201.co": "ad772d3f563130edd159a332421f5cb455437fe10386bac77208a6072f2df558",
-    "artifacts/neuralhub-v0.8.0/gfx1201/sr.s.xz": "76d631a2bea4ff0a5d3a13d70aaaaa22cbcaab2db8391ffb2085a680a63fa726",
-    "artifacts/neuralhub-v0.8.0/host_strings.txt.xz": "a979514774caf35be50e37ce341a05753d19d65fcea3550e2a12f8c80c30fd50",
     "artifacts/reference-nr/aco-isa-gfx1201.tar.xz": "34b8b3e30150bc838638041196a55d48ba3ebbdbda8cfa5f02322ac99641478d",
     "artifacts/reference-nr/pipestats-gfx1201.txt": "f6221e7e76cd6397fd548fa64c7c6933488ba33a0895eb73400b93deb2e69a32",
 }
+INSTALLER_DIGEST = "aae53654001bf7345dc5b2e621a3f9018f4a5735760a1572a7532180249b0834"
+# NeuralHub v0.8.0's own files. Its license forbids redistribution and tells users to link to the
+# release instead, so these are BANNED everywhere, not pinned anywhere: any tracked file that holds
+# these bytes, or names these digests, fails -- wherever it is, artifacts/ included. Bring your own
+# with tools/exe/fetch_neuralhub.sh (it verifies this same installer digest before unpacking); the
+# bytes then live under build/nh and the fetched copy in build/, both git-ignored.
+BANNED = {
+    INSTALLER_DIGEST: "NeuralHub_v0.8.0_setup.exe",
+    "f77362c3b821c71a754f2a6b2f668bd94b8180fdd10437ea79da57c088a570eb": "gfx1201/fg.gfx1201.co",
+    "ca9de44017f8f5ba2c45cf13e80b61dc7827d6651684248da38ca5c2af5e11fb": "gfx1201/fg.s.xz",
+    "e5d3495150eaf79b4c5f60b6040386ac48543c84c49d7bb1d449dd942f45dbf0": "gfx1201/kernels.json",
+    "813788b2156e5c0a4580766213bfe86b43969efac756f348a8725f5fd9cae972": "gfx1201/manifest.json",
+    "0566a2d1cf71e29d3921aa075afac176e36dbf0364d88aa7de025cf9d2637340": "gfx1201/nr.gfx1201.co",
+    "9bd629a2d79529ea43045334f1766a9bc4ae668876dafe33028d498dba3b848e": "gfx1201/nr.s.xz",
+    "8fc1a110f5dbe4e938fb0010f6608ae9fb1b59aa511becfcd08c1794d0035dfd": "gfx1201/rr.gfx1201.co",
+    "421ecf6b2422e7d5eee691a032771fe362067758aac9f63f2dec7ee172deb914": "gfx1201/rr.s.xz",
+    "ad772d3f563130edd159a332421f5cb455437fe10386bac77208a6072f2df558": "gfx1201/sr.gfx1201.co",
+    "76d631a2bea4ff0a5d3a13d70aaaaa22cbcaab2db8391ffb2085a680a63fa726": "gfx1201/sr.s.xz",
+    "a979514774caf35be50e37ce341a05753d19d65fcea3550e2a12f8c80c30fd50": "host_strings.txt.xz",
+}
+BANNED_DIGESTS = set(BANNED)
+
+
+def declares(rel, hh):
+    """The only tracked files allowed to *name* a banned digest: this file (it prints the table) and
+    the two tools that pin the installer's SHA-256 so a bring-your-own download can be verified. They
+    name it, they do not hold it: the bytes themselves fail the content check all the same."""
+    return rel == "tools/verify/r2scan.py" or \
+        (hh == INSTALLER_DIGEST and rel in ("tools/exe/extract.py", "tools/exe/fetch_neuralhub.sh"))
+
+
 # Hashes of the user's inputs that the extractors already compared against when R2 was set (they check
 # that the DLL handed to them is 310.9.1.0); allowed in exactly these files, nowhere else.
 PREEXISTING = {
@@ -62,8 +89,11 @@ PREEXISTING = {
 }
 PREEXISTING_DIGESTS = {d for _, d in PREEXISTING}
 PINNED = set(ARTIFACTS.values())
+# Where the secret bytes are, by default: the user's DLLs and everything derived from them, NeuralHub's
+# code objects and host (build/nh, tools/exe/fetch_neuralhub.sh) and the installer copy it downloads
+# into build/. Missing entries are skipped, so a machine that has not brought its own yet still scans.
 DEFAULT_SECRETS = ["build/re", "build/dlls", "build/rr/weights", "build/rr/packed", "build/nh", "build/oracle",
-                   "build/verify/weights"]
+                   "build/verify/weights", "build/NeuralHub_v0.8.0_setup.exe"]
 
 
 def sha(path):
@@ -153,6 +183,9 @@ def main():
         ap.error("--tracked or --dir")
     findings = []
     secrets = a.secrets if a.secrets is not None else [os.path.join(ROOT, s) for s in DEFAULT_SECRETS]
+    if a.secrets is None and os.environ.get("NH_INSTALLER"):
+        # the installer the user fetched by hand: its bytes must not appear either, wherever it sits
+        secrets.append(os.environ["NH_INSTALLER"])
     sfiles = []
     for s in secrets:
         if os.path.isfile(s):
@@ -194,9 +227,11 @@ def main():
             findings.append(f"{rel}: tracked under {rel.split('/')[0]}/")
         if a.tracked and rel.startswith("artifacts/"):
             seen_art.add(rel)
-            if ARTIFACTS.get(rel) != sha(p):
-                findings.append(f"{rel}: under artifacts/ but not a pinned file with its pinned SHA-256")
-            continue          # the pinned binaries hold NeuralHub's code objects on purpose
+            h = sha(p)
+            if ARTIFACTS.get(rel) != h:
+                findings.append(f"{rel}: under artifacts/ but not a pinned file with its pinned SHA-256"
+                                + (" (it is NeuralHub's, banned everywhere)" if h in BANNED else ""))
+            continue          # pinned here, on purpose: none of these bytes is NeuralHub's
         if name.startswith("nvngx") and name.endswith(".dll"):
             findings.append(f"{rel}: an NVIDIA NGX DLL name")
         if name.endswith(".co"):
@@ -205,7 +240,9 @@ def main():
         if len(data) >= 20 and data[:4] == b"\x7fELF" and (data[18] | data[19] << 8) == 0xE0:
             findings.append(f"{rel}: AMDGPU ELF (e_machine 0xE0)")
         h = hashlib.sha256(data).hexdigest()
-        if h in shas:
+        if h in BANNED:
+            findings.append(f"{rel}: holds NeuralHub's {BANNED[h]} (its license forbids redistribution)")
+        elif h in shas:
             findings.append(f"{rel}: identical to {os.path.relpath(shas[h], ROOT)}")
         src = find_probes(data, index)
         if src:
@@ -218,10 +255,16 @@ def main():
                     break
             for hh, src in shas.items():
                 # a pinned artifact's hash says nothing the committed artifact does not; this file's own
-                # tables name the pinned and the PREEXISTING hashes
+                # tables name the pinned and the PREEXISTING hashes (NeuralHub's are handled below)
                 pinned_here = rel == "tools/verify/r2scan.py" and hh in PREEXISTING_DIGESTS
-                if hh.encode() in low and (rel, hh) not in PREEXISTING and hh not in PINNED and not pinned_here:
+                if hh.encode() in low and (rel, hh) not in PREEXISTING and hh not in PINNED \
+                        and hh not in BANNED_DIGESTS and not pinned_here:
                     findings.append(f"{rel}: contains the SHA-256 of {os.path.relpath(src, ROOT)}")
+            # NeuralHub's digests are banned everywhere: naming one is a finding, in a tracked file and
+            # in anything scanned with --dir alike, except in the handful of files that declare it
+            for hh, name in BANNED.items():
+                if hh.encode() in low and not declares(rel, hh):
+                    findings.append(f"{rel}: names the SHA-256 of NeuralHub's {name}")
     if a.tracked:
         for rel in sorted(set(ARTIFACTS) - seen_art):
             findings.append(f"{rel}: pinned artifact missing")
