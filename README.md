@@ -6,7 +6,7 @@ reference port for NR), shipping as `_nvngx.dll` — it exports `NVSDK_NGX_VULKA
 `NVSDK_NGX_D3D12_EvaluateFeature` (the D3D12 one through vkd3d-proton's interop) — together with
 SPIR-V shaders and weight symlinks, installed into a game folder by `install.sh`.
 
-**Status (honest):** the whole path works — measured under Proton 10.0 with
+**Status:** the whole path works — measured under Proton 10.0 with
 `tools/verify/ngx_client --api {vulkan,d3d12}`, where RR output is byte-identical to the native chain
 on both APIs and SR matches it within its own run-to-run drift — but quality is not finished (as of
 the last full referee run, 2026-10-28): in the V4 gate SR M and SR L pass while RR F sits 0.54 dB
@@ -23,7 +23,7 @@ items: [docs/OPEN.md](docs/OPEN.md).
   compiler, so builds run in podman containers and the binaries run on the host)
 - AMD RX 9070 XT (RDNA4, GFX1201)
 - Mesa 26.2+ RADV with `VK_KHR_cooperative_matrix` and FP8 (`VK_EXT_shader_float8`), Vulkan 1.3+
-- Proton with vkd3d-proton for D3D12 titles; measured on Proton 10.0 (Proton 11 and Proton -
+- Proton with vkd3d-proton for D3D12 titles; measured on Proton 10.0 (Proton 11 and Proton
   Experimental hang on this machine, see [docs/OPEN.md](docs/OPEN.md))
 - Your own model weights, never committed: `nvngx_dlss.dll` 310.9.1.0 (SR presets M/L) and
   `nvngx_dlssd.dll` 310.9.1.0 (RR preset F) from a game you own; `nvngx_dlssnr.dll` for NR
@@ -41,7 +41,7 @@ git submodule update --init                                # reference-nr-vulkan
 python3 -m venv build/venv
 build/venv/bin/pip install numpy pillow pefile msgpack capstone
 
-# 3. (oracle/referee reference runs ONLY — not needed to build the package or run a game)
+# 3. (needed only for the oracle/referee reference runs — not to build the package or run a game)
 #    NeuralHub's installer is bring-your-own: its license forbids redistribution and instructs
 #    linking to the official release, so fetch NeuralHub_v0.8.0_setup.exe yourself from
 #    https://github.com/danielblnc/DLSS-NR-on-AMD/releases/tag/v0.8.0 (sha256 aae53654…0b834),
