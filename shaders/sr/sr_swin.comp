@@ -241,7 +241,7 @@ void blk_radv(int x0, int y0, int gx8, int gy8) {
     uint gain1b = (w_off >= 1341440u) ? (w_off + 4u * SR_C * ((SR_C == 64) ? 96u : 128u) + 8u * SR_C)
                                       : w_off;
     uint vt  = uint(vec_off);                       // the table (blob offsets no longer needed)
-    uint Tw  = uint(vec_off) * 8u;                  // the tiled weights (131072 B a stage)
+    uint Tw  = uint(vec_off) * 16u;                 // the tiled weights (262144 B a stage slot)
     uint T_C = SR_C / 16u;                          // col tiles of a C-wide matrix
     uint wqT = Tw;                                  // [g][2][T_C] tiles
     uint wkT = wqT + 256u * (2u * SR_G * T_C);
@@ -326,6 +326,10 @@ void blk_radv(int x0, int y0, int gx8, int gy8) {
             NR_MMA(kf[1], fa, bk1);
         }
         NR_FRAG_ACC lg = NR_ACC_ZERO;
+        {
+            LANE8(vt_rel + h * 256u * 4u, col, rr)
+            for (uint i = 0u; i < 8u; ++i) lg[i] = rr[i];
+        }
         for (uint j = 0u; j < 2u; ++j) {
             NR_FRAG_A qa;
             NR_FRAG_B qb;
@@ -335,8 +339,6 @@ void blk_radv(int x0, int y0, int gx8, int gy8) {
             }
             NR_MMA(lg, qa, qb);
         }
-        LANE8(vt_rel + h * 256u * 4u, col, rr)
-        for (uint i = 0u; i < 8u; ++i) lg[i] = lg[i] + rr[i];
         float e[8];
         float ssum = 0.0;
         for (uint i = 0u; i < 8u; ++i) { e[i] = swin_exp(lg[i]); ssum += e[i]; }
@@ -393,6 +395,12 @@ void blk_radv(int x0, int y0, int gx8, int gy8) {
             uint fc2 = base + 32u * SR_C + 64u;
             NR_FRAG_ACC zt[2];
             zt[0] = NR_ACC_ZERO; zt[1] = NR_ACC_ZERO;
+            {
+                float bb0[8], bb1[8];
+                { LANE8(vt_b1 + uint(j) * 32u * 4u, 0, b_) for (uint i = 0u; i < 8u; ++i) bb0[i] = b_[i]; }
+                { LANE8(vt_b1 + uint(j) * 32u * 4u, 1, b_) for (uint i = 0u; i < 8u; ++i) bb1[i] = b_[i]; }
+                for (uint i = 0u; i < 8u; ++i) { zt[0][i] = bb0[i]; zt[1][i] = bb1[i]; }
+            }
             for (uint kk = 0u; kk < NT; ++kk) {
                 NR_FRAG_B fb;
                 for (uint i = 0u; i < 8u; ++i) fb[i] = nst8[kk][i];
@@ -405,9 +413,8 @@ void blk_radv(int x0, int y0, int gx8, int gy8) {
             }
             NR_FRAG_B hb2[2];
             for (uint t = 0u; t < 2u; ++t) {
-                LANE8(vt_b1 + uint(j) * 32u * 4u, t, bb)
                 for (uint i = 0u; i < 8u; i += 2u)
-                    Q8P(hb2[t], i, nh_gelu(zt[t][i] + bb[i]), nh_gelu(zt[t][i + 1u] + bb[i + 1u]))
+                    Q8P(hb2[t], i, nh_gelu(zt[t][i]), nh_gelu(zt[t][i + 1u]))
             }
             for (uint nt = 0u; nt < NT; ++nt) {
                 for (uint h0 = 0u; h0 < 2u; ++h0) {
@@ -506,6 +513,9 @@ void main() {
         }
         uint upW = w_off;                    // Wup, row-major [4C][Cn] at the blob head
         uint upb = w_off + K4 * SR_CN;       // up_b, f16 [4C]
+        // P3 probe 2: Wup's B operands come from the host's tiled copy (slot second half):
+        // [n0][k-tile] tiles, stride 16 - contiguous per lane instead of SR_CN-strided.
+        uint upT = uint(vec_off) * 16u + 131072u;
         for (uint n0 = 0u; n0 < K4 / 16u; ++n0) {
             NR_FRAG_ACC p0 = NR_ACC_ZERO;
             for (uint k = 0u; k < SR_CN; k += 32u) {
@@ -513,8 +523,8 @@ void main() {
                 NR_LOAD_A(fa0, sLow, k, SR_CN);
                 NR_LOAD_A(fa1, sLow, k + 16u, SR_CN);
                 NR_FRAG_B b0, b1;
-                NR_LOAD_B(b0, wrep, upW + 16u * n0 * SR_CN + k, SR_CN);
-                NR_LOAD_B(b1, wrep, upW + 16u * n0 * SR_CN + k + 16u, SR_CN);
+                NR_LOAD_B(b0, wrepT, upT + 256u * (uint(n0) * (SR_CN / 16u) + k / 16u), 16u);
+                NR_LOAD_B(b1, wrepT, upT + 256u * (uint(n0) * (SR_CN / 16u) + k / 16u + 1u), 16u);
                 NR_MMA(p0, fa0, b0); NR_MMA(p0, fa1, b1);
             }
             // pass A: p = E4M3(up + up_b) straight into this (token, channel) slot - no
@@ -572,6 +582,8 @@ void main() {
         uint ffn = w_off + 6u * SR_C + SR_G * (96u * SR_C + 512u);
         uint dnW = ffn + uint(NBLK) * (64u * SR_C + 64u) + 2u * SR_C;
         uint dnb = dnW + K4 * SR_CN;
+        // P3 probe 2: dn_W's B operands from the host's tiled copy (slot second half).
+        uint dnT = uint(vec_off) * 16u + 131072u;
         float db[8];                         // dn_b, this lane's channels across the N tiles
         for (uint nt = 0u; nt < SR_CN / 16u; ++nt)
             db[nt] = read_f16(dnb + 2u * vidx(16u * nt + col));
@@ -583,13 +595,14 @@ void main() {
         int lx = lowX0 + int(rp & 3u); \
         int ly = lowY0 + int(rp >> 2u); \
         if (lx >= 0 && lx < int(W2) && ly >= 0 && ly < int(H2)) { \
-            float y_ = clamp((ACC)[comp] + db[(TILE)], -6.28125, 6.28125); \
+            float y_ = clamp((ACC)[comp], -6.28125, 6.28125); \
             b6[((co_ >> 5u) * HW2 + uint(ly) * W2 + uint(lx)) * 32u + perm_invP(co_ & 31u)] = \
                 NR_OPERAND(y_); \
         } \
     } }
         for (uint n0 = 0u; n0 < NTCN; n0 += 2u) {
             NR_FRAG_ACC p0 = NR_ACC_ZERO, p1 = NR_ACC_ZERO;
+            for (uint i = 0u; i < 8u; ++i) { p0[i] = db[n0]; p1[i] = db[n0 + 1u]; }
             for (uint k = 0u; k < K4; k += 64u) {
                 NR_FRAG_A fa0, fa1, fc0, fc1;
                 NR_LOAD_A(fa0, sCat, k, K4);
@@ -597,14 +610,17 @@ void main() {
                 NR_LOAD_A(fc0, sCat, k + 32u, K4);
                 NR_LOAD_A(fc1, sCat, k + 48u, K4);
                 NR_FRAG_B b0, b1, b2, b3, e0, e1, e2, e3;
-                NR_LOAD_B(b0, wrep, dnW + 16u * n0 * K4 + k, K4);
-                NR_LOAD_B(b1, wrep, dnW + 16u * n0 * K4 + k + 16u, K4);
-                NR_LOAD_B(b2, wrep, dnW + 16u * (n0 + 1u) * K4 + k, K4);
-                NR_LOAD_B(b3, wrep, dnW + 16u * (n0 + 1u) * K4 + k + 16u, K4);
-                NR_LOAD_B(e0, wrep, dnW + 16u * n0 * K4 + k + 32u, K4);
-                NR_LOAD_B(e1, wrep, dnW + 16u * n0 * K4 + k + 48u, K4);
-                NR_LOAD_B(e2, wrep, dnW + 16u * (n0 + 1u) * K4 + k + 32u, K4);
-                NR_LOAD_B(e3, wrep, dnW + 16u * (n0 + 1u) * K4 + k + 48u, K4);
+                uint rtA = uint(n0) * (K4 / 16u);
+                uint rtB = (uint(n0) + 1u) * (K4 / 16u);
+                uint ct0 = k / 16u;
+                NR_LOAD_B(b0, wrepT, dnT + 256u * (rtA + ct0), 16u);
+                NR_LOAD_B(b1, wrepT, dnT + 256u * (rtA + ct0 + 1u), 16u);
+                NR_LOAD_B(b2, wrepT, dnT + 256u * (rtB + ct0), 16u);
+                NR_LOAD_B(b3, wrepT, dnT + 256u * (rtB + ct0 + 1u), 16u);
+                NR_LOAD_B(e0, wrepT, dnT + 256u * (rtA + ct0 + 2u), 16u);
+                NR_LOAD_B(e1, wrepT, dnT + 256u * (rtA + ct0 + 3u), 16u);
+                NR_LOAD_B(e2, wrepT, dnT + 256u * (rtB + ct0 + 2u), 16u);
+                NR_LOAD_B(e3, wrepT, dnT + 256u * (rtB + ct0 + 3u), 16u);
                 NR_MMA(p0, fa0, b0); NR_MMA(p0, fa1, b1);
                 NR_MMA(p0, fc0, e0); NR_MMA(p0, fc1, e1);
                 NR_MMA(p1, fa0, b2); NR_MMA(p1, fa1, b3);

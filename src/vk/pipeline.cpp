@@ -561,16 +561,24 @@ static bool sr_repack_tiles(const uint8_t* wbuf, uint8_t* out, size_t woff, cons
                     }
     };
     size_t cur = 0;
+    // P3 probe 2: the mode-2 up GEMM's Wup and the mode-0 epilogue's dn_W were the last two
+    // matrices still read strided from wrep (B loads at row stride Cn / 4C - 16 scattered 8-byte
+    // reads a wave). They go into the slot's second half as the same [rowtile][coltile][16][16]
+    // tiles, so those loads become two coalesced reads of a 256-byte tile (Opus pass-2 idea 3).
     // Region STARTS (the first version used sizes as bases, so every region after Wq was written
     // one slot late - Wk's data at 8192 while the shader read at 4096; Wq alone agreed).
+    const size_t rNEW = 131072u;                                // slot-half: up/dn tile region
     const size_t rWq = 256u * (size_t)(2u * g * CT);             // one head-unit of Wq tiles
     const size_t wqT = 0;
     const size_t wkT = rWq;                                      // = 256 * (2*g*CT)
     const size_t woT = wkT + rWq;
     const size_t w1T = woT + rWq;
     const size_t w2T = w1T + 256u * (size_t)(2u * NBLK * CT);
-    if (s.mode == 2) cur += size_t(4) * C * s.Cn + 8u * C;      // up_W + up_b (not tiled: the up
-    cur += 2u * C;                                              // kernel reads wrep directly)
+    if (s.mode == 2) {
+        tile(0, 4u * C, s.Cn, rNEW, false, false);              // Wup tiles in the second half
+        cur += size_t(4) * C * s.Cn + 8u * C;                   // + up_b (f16, table-scalar read)
+    }
+    cur += 2u * C;
     for (uint32_t h = 0; h < g; ++h) {
         tile(cur, 32, C, 256u * (size_t)(2u * h * CT), false, true);           // Wq: K = C
         tile(cur + 32u * C, 32, C, wkT + 256u * (size_t)(2u * h * CT), false, true);
@@ -585,6 +593,7 @@ static bool sr_repack_tiles(const uint8_t* wbuf, uint8_t* out, size_t woff, cons
         tile(b + 32u * C + 64u, C, 32, w2T + 256u * (size_t)(2u * j * CT), true, false);  // W2: rows = C
         cur += size_t(64u) * C + 64u;
     }
+    if (s.mode == 0) tile(cur + 2u * C, s.Cn, 4u * C, rNEW, false, false);  // dn_W tiles: +2C = fc2_bias, which this walk never skips
     return true;
 }
 
@@ -1156,7 +1165,7 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
     c->w_enc0r = create_buffer(dev, phys, 8192, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     if (mode == "sr" || mode == "rr") c->wrep = create_buffer(dev, phys, 16 * 1024 * 1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     if (mode == "sr") c->wvec = create_buffer(dev, phys, 10 * 16384, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    if (mode == "sr") c->wrepT = create_buffer(dev, phys, 10 * 131072, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    if (mode == "sr") c->wrepT = create_buffer(dev, phys, 10 * 262144, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);  // P3: +up/dn tiles
     c->w_dec0 = create_buffer(dev, phys, 65536, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     c->w_dec0f8 = create_buffer(dev, phys, 8192, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     // sr_dec0's own repacked weights (see sr_repack_dec0): [4][32][64] f16 + 4x32 f16 biases = 16640 B.
@@ -1254,7 +1263,7 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
                 // blob[i] is the stage's own slice (0-based) - unlike wbuf.mapped, which is what
                 // sr_repack_stage gets with woff[i]. Passing woff here read ~1.4 MB past the blob
                 // (SIGSEGV in FrameChain::create, found with the -O0 -g runner under gdb).
-                sr_repack_tiles(blob[i].data(), static_cast<uint8_t*>(c->wrepT.mapped) + 131072u * i, 0, kSrStageShape[i]);
+                sr_repack_tiles(blob[i].data(), static_cast<uint8_t*>(c->wrepT.mapped) + 262144u * i, 0, kSrStageShape[i]);
             }
             if (!blob[10].empty() && blob[10].size() <= c->w_enc0.size) {
                 std::memcpy(c->w_enc0.mapped, blob[10].data(), blob[10].size());
