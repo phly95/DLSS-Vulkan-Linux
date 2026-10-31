@@ -3,11 +3,11 @@
 **Owner:** `ses_e6f7044eeffeSSITmFI4a0g4Mb` (master-2). **Assembled 2026-10-31 ~11:0x EDT, no runs.**
 **Status:** D1 DONE (33/33 PASS) · D2 closed to "SL gate cracked headlessly" · **RE-SCOPED 2026-10-31
 (user decision): the OptiScaler path is ARCHIVED for in-game use; the new target is standalone
-(game direct + port) = D5 (§8 slot open, executor)** · **D3 CLOSED as "harness-proven, in-game
-launch-path-blocked"** (N-B reproduced the stall runtime-independently; N-A had no UI window; both
-shots spent, hard stop honored — REPORT § "N-B + N-A", h1prime §10) · **D4 OPEN, held for
-`D resolved: green|red` (§8.1 contingency: signing ladder A ✗ / N3-B ✗ measured-dead / D in flight)** ·
-D4 = this document.
+(game direct + port) = D5 (§8: headless gates GREEN via signed core, in-game rows pending)** ·
+**D3 CLOSED as "harness-proven, in-game launch-path-blocked"** (N-B reproduced the stall
+runtime-independently; N-A had no UI window; both shots spent — REPORT § "N-B + N-A", h1prime §10) ·
+**D4 OPEN: `D resolved: GREEN` (§8.1, REPORT `P-SIGN-D`) — fallback NOT final; held for the
+in-game relaunch / remaining D5 rows** · D4 = this document.
 The running log this document consolidates is
 [`REPORT.md`](REPORT.md); the machine-readable matrix is [`D1-MATRIX.csv`](D1-MATRIX.csv).
 
@@ -132,7 +132,7 @@ E01 vs A03, E02 vs B03, E03 vs C01: Δ EVAL/GPU = −0.0305/−0.0225, −0.0307
 | A-route | obtain `osslsigncode` to sign the port core | **unavailable**: `pacman -Ss osslsigncode` empty on this box (executor) |
 | **N3 / P-N3** | authorized 2-byte gate NOP in `bin64/sl.common.dll` (0x8c15e `74 2f`→`90 90`), backup `.bak-n3`, `cmp -l` 2 bytes only | implemented per the verbatim authorization (REPORT § P-N3) |
 | **P-N3-OUTCOME** | N3 **measured FAILED + REVERTED** (md5-verified == `.bak-n3`): `pluginManager.cpp:917 Failed to load plugin '…sl.common.dll - last error Invalid handle'` → `slInit result=24`; control with stock sl.common = `slInit 0 (eOk)`; **`NOT correctly signed` never fired (0 hits)** | **⇒ N3 is dead because SL validates its own host library itself, not via Authenticode** — any `sl.common` edit is blocked by the library's load-critical role; provenance `P-N3`/`P-N3-OUTCOME` in `REPORT.md` |
-| **D (in flight)** | build `osslsigncode` from source **or** python-Authenticode → sign the port core → **install cert into the prefix root store** → proof cell | pending; D4 stays **OPEN** until top-level sends `D resolved: green\|red` (§8.1) |
+| **D (sequence)** | build `osslsigncode` from source **or** python-Authenticode → sign the port core → **install cert into the prefix root store** → proof cell | **GREEN 14:36** (REPORT `P-SIGN-D`): built from source in podman, Code-Signing-EKU cert → `_nvngx.signed.dll` md5 `1bca310f`, Root store written via `wine reg add` (certutil is a stub; backup md5 `11fa0d39`), proof cell `SL_NVAPI_ARCH=AD100 --direct --sl-rr` = **g5 c1–c6 all ok / rc=0 ctx=loaded / arch 0x190 / 6× mask 0x1 / `Loaded L"…nvngx.dll" native`** |
 
 ### 4b. H-1′ appendix pointer (source kept by the executor)
 
@@ -231,49 +231,49 @@ configuration deltas, not regressions, unless they breach the same sentinel floo
 
 | # | claim to establish for standalone | evidence required | status |
 |---|---|---|---|
-| 1 | standalone staging correct in `bin64/` | executor provenance row: files staged, `.bak-*` present, launch line byte-exact (`localconfig.vdf:2894`) | PENDING |
-| 2 | harness `--direct --sl` boots and gates | `HARNESS RESULT` with g1 (`--direct` ⇒ g1 n/a by construction) + g2/g3/g4 + `g5 SL boot : PASS` c1–c5 | PENDING |
-| 3 | SR present standalone | port `eval #K OK: … feature=1` counts, `fmt col=0 mv=1 dep=0`, non-black outputs | PENDING |
-| 4 | RR present standalone | `feature=13` OK lines with `n=7` (or the game's real slot set), RR chain from `ngx-weights/rr`, `G-RR-ASSURE` PASS under `--sl` | PENDING |
-| 5 | **user-relaunch verification (the acceptance that matters)** | user launches the game, **judges quality acceptable**, DLSS + RR selectable in menu, `_enableRayReconstruction` set, no black screen | PENDING |
+| 1 | standalone staging correct in `bin64/` | executor provenance row: files staged, `.bak-*` present, launch line byte-exact (`localconfig.vdf:2894`) | PENDING — **proposal in flight**: signed-core game-dir swap (+ approved `DXVK_NVAPI_GPU_ARCH=AD100` line re-apply while Steam is down); harness-side signed core already staged & proven (`P-SIGN-D`) |
+| 2 | harness `--direct --sl-rr` boots and gates with the **signed** port as core | `g5 SL boot : PASS` c1–**c6** all ok, `slInit 0 (eOk)`, `Loaded L"…\harness\nvngx.dll" … native` | **GREEN** — `REPORT.md` § `P-SIGN-D` (proof cell, 14:36): c6_rr_enable ok, rc=0x00000000 ctx=loaded, arch 0x190, 6× mask 0x1, `0xbad00005/002/Failed-to-init/Missing-ctx` all 0 |
+| 3 | SR present standalone | port `eval #K OK: … feature=1` counts, `fmt col=0 mv=1 dep=0`, non-black outputs | **gates GREEN** (row 2), **eval-level counts PENDING** — `P-SIGN-D` was the gate proof cell, not an SR-eval campaign |
+| 4 | RR present standalone | `feature=13` OK lines with `n=7` (or the game's real slot set), RR chain from `ngx-weights/rr`, `G-RR-ASSURE` PASS under `--sl` | **gates GREEN** (`SL-RR-ENABLE rc=0 ctx=loaded`, `c6_rr_enable` ok, 6× mask 0x1), **port `feature=13` NOT exercised headlessly** (smoke pre-tag path) ⇒ *in-game toggle = the RR-eval proof* — PENDING |
+| 5 | **user-relaunch verification (the acceptance that matters)** | user launches the game, **judges quality acceptable**, DLSS + RR selectable in menu, `_enableRayReconstruction` set, no black screen | PENDING (in-game relaunch blocked-hence-deferred; see §5 attempts + row 1 proposals) |
 | 6 | timing vs archived baseline | standalone EVAL/GPU medians compared against §2 cells at the same resolution, floors applied, deltas labelled *configuration delta* | PENDING |
 
 *(Fill rule: same as §5 — rows carry `file:line` or log quotes; contradictions are fixed by editing,
 never by deleting a measured row. If D5 succeeds, D4's closing becomes "standalone SR+RR accepted by
 the user", superseding both the §5 boxed sentence and the §0 archived-path assurance.)*
 
-### 8.1 D4 CONTINGENCY — sequence D in flight; wording branches, **AWAITING `D resolved: green|red`**
+### 8.1 D4 CONTINGENCY — **RESOLVED: `D` = GREEN (2026-10-31 14:36)** — fallback NOT final
 
-The executor's signing/N3 ladder for making the **standalone port core** acceptable to Streamline's
-core-load gate: **A** = `osslsigncode` package — *unavailable* (`pacman -Ss` empty); **B** = N3
-2-byte gate NOP in `sl.common.dll` — *implemented per authorization, then measured FAILED and
-reverted md5-verified* (REPORT `P-N3` / `P-N3-OUTCOME`); **C-rule** = stop, as authorized;
-**D** (final, authorized, running now) = build `osslsigncode` from source *or* python-Authenticode →
-**sign the port core** → **install the cert into the prefix root store** → proof cell.
+The signing/N3 ladder for making the **standalone port core** acceptable to Streamline's core-load
+gate, final state: **A** = `osslsigncode` package *unavailable* → **B** = N3 2-byte gate NOP in
+`sl.common.dll` *measured FAILED + reverted md5-verified* (REPORT `P-N3`/`P-N3-OUTCOME`) →
+**C-rule** stop → **D** = **GREEN** (REPORT **`P-SIGN-D`**, 14:2x–14:36).
 
-**Why B died — folded in as required:** N3 is *measured-dead because Streamline validates its own
-host library itself, not via Authenticode* — the patched carrier failed SL's integrity check with
+**Why B died (kept for the record):** N3 is *measured-dead because Streamline validates its own
+host library itself, not via Authenticode* — the patched carrier failed with
 `Failed to load plugin '…sl.common.dll - last error Invalid handle'` and `slInit result=24`, while
-the string `NOT correctly signed` had **0 hits** in the whole cell (stock sl.common in the same
-cell: `slInit 0 (eOk)`). So the NOP route and Authenticode are orthogonal: fixing a signature would
-not have saved B, and B's failure says nothing against a correctly signed core (what D tests).
+`NOT correctly signed` had **0 hits** (stock sl.common control: `slInit 0 (eOk)`). Orthogonal to D:
+fixing a signature would not have saved B, and B's failure said nothing against a correctly signed
+core — which is what D proved.
 
-**Branch wording — CONTINGENT (do not publish either branch until `D resolved:` is sent):**
+**What D did (`P-SIGN-D`, executor):** `ossligncode` **built from source** (podman `nrbuild:2`,
+container-only deps, clone `868d6e9` → `build/pe/tools/`) · cert regenerated with **Code Signing
+EKU** → `build/package/_nvngx.signed.dll` 875 728 B, md5 `1bca310f`, digest Current==Calculated ✓ ·
+trust anchor written **directly to the Root registry store** (wine-staging's `certutil.exe` is a
+stub; 922 B raw DER via wine `reg add`, backup `pfx/system.reg.bak-certstore` md5 `11fa0d39`) ·
+**PROOF CELL** (`SL_NVAPI_ARCH=AD100 --direct --sl-rr`, signed port as harness core,
+`WINEDEBUG=+loaddll`): **`g5 SL boot : PASS` c1–`c6_rr_enable` all ok**, arch **`0x190`**,
+**6× adapter mask 0x1**, `0xbad00005=0 0xbad00002=0 Failed-to-init=0 Missing-ctx=0`,
+**`SL-RR-ENABLE rc=0x00000000 ctx=loaded`** + `slInit 0 (eOk)`, and the load decision itself —
+`Loaded L"...harness\nvngx.dll" … native` ⇒ **WinVerifyTrust ACCEPTED the signed port = the unlock.**
+Caveats carried verbatim: one non-gate `0xBAD00000` elsewhere (c6's archived pattern absent ⇒ gate
+ok), and **port `feature=13` was not exercised headlessly** (smoke ran pre-tag path) — *the in-game
+toggle is the RR-eval proof*.
 
-- **`D resolved: green`** ⇒ RR-via-Streamline headless is proven with *our* signed core; the §8 D5
-  table rewrites as full green (rows 2–6 cite the proof cell), the §5 boxed sentence and §0
-  archived-path assurance fold into it, and D4's closing becomes "standalone SR+RR accepted by the
-  user".
-- **`D resolved: red`** ⇒ this is the **FINAL** paragraph, verbatim:
-  > *Standalone SR is delivered by the port directly and is proven. RR via Streamline remains
-  > unproven on this stack, and the ladder that would have proven it is exhausted with measurements:
-  > no signing tool was available (A), and the authorized `sl.common.dll` gate bypass (N3) is
-  > **measured-dead because Streamline validates its own host library itself, not via Authenticode**
-  > (`Failed to load plugin 'sl.common.dll - Invalid handle'`, `slInit=24`, zero occurrences of any
-  > signature error) — reverted md5-verified. The remaining route, a correctly signed port core in
-  > the prefix root store (D), is what this result red-flags; RR is therefore reported as gated at
-  > Streamline's core/vehicle integrity checks, not at our renderer, and is explicitly not claimed
-  > for the shipped configuration.*
+**Branch disposition:** the **red-branch paragraph is NOT final** — it was never published; its
+contingent draft survives only in commit history (`6ef3c59`) together with the ladder's
+measurements, which this section keeps regardless. The **green branch is active**, scoped as: *SR+RR gates proven headless standalone; in-game relaunch
+pending* — the two approved moves being (a) the **signed-core game-dir swap** proposal and (b)
+**re-applying the approved `DXVK_NVAPI_GPU_ARCH=AD100` launch line while Steam is down**.
 
-**D4 STATUS: OPEN — held for `D resolved: green|red`.** Nothing above is to be summarized away in
-the final wrap without that verdict.
+**D4 STATUS: OPEN — held for the in-game relaunch outcome / D5 rows** (headless half green).
