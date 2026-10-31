@@ -820,3 +820,8 @@ Registry chain reverted (L20 baseline proven); `Services\nvlddmkm` writes forbid
 - D3a direct chain (cwd=bin64, full Steam env): Opti boots (+0.3 s) then engine-level stall, no `hkD3D12CreateDevice`/`slInit`/`getSystemCaps` for 3 min (archive `runs/OptiScaler.log.D3a-stall-111908`) — G1 inert on this layer, as §8.2 predicted.
 - D3b/D3c Steam URL forward x3: client assert-crash each time (dumps `assert_20261031112059_9`, `...112450_{3,6,9}`), no game process.
 - Verified byte-exact launch line before+after; `bin64/nvngx.dll` intact (byte-copy, md5 `a0dac8ab...`); all other levers untouched; zero leftovers. Pending: a working launch path (proposed: xdotool UI-Play / Proton-10 direct A-B).
+
+### N-B + N-A (2026-10-31 11:48 EDT) — D3 closed as "harness-proven, in-game launch-path-blocked" (h1prime §10)
+- N-B direct + Proton 10.0: stall reproduces at `RunVersionCheck`+0.3 s (`hkD3D12CreateDevice`=0) ⇒ runtime-independent engine-startup/launch-context issue; Xalia further along under P10; archive `runs/OptiScaler.log.NB-stall-p10-*`; prefix regs restored from pre-NB snapshot (md5-verified).
+- N-A UI click: client healthy but no Steam UI window mapped (6 polls) + no screenshot tooling (Spectacle no DBus object) ⇒ blocked; no forward issued.
+- FINAL STATE (deliberate, per top-level verdict): G1 `bin64/nvngx.dll` KEPT (signed byte-copy, cmp-verified after every attempt); `DxgiFactoryWrapping=false` kept; `OverrideNvapiDll=auto`; launch line byte-exact before+after; prefix regs GE-Proton11-native; G1 provenance row current.
