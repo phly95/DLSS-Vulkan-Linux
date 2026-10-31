@@ -6,6 +6,9 @@
 #   bash tools/optiharness/run_harness.sh --direct            # A/B: skip OptiScaler entirely
 #   bash tools/optiharness/run_harness.sh \
 #       --nvngx "/path/to/_nvngx.dll.bak-mvfix" --expect-fail  # issue-1 reproduction demo
+#   bash tools/optiharness/run_harness.sh --sl                # ALSO boot the game's Streamline stack
+#                                                             # (gates g1-g4 + g5; SL_NVAPI_VER=<n>
+#                                                             #  adds DXVK_NVAPI_DRIVER_VERSION=<n>)
 #
 # What it stages (build/optiharness/harness/, all git-ignored):
 #   _nvngx.dll            copied from --nvngx (default build/package/_nvngx.dll - the freshly
@@ -16,6 +19,9 @@
 #   dlss5-amd/shaders     -> build/shaders when its .spv files exist, else the game's copy
 #   OptiScaler.ini        generated from tools/optiharness/OptiScaler.harness.ini (the GAME's ini
 #                          is never read: Config.cpp:45 loads the ini next to the dxgi.dll)
+#   sl.interposer.dll + 10 sl.*.dlls  SYMLINKS (all 11 game plugins; read-only) - the Streamline
+#                          stack the --sl mode boots (app-id/flags/features pulled from the
+#                          runs/OptiScaler.slayer3* archive; see README)
 #   opti_client.exe       the harness executable (built here when missing/stale)
 # Logs land together: OptiScaler.log next to the exe, dlss5-amd-ngx.log in the CWD (the port,
 # nvngx.cpp:255) - both in the staging dir, this script's stdout in the output dir.
@@ -35,12 +41,14 @@ OUTD=$ROOT/build/optiharness/out
 FRAMES=12
 EXPECT=0
 MODE=opti
+SLMODE=0
 EXTRA=()
 
 usage() {
     echo "usage: tools/optiharness/run_harness.sh [--nvngx PATH] [--expect-fail] [--frames N]"
-    echo "      [--direct] [--out DIR] [--mv-fmt rg32|rg16] [--dep-fmt d32s8|r32f]"
+    echo "      [--direct] [--sl] [--out DIR] [--mv-fmt rg32|rg16] [--dep-fmt d32s8|r32f]"
     echo "      [--corpus DIR] [--w W] [--h H] [--ow W] [--oh H]"
+    echo "      env: SL_NVAPI_VER=<n>  also sets DXVK_NVAPI_DRIVER_VERSION=<n> for the run"
 }
 die() { echo "HARNESS FAIL: $*" >&2; exit 1; }
 
@@ -50,6 +58,7 @@ while [[ $# -gt 0 ]]; do
         --expect-fail) EXPECT=1; shift;;
         --frames) FRAMES=$2; shift 2;;
         --direct) MODE=direct; shift;;
+        --sl) SLMODE=1; shift;;
         --out) OUTD=$2; shift 2;;
         --help|-h) usage; exit 0;;
         --mv-fmt|--dep-fmt|--w|--h|--ow|--oh|--corpus) EXTRA+=("$1" "$2"); shift 2;;
@@ -62,7 +71,13 @@ done
 if [[ ! -f "$EXE" || "$TOOL/opti_client.cpp" -nt "$EXE" || "$TOOL/build.sh" -nt "$EXE" ]]; then
     bash "$TOOL/build.sh" || die "build.sh"
 fi
-[[ -f "$GAME/dxgi.dll" ]] || die "no OptiScaler dxgi.dll in $GAME"
+# The OptiScaler proxy dll: preference is dxgi.dll, but the game folder is shared with live
+# diagnostics sessions that may park it as dxgi.dll.optiscaler-off (measured 2026-10-31: present,
+# 25 379 632 B = the same v0.9.4 proxy this harness booted yesterday); fall back to that name so
+# a parallel experiment can turn OptiScaler "off" in the game without breaking this harness.
+DXGI_SRC="$GAME/dxgi.dll"
+[[ -f "$DXGI_SRC" ]] || DXGI_SRC="$GAME/dxgi.dll.optiscaler-off"
+[[ -f "$DXGI_SRC" ]] || die "no OptiScaler dxgi.dll in $GAME (nor dxgi.dll.optiscaler-off)"
 [[ -f "$GAME/nvngx_dlss.dll" ]] || die "no nvngx_dlss.dll in $GAME (the port's CreateFeature check refuses without it)"
 # shaders: prefer the port's own build output; fall back to the game's installed copy
 SHDIR=
@@ -75,8 +90,16 @@ fi
 rm -rf "$STAGE"
 mkdir -p "$STAGE/dlss5-amd"
 cp "$NVNGX" "$STAGE/_nvngx.dll"
-if [[ $MODE == opti ]]; then ln -s "$GAME/dxgi.dll" "$STAGE/dxgi.dll"; fi
+if [[ $MODE == opti ]]; then ln -s "$DXGI_SRC" "$STAGE/dxgi.dll"; fi
 ln -s "$GAME/nvngx_dlss.dll" "$STAGE/nvngx_dlss.dll"
+# Streamline: all 11 of the game's sl.*.dlls (read-only symlinks), so sl.interposer finds its
+# plugins in the exe dir exactly like the game's findPlugins in bin64 (archive:545/309).
+SL_DLLS=(sl.interposer.dll sl.common.dll sl.dlss.dll sl.dlss_d.dll sl.dlss_g.dll sl.reflex.dll
+         sl.pcl.dll sl.nis.dll sl.nvperf.dll sl.deepdvc.dll sl.directsr.dll)
+for s in "${SL_DLLS[@]}"; do
+    [[ -f "$GAME/$s" ]] || die "missing game SL dll $GAME/$s"
+    ln -s "$GAME/$s" "$STAGE/$s"
+done
 ln -s "$SHDIR" "$STAGE/dlss5-amd/shaders"
 cp "$TOOL/OptiScaler.harness.ini" "$STAGE/OptiScaler.ini"
 cp "$EXE" "$STAGE/opti_client.exe"
@@ -119,10 +142,42 @@ fi
 [[ -n ${PROTON:-} && -x ${PROTON:-} ]] || die "no Proton under $STEAM starts the harness (see $ROOT/build/optiharness/proton_probe_*.log)"
 echo "  Proton: $PROTON"
 
+# ---- prefix: never race another session's live game --------------------------------------------
+# Measured 2026-10-31 00:14: a GE-Proton11-6 wineserver (pid 3046121) held compatdata/3321460
+# with CrimsonDesert.exe RUNNING in a concurrent session; a second Proton on the same prefix dies
+# immediately with "wine client error: version mismatch 935/856" (client = Proton 10.0's wineserver
+# protocol, server = GE's 935) and the exe never starts.  The game must not be started/stopped by
+# this harness, so when the game's wineserver is alive: run against a one-time read-only CLONE of
+# the prefix (478 MB, cp -a) - the original is only ever READ from that point on.
+RUN_PREFIX=$PREFIX
+prefix_busy() {
+    local p
+    for p in $(pgrep -x wineserver 2>/dev/null); do
+        tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null | grep -qF "STEAM_COMPAT_DATA_PATH=$PREFIX" && return 0
+    done
+    return 1
+}
+if prefix_busy; then
+    CLONE=$ROOT/build/optiharness/prefix_3321460.clone
+    echo "  game prefix BUSY (another session's wineserver on 3321460) - cloning to $CLONE"
+    rm -rf "$CLONE"
+    mkdir -p "$CLONE"
+    cp -a "$PREFIX"/. "$CLONE"/ || die "cannot clone the game prefix"
+    RUN_PREFIX=$CLONE
+else
+    echo "  game prefix free: $RUN_PREFIX (default game compatdata)"
+fi
+
 # ---- run ----------------------------------------------------------------------------------------
 winpath() { echo "Z:${1//\//\\}"; }    # a Linux path as the Wine process sees it (run_all.sh:313)
 EXPECT_ARGS=()
 [[ $EXPECT -eq 1 ]] && EXPECT_ARGS=(--expect-fail)
+SL_ARGS=()
+[[ $SLMODE -eq 1 ]] && SL_ARGS=(--sl)
+# Optional one-line lever: SL_NVAPI_VER -> DXVK_NVAPI_DRIVER_VERSION (dxvk-nvapi wants a DECIMAL
+# number 100..99999, e.g. 57602 for "576.02" - dxvk-nvapi README), passed through verbatim.
+SL_ENV=()
+[[ -n ${SL_NVAPI_VER:-} ]] && SL_ENV=("DXVK_NVAPI_DRIVER_VERSION=$SL_NVAPI_VER")
 STDOUT_LOG=$OUTD/run.stdout.log
 echo "  running ($(date +%H:%M:%S), timeout 900 s)..."
 (
@@ -135,15 +190,16 @@ echo "  running ($(date +%H:%M:%S), timeout 900 s)..."
         WINEDLLOVERRIDES=winmm,dxgi=n,b \
         PROTON_FORCE_NVAPI=1 \
         DLSS5_AMD_WEIGHTS="$ROOT/build/ngx-weights" \
-        STEAM_COMPAT_DATA_PATH="$PREFIX" \
+        STEAM_COMPAT_DATA_PATH="$RUN_PREFIX" \
         STEAM_COMPAT_CLIENT_INSTALL_PATH="$STEAM" \
         VK_ICD_FILENAMES="$RADV_ICD" \
         VK_DRIVER_FILES="$RADV_ICD" \
         MESA_SHADER_CACHE_DISABLE=true \
+        "${SL_ENV[@]}" \
         timeout 900 "$PROTON" run "./opti_client.exe" \
             "--$MODE" --frames "$FRAMES" \
             --out "$(winpath "$OUTD")" --csv "$(winpath "$OUTD/eval_ms.csv")" \
-            "${EXPECT_ARGS[@]}" "${EXTRA[@]}"
+            "${EXPECT_ARGS[@]}" "${SL_ARGS[@]}" "${EXTRA[@]}"
 ) > "$STDOUT_LOG" 2>&1
 RC=$?
 echo "  opti_client rc=$RC ($(date +%H:%M:%S)); logs in $STAGE"
@@ -249,14 +305,59 @@ else
 fi
 EXE_RESULT=$(awk -F= '/^RESULT=/{print $2}' "$OUTD/summary.txt" 2>/dev/null)
 
+# --- g5: Streamline boot (only under --sl): the game's exact doom lines, checked one by one ---
+# Evidence = our [sl-cb] callback lines + SLDLSS probe lines (client.log) concatenated with
+# OptiScaler's own [streamline] echo (OptiScaler.log) - whichever registered first carried the
+# lines, both sources are searched so the gate is about Streamline, not about who echoed it.
+g5=n/a; g5note=""; g5detail=""
+ver_ge() { [[ $(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1) == "$2" ]]; }  # $1 >= $2
+if [[ $SLMODE -eq 1 ]]; then
+    G5EV=$OUTD/g5_evidence.txt
+    { cat "$PARSE" 2>/dev/null; echo "--- optiscaler echo ---"; cat "$OLOG" 2>/dev/null; } > "$G5EV"
+    n_caps=$(grep -cF 'getSystemCaps' "$G5EV")
+    n_nvfail=$(grep -cF 'NVAPI failed to initialize' "$G5EV")
+    n_failngx=$(grep -cF 'Failed to initialize NGX' "$G5EV")
+    n_missing=$(grep -cF 'Missing NGX context' "$G5EV")
+    n_dlss=$(grep -cE "Loaded plugin 'sl\.dlss'" "$G5EV")
+    c1=ok; c2=ok; c3=ok; c4=ok; c5=ok
+    (( n_caps >= 1 && n_nvfail == 0 )) || c1="bad(caps=$n_caps nvapi_fail=$n_nvfail)"
+    (( n_failngx == 0 )) || c2="bad(x$n_failngx)"
+    (( n_missing == 0 )) || c4="bad(x$n_missing)"
+    (( n_dlss >= 1 )) || c5="bad(x$n_dlss)"
+    # c3: the "requires driver ... detected ..." line (exactly what the game prints for
+    # sl.dlss); absent = ok, present = the DETECTED version must satisfy the required one
+    drv=$(grep -oE 'requires driver [0-9]+\.[0-9]+\.[0-9]+ or newer - detected [0-9]+\.[0-9]+\.[0-9]+' "$G5EV" | head -1)
+    if [[ -z "$drv" ]]; then
+        c3=ok; drv_note="no 'requires driver' line"
+    else
+        need=${drv#requires driver }; need=${need%% or newer*}
+        got=${drv##* - detected }
+        if ver_ge "$got" "$need"; then c3=ok; drv_note="detected $got >= required $need"
+        else c3="bad(detected $got < required $need)"; drv_note="detected $got < required $need"; fi
+    fi
+    for c in "$c1" "$c2" "$c3" "$c4" "$c5"; do [[ $c == ok ]] || g5=FAIL; done
+    g5note="c1_getSystemCaps_nvapi=$c1  c2_no_failed_NGX=$c2  c3_driver=$c3  c4_no_missing_ctx=$c4  c5_sl.dlss_loaded=$c5"
+    # the EXACT measured nvapi/driver numbers, whatever they are (game archive: NVAPI failed +
+    # detected 0.0.0; headless it can differ - that is data, reported either way)
+    nvapi_drv=$(grep -oE 'getSystemCaps\] NVIDIA driver [0-9]+\.[0-9.]+' "$G5EV" | head -1)
+    nvapi_fail_txt=$(grep -F 'NVAPI failed to initialize' "$G5EV" | head -1)
+    isnv=$(grep -E 'isNvidia Detected|NVIDIA driver [0-9]' "$PARSE" | head -1)
+    sldrv=$(grep -E '^SLDLSS slGetFeatureRequirements' "$PARSE" | grep -oE 'driverDetected=[0-9.]+ driverRequired=[0-9.]+' | head -1)
+    g5detail="nvapi: ${nvapi_drv:-${nvapi_fail_txt:-(no NVAPI line from getSystemCaps)}}; ${drv_note}; sl-requirements: "
+    g5detail+="${sldrv:-n/a}; evidence: [sl-cb]=$(grep -c '^\[sl-cb\]' "$PARSE" 2>/dev/null) "
+    g5detail+="SLDLSS=$(grep -c '^SLDLSS' "$PARSE" 2>/dev/null) slInit=$(grep -c '^SL slInit' "$PARSE" 2>/dev/null)"
+    g5detail+=" isNvidia='${isnv:-n/a}' files=$G5EV"
+fi
+
 # ---- HARNESS SUMMARY -----------------------------------------------------------------------------
 echo
 echo "HARNESS SUMMARY"
-echo "  mode=$MODE expect_fail=$EXPECT frames=$FRAMES nvngx=$(basename "$NVNGX")"
+echo "  mode=$MODE expect_fail=$EXPECT sl=$SLMODE frames=$FRAMES nvngx=$(basename "$NVNGX")"
 echo "  g1 OptiScaler : $g1   $g1note"
 echo "  g2 port log   : $g2   $g2note"
 echo "  g3 non-black  : $g3   $g3note"
 echo "  g4 timing     : $g4   $g4note"
+[[ $SLMODE -eq 1 ]] && { echo "  g5 SL boot    : $g5   $g5note"; echo "                   $g5detail"; }
 if [[ -f "$OUTD/summary.txt" ]]; then
     echo "  --- opti_client summary.txt ---"
     sed 's/^/  /' "$OUTD/summary.txt"
@@ -264,6 +365,15 @@ fi
 ALL=PASS
 for x in "$g1" "$g2" "$g3" "$g4"; do [[ $x == PASS ]] || ALL=FAIL; done
 [[ $RC -eq 0 ]] || ALL=FAIL
-echo "HARNESS RESULT: $ALL  (opti_client rc=$RC, exe summary RESULT=${EXE_RESULT:-n/a})"
+TAIL="opti_client rc=$RC, exe summary RESULT=${EXE_RESULT:-n/a}"
+# g5 joins the verdict only when the caller asked for the Streamline boot (--sl): the baseline
+# without --sl stays exactly the old four-gate run, and with --sl a g5 FAIL means "the game's
+# Streamline doom reproduced headlessly" -> the run exits non-zero like every other failed gate
+# (flip it green after an SL/NVAPI fix by the same evidence, no game launch needed).
+if [[ $SLMODE -eq 1 ]]; then
+    [[ $g5 == PASS ]] || ALL=FAIL
+    TAIL="$TAIL, g5=$g5"
+fi
+echo "HARNESS RESULT: $ALL  ($TAIL)"
 [[ $ALL == PASS ]] || exit 1
 exit 0

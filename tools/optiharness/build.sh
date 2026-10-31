@@ -13,6 +13,11 @@ mkdir -p "$(dirname -- "$out")"
 out=$(cd -- "$(dirname -- "$out")" && pwd)/$(basename -- "$out")
 vkh=reference-nr-vulkan/toolchain/Vulkan-Headers/include
 [[ -f "$root/$vkh/vulkan/vulkan.h" ]] || { echo "missing $vkh: run reference-nr-vulkan/fetch_deps.sh" >&2; exit 1; }
+# The Streamline ABI gate first: sl_abi_check.cpp's hand-derived layouts of the vendored v2.14.1
+# sl::Preferences etc. must hold on host g++ before the exe ever cross-compiles (see its header).
+if command -v g++ >/dev/null; then
+    g++ -std=c++17 -fsyntax-only "$here/sl_abi_check.cpp" || { echo "sl_abi_check FAILED (vendored SL headers moved)" >&2; exit 1; }
+fi
 # FMT16=1 (default) = app Output RGBA16F, matching OUT_F16=1 in src/vk/build.sh (the token OUT
 # below is substituted by this script, hence the different name for the same switch).
 cmd=(x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -DFMT16=${FMT16:-1} -I"$vkh"

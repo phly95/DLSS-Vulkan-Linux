@@ -9,18 +9,24 @@ prefix**, so frames travel the same path they take in Crimson Desert:
                                                                -> RGBA16F output -> read back
 
 without ever launching the game.  It exists to (a) measure clean ms timings with OptiScaler
-present, (b) prove the upscaled output is real (not black), and (c) reproduce both known in-game
-issues from the harness alone.
+present, (b) prove the upscaled output is real (not black), (c) reproduce both known in-game
+issues from the harness alone, and (d) with `--sl`, boot the game's NVIDIA Streamline stack
+headlessly and gate on its exact bootstrap lines (see "Streamline boot").
 
     bash tools/optiharness/run_harness.sh                                  # default --opti run
     bash tools/optiharness/run_harness.sh --direct                         # A/B: skip OptiScaler
     bash tools/optiharness/run_harness.sh \
         --nvngx "/path/to/_nvngx.dll.bak-mvfix" --expect-fail               # issue-1 reproduction
+    bash tools/optiharness/run_harness.sh --sl                             # + boot the game's
+                                                                           # Streamline stack (gate g5)
+    SL_NVAPI_VER=57602 bash tools/optiharness/run_harness.sh --sl          # env lever (dxvk-nvapi
+                                                                           # driver version, g5 data)
     bash tools/optiharness/run_harness.sh --corpus DIR [--frames N]        # V9 file corpus inputs
     bash tools/optiharness/run_harness.sh --mv-fmt rg16 --dep-fmt r32f     # proven-format bisect
 
-Exit code 0 only when every gate passes; each run prints a `HARNESS SUMMARY` (script gates g1-g4)
-and the exe writes its own `HARNESS SUMMARY` block plus `out/summary.txt` and `out/eval_ms.csv`.
+Exit code 0 only when every gate passes; each run prints a `HARNESS SUMMARY` (script gates g1–g4,
+plus g5 under `--sl`) and the exe writes its own `HARNESS SUMMARY` block plus `out/summary.txt`
+and `out/eval_ms.csv`.
 
 ## What each number brackets (and why no line mimics the runner's)
 
@@ -64,6 +70,19 @@ plus OptiScaler may early-return its first evaluate for change-backend bookkeepi
   (`nz < 0.10` on every frame = output never written, measured: exactly 0.000000).
 - **g4 timing**: `EVAL_MS` n and median > 0 over frames 1.. plus a table with `GPU_EVAL_MS`
   median/p95; `n/a` lines are reported as a *degradation*, not a failure (per the contract above).
+- **g5 SL boot** (`--sl` only, never folded into g1–g4): five independent subchecks, each printed
+  as `ok`/`bad(...)` in the `HARNESS SUMMARY`, evaluated over `g5_evidence.txt` = client.log
+  (`[sl-cb]` callback lines + `SLDLSS` probes) concatenated with OptiScaler's `[streamline]`
+  echo (whichever registered first carried the line is fine):
+  1. a `getSystemCaps` line is present AND NOT `NVAPI failed to initialize` (or, if a driver
+     number is reported, it is shown and must satisfy the required one),
+  2. no `Failed to initialize NGX`,
+  3. no `requires driver 512.15.0 or newer - detected 0.0.0` (generalized: any such line's
+     detected version must be >= the required one, `sort -V`),
+  4. no `Missing NGX context`,
+  5. `Loaded plugin 'sl.dlss'` present.
+  g5 joins the exit verdict ONLY under `--sl`; without `--sl` the run is byte-for-byte the old
+  four-gate run.
 
 The exe adds its own four gates (`GATE eval / nonblack / timing / port`, `RESULT=` in
 `summary.txt`), inverted wholesale by `--expect-fail`, and its exit code feeds `HARNESS RESULT`.
@@ -92,6 +111,73 @@ through the DLSS path; it was restored to `auto`.  This harness deliberately use
 *only* in the staging dir (OptiScaler reads the ini next to its own dxgi.dll, Config.cpp:45), so
 the game's ini is never read or written by this tool.
 
+## Streamline boot headless (`--sl`) - reproducing the game's SL doom in ~90 s
+
+The in-game black correlates with NVIDIA Streamline failing **before any upscale**: in the archived
+game bootstrap (`bin64/runs/OptiScaler.slayer3-noeval.log-20261030`) the plugin map dies inside
+`slOnPluginStartup` and SL unloads its DLSS context.  `--sl` boots the SAME stack in the harness:
+
+    LoadLibraryA("sl.interposer.dll")  (BEFORE any dxgi/D3D12 activity, the doc-pinned ordering)
+    -> slInit(prefs, sl::kSDKVersion)  [logMessageCallback = ours -> [sl-cb] lines in client.log]
+    -> D3D12CreateDevice -> slSetD3DDevice (IMMEDIATELY after the device, sl_core_api.h doc)
+    -> SLDLSS probes: slIsFeatureSupported / slIsFeatureLoaded / slGetFeatureRequirements (kFeatureDLSS)
+    -> the unchanged Opti DLSS evaluate flow (g1-g4 keep running)
+    -> slShutdown at exit.
+
+Stage: all 11 game `sl.*.dlls` symlinked read-only next to the exe (so `findPlugins` looks in the
+exe dir - archive:309 does the game's `.../bin64`).
+
+**Preferences are mirrored from the archive, field by field** (vendored headers, see below):
+| field | value | archive evidence |
+|---|---|---|
+| sdkVersion | `sl::kSDKVersion` = host SDK **v2.14.1** | `setHostSDKVersion Streamline v2.14.1.98614dad6 ... host SDK v2.14.1` (slayer3:277) |
+| applicationId | **101640911** | `initializePlugins ... - application ID 101640911` (slayer3:454) |
+| featuresToLoad | DLSS(0), Reflex(3), PCL(4), DLSS_G(1000), DLSS_RR(1001) | `Ignoring plugin 'sl.deepdvc'/'sl.directsr'/'sl.nis'/'sl.nvperf' ... not requested` (slayer3:370/377/404/407) vs the six `Loaded plugin` lines (ids 0/3/4/1000/1001 + common `4294967295`) |
+| flags | `eDisableCLStateTracking \| eAllowOTA`, NOT `eLoadDownloadedPlugins` | OTA manifest attempted during slInit (`readServerManifest ... nvngx_config.txt`, slayer3:278) + `eLoadDownloadedPlugins flag not passed to preferences` (slayer3:333) |
+| pathsToPlugins | the exe dir | `findPlugins Looking for plugins in <exe dir>` (slayer3:309) |
+| logLevel/logMessageCallback | eVerbose + ours | our own capture; Opti's `StreamlineHooks` echo appears in OptiScaler.log anyway |
+| engine/engineVersion/projectId | left at defaults (`eCustom`, unset) | the archive's `InProjectId: 0F71CA1E-... / InEngineType: 0 / InEngineVersion: 0.9.4` are **OptiScaler's own** (`OPTI_GUID`, SysUtils.h:33; "0.9.4" = Opti's version), not game preferences - applicationId alone satisfies sl_core_types.h |
+| renderAPI | `eD3D12` | the game's render path (dxgi CreateDXGIFactoryInternal -> d3d12 createKernel) |
+
+**ABI validation (the brief's stop- condition met before shipping)**: the game runs SL
+**v2.14.1** and tag `v2.14.1` exists on NVIDIA-RTX/Streamline (commit `2122257e...`), so
+`sl-include/` holds the nine headers from THAT tag verbatim (url/commit/date/sha in
+`sl-include/VENDORED.txt`, NVIDIA's MIT-style notice preserved inside every file);
+`sl_abi_check.cpp` hand-derives the layouts (BaseStructure 32, Preferences 144 with
+renderAPI@136, AdapterInfo 56, kSDKVersion) and is compiled by `build.sh` with host g++ BEFORE
+the cross-compile, and the same `static_assert`s live in `opti_client.cpp`.
+
+### Today's measured baseline (`run_harness.sh --sl`, 2026-10-31)
+
+g5 **FAIL** = the game's doom reproduced headlessly (exit 1 by design), with g1–g4 still green
+(12/12 evals, non-black, timings) - i.e. the port keeps working while SL refuses to arm DLSS:
+
+    g5 SL boot : FAIL   c1_getSystemCaps_nvapi=ok  c2_no_failed_NGX=bad(x2)  c3_driver=ok
+                         c4_no_missing_ctx=bad(x2)  c5_sl.dlss_loaded=ok
+    SLDLSS slIsFeatureSupported(kFeatureDLSS)  result=32 (eErrorFeatureNotSupported)
+    SLDLSS slIsFeatureLoaded(kFeatureDLSS)      result=31 (eErrorFeatureMissing) loaded=0
+    SLDLSS slGetFeatureRequirements(...)        result=0 (eOk) flags=0x00000007 threads=0
+             viewports=4 tags=4 driverDetected=999.99.0 driverRequired=512.15.0
+             osDetected=10.0.19045 osRequired=10.0.0
+    [sl-cb] ... getSystemCaps] NVIDIA driver 999.99
+    [sl-cb] ... getNGXFeatureRequirements] ngxResult failed 0xbad00002      (x3, like the game)
+    [sl-cb] ... slOnPluginStartup] At least one plugin requires NGX, trying to initialize ...
+    [sl-cb] ... slOnPluginStartup] Failed to initialize NGX, any SL feature requiring NGX will be
+             unloaded and disabled                       <- c2 bad, game line verbatim
+    [sl-cb] ... dlssEntry.cpp:923[slOnPluginStartup] Missing NGX context - DLSSContext cannot run
+                                                                  <- c4 bad, game line verbatim
+
+**Where it differs from the game, and why** (reported, not papered over): the game archive's c1/c3
+come from `NVAPI failed to initialize` + `detected 0.0.0`, while the harness reads
+`NVIDIA driver 999.99` - because in THIS stack OptiScaler's Vulkan spoof answers the driver probe
+(`spoofing/Vulkan_Spoofing.cpp:177/235: strcpy(ddp->driverInfo, "999.99")`; the literal has a
+single producer in the stack), so 999.99 >= 512.15.0 and both checks pass.  The lever stream
+(`SL_NVAPI_VER=<n>` -> `DXVK_NVAPI_DRIVER_VERSION=<n>` in the run env) is a one-line addition as
+shipped; measured with `57602`: **g5 unchanged, driver still 999.99** - the spoof layer sits
+*downstream* of dxvk-nvapi from SL's point of view, so the env var cannot move the number it
+reads.  The two FAILING checks are the decisive doom lines anyway (`Failed to initialize NGX`,
+`Missing NGX context`), and they reproduce verbatim.
+
 ## Freeze stance
 
 - `tools/optiharness/` is a **new directory outside `tools/verify/`**; nothing frozen is edited.
@@ -99,17 +185,24 @@ the game's ini is never read or written by this tool.
   in `build.sh`), and `run_harness.sh`'s Proton probe is *copied* from `run_all.sh:282-301`.
 - All outputs live under git-ignored `build/optiharness/`: the staging dir, `out/` (frames,
   `summary.txt`, `eval_ms.csv`, `client.log`, `run.stdout.log`), probe prefixes and logs.
-- The game folder is read via **symlinks only** (`dxgi.dll`, `nvngx_dlss.dll`, and the shader
-  fallback); `build/package/_nvngx.dll` is only ever `cp`'d - this script never builds the port.
+- The game folder is read via **symlinks only** (`dxgi.dll` or its `dxgi.dll.optiscaler-off`
+  park name, `nvngx_dlss.dll`, the 11 `sl.*.dlls`, and the shader fallback); `build/package/_nvngx.dll`
+  is only ever `cp`'d - this script never builds the port, never starts/stops the game, never
+  touches Steam (the prefix clone exists precisely so a LIVE game session stays untouched).
+- The Streamline headers are vendored *from NVIDIA's own repo* (tag v2.14.1) under
+  `tools/optiharness/sl-include/` with the licence preserved - legitimate to commit, and pinned
+  to the exact release the game reports.
 
 ## Files
 
 | file | what |
 | --- | --- |
-| `opti_client.cpp` | the exe: host sequence `Init → AllocateParameters → CreateFeature → per-frame EvaluateFeature` (the NVSDK export surface verified by `objdump -p` on the shipped dxgi.dll: 53+ NVSDK entries), synthetic/corpus inputs, timing pairs, read-back + black detector |
+| `opti_client.cpp` | the exe: host sequence `Init → AllocateParameters → CreateFeature → per-frame EvaluateFeature` (the NVSDK export surface verified by `objdump -p` on the shipped dxgi.dll: 53+ NVSDK entries), synthetic/corpus inputs, timing pairs, read-back + black detector, the `--sl` Streamline boot + `SLDLSS` probes |
 | `OptiScaler.harness.ini` | the harness-local ini template (each key and every deliberately-unset key documented inline) |
-| `build.sh` | cross-compile to `build/optiharness/opti_client.exe`, FMT16=1 (Output RGBA16F = `DLSS5_AMD_OUT_F16=1` of the package), mirrors `tools/verify/ngx_client/build.sh` incl. the podman fallback |
-| `run_harness.sh` | staging (copy port DLL, symlink OptiScaler + `nvngx_dlss.dll` + shaders, generate ini), Proton 10.0-pinned probe, env, run, gates g1-g4 |
+| `build.sh` | cross-compile to `build/optiharness/opti_client.exe`, FMT16=1 (Output RGBA16F = `DLSS5_AMD_OUT_F16=1` of the package), mirrors `tools/verify/ngx_client/build.sh` incl. the podman fallback; runs `sl_abi_check.cpp` on host g++ first |
+| `run_harness.sh` | staging (port DLL copy, OptiScaler + `nvngx_dlss.dll` + 11 sl.* + shaders as symlinks, ini), prefix-busy detection + clone, Proton 10.0-pinned probe, env incl. `SL_NVAPI_VER`, run, gates g1-g5 |
+| `sl-include/` | the nine NVIDIA Streamline v2.14.1 headers, verbatim from tag v2.14.1 (`VENDORED.txt` = url/commit/date/licence) |
+| `sl_abi_check.cpp` | hand-derived layout assertions, host-compiled by build.sh before every cross-build |
 
 ## Environment the run pins (run_harness.sh, with reasons)
 
@@ -120,6 +213,18 @@ the game's ini is never read or written by this tool.
     STEAM_COMPAT_DATA_PATH=.../compatdata/3321460   # THE GAME PREFIX: nvapi64.dll -> isNvidia()=true
     VK_ICD_FILENAMES/VK_DRIVER_FILES=.../radeon_icd.x86_64.json   # as run_all.sh:91/97 does (RADV only)
     MESA_SHADER_CACHE_DISABLE=true
+    [SL_NVAPI_VER=<n>]                   # --sl only: adds DXVK_NVAPI_DRIVER_VERSION=<n>
+
+**Two live-environment fallbacks, both read-only on the game folder** (measured 2026-10-31):
+1. `STEAM_COMPAT_DATA_PATH` normally is the game prefix, but **another session's GE-Proton11-6
+   wineserver can be holding compatdata/3321460 with CrimsonDesert.exe RUNNING** (measured at
+   00:14 - pid 3046121); a second Proton on a live prefix dies before `main()` with
+   `wine client error: version mismatch 935/856`.  The script detects that wineserver via its
+   `/proc/<pid>/environ`, `cp -a`s the 478 MB prefix to `build/optiharness/prefix_3321460.clone`
+   and runs against the clone - the running game is never touched or even signalled.
+2. the game's `dxgi.dll` may be parked by a parallel diagnostics session as
+   `dxgi.dll.optiscaler-off` (also measured 00:14); the script prefers `dxgi.dll` and falls
+   back to that name (same 25 379 632-byte v0.9.4 proxy).
 
 cwd = staging dir, because the port writes `dlss5-amd-ngx.log` to the CWD (nvngx.cpp:255) and
 OptiScaler writes `OptiScaler.log` next to the exe (Logger.cpp, `Util::ExePath`) - both land
@@ -140,6 +245,7 @@ before they load anything; `PROTON=<path>` skips the probe.
 - **`isNvidia()` gate** (dllmain.cpp:1691): without the game prefix + nvapi, OptiScaler logs
   `Not running on Nvidia, disabling DLSS` and GetFeature falls to FSR 2.1.2 silently - g1 is what
   catches that (its tell-tales: absence of `Creating new dlss upscaler`, port eval count 0).
+  Measured also green on the prefix *clone* (isNvidia `Using dxvk-nvapi / Detected: true`).
 - **OptiScaler exports only the API-specific** `NVSDK_NGX_D3D12_ReleaseFeature` (not the
   unprefixed alias `ngx_client` resolves) - the exe takes D3D12 first, alias second.
 - **PE stdout/stderr do not reach the shell under `proton run`** on this stack (the frozen V9 logs
@@ -153,6 +259,14 @@ before they load anything; `PROTON=<path>` skips the probe.
   the inversion subjects every gate to the same evidence standard as the green run.
 - Proton probe/prefix scratch dirs and re-staging are cheap: the staging dir is rebuilt fresh on
   every invocation, so logs can never leak from a previous run into a gate.
+- **`--sl` emits every SL line twice** when Opti's StreamlineHooks echo is also active - g5 counts
+  presence/absence over both sources (client.log [sl-cb] + OptiScaler.log echo) so the ×2 counts
+  are evidence breadth, not duplicate work; `[sl-cb]`, `SLDLSS`, `SL ...` lines are the harness's
+  own grammar.
+- **The sl.interposer loads BEFORE the exe's explicit dxgi LoadLibrary**, satisfying the doc
+  ordering ("interposer injects dxgi hooks ... before the harness creates its DXGI factory/D3D
+  device"); if the loader pulled Opti's dxgi in at process start (static -ldxgi), its LdrLoadDll
+  hooks already exist - both orders are the ones the game exhibits, and both ran green here.
 
 ## Timing results to expect (RX 9070 XT, Proton 10.0, 2026-10-30)
 

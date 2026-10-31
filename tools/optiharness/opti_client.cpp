@@ -41,6 +41,23 @@
 #include <vector>
 
 #include "ngx_abi.h"
+// Vendored Streamline v2.14.1 (the game's host SDK), quote-included so it resolves next to this
+// source file; sl-include/VENDORED.txt records url/tag/commit/date/licence for all nine files.
+#include "sl-include/sl.h"
+
+// NVIDIA Streamline, vendored from the EXACT release the game boots: its archive says "Streamline
+// v2.14.1.98614dad6 ... host SDK v2.14.1" (runs/OptiScaler.slayer3-noeval.log-20261030:277), and
+// sl-include/ holds tag v2.14.1 verbatim (sl-include/VENDORED.txt = url/commit/date + license
+// notes).  sl_abi_check.cpp proves the layouts by hand; these build-time asserts re-prove them on
+// every compile so a swapped header cannot silently hand slInit a wrong-offset Preferences:
+//   sl_struct.h: BaseStructure{next(8), structType(16), structVersion(8)} = 32
+//   sl_core_types.h: Preferences = base 32 + fields ... RenderAPI @136 -> sizeof 144
+//   sl_version.h: kSDKVersion = (2<<48)|(14<<32)|(1<<16)|0xfedc = host SDK v2.14.1
+static_assert(sizeof(sl::BaseStructure) == 32, "sl_struct.h layout");
+static_assert(sizeof(sl::Preferences) == 144, "slInit parameter block (sl_core_types.h)");
+static_assert(offsetof(sl::Preferences, logMessageCallback) == 80, "the [sl-cb] slot");
+static_assert(sl::kSDKVersion == ((uint64_t(2) << 48) | (uint64_t(14) << 32) | (uint64_t(1) << 16) | 0xfedc),
+              "the game's host SDK 2.14.1");
 
 // M2 of ngx_client's contract: 1 = Output RGBA16F (matches DLSS5_AMD_OUT_F16=1 in the package's
 // _nvngx.dll), 0 = old RGBA32F.  build.sh passes -DFMT16=${FMT16:-1} like ngx_client/build.sh:17.
@@ -153,15 +170,74 @@ struct Opt {
     unsigned w = 1920, h = 1080, ow = 3840, oh = 2160;
     std::string mv_fmt = "rg32", dep_fmt = "d32s8";
     bool expect_fail = false;
+    bool sl = false;                   // --sl: boot the game's Streamline stack before the Opti flow
 };
 
 static int usage() {
     sayerr(
         "[opti_client] usage: opti_client.exe [--opti | --direct] [--nvngx NAME] [--frames N]\n"
         "    [--out DIR] [--csv FILE] [--w W] [--h H] [--ow W] [--oh H]\n"
-        "    [--mv-fmt rg32|rg16] [--dep-fmt d32s8|r32f] [--corpus DIR] [--expect-fail]");
+        "    [--mv-fmt rg32|rg16] [--dep-fmt d32s8|r32f] [--corpus DIR] [--expect-fail] [--sl]");
     return 1;
 }
+
+// ------------------------------------------------------------------------------------------------
+// Streamline boot surface (only under --sl): the game's sl.interposer.dll + the 10 sl.* plugins,
+// booted headless so the exact in-game SL log lines are reproducible in ~90 s runs.
+// ------------------------------------------------------------------------------------------------
+// The logMessageCallback SL calls back into us with (sl_core_types.h: "using
+// PFun_LogMessageCallback = void(LogType type, const char* msg)"): every game-identical
+// [streamline] line lands here as [sl-cb], even when OptiScaler's own StreamlineHooks echo is
+// absent - whichever registers first is fine (brief), this one is ours and unconditional.
+static void sl_log_cb(sl::LogType type, const char* msg) {
+    const char* tn = type == sl::LogType::eWarn ? "warn" : type == sl::LogType::eError ? "error" : "info";
+    say("[sl-cb][%s] %s", tn, msg ? msg : "");
+}
+
+static const char* sl_res_name(sl::Result r) {
+    switch (r) {
+        case sl::Result::eOk: return "eOk";
+        case sl::Result::eErrorDriverOutOfDate: return "eErrorDriverOutOfDate";
+        case sl::Result::eErrorNoPlugins: return "eErrorNoPlugins";
+        case sl::Result::eErrorNVAPI: return "eErrorNVAPI";
+        case sl::Result::eErrorNGXFailed: return "eErrorNGXFailed";
+        case sl::Result::eErrorNotInitialized: return "eErrorNotInitialized";
+        case sl::Result::eErrorFeatureNotSupported: return "eErrorFeatureNotSupported";
+        case sl::Result::eErrorFeatureMissing: return "eErrorFeatureMissing";
+        case sl::Result::eErrorFeatureFailedToLoad: return "eErrorFeatureFailedToLoad";
+        case sl::Result::eErrorInvalidState: return "eErrorInvalidState";
+        default: return "?";
+    }
+}
+
+// Feature IDs the game asked for, mirrored from the archive what-Was-NOT-requested lines: its
+// `Ignoring plugin 'sl.deepdvc'/'sl.directsr'/'sl.nis'/'sl.nvperf' since it was not requested`
+// (slayer3 lines 370/377/404/407) + the Loaded lines (sl.dlss id0, sl.reflex id3, sl.pcl id4,
+// sl.dlss_g id1000, sl.dlss_d-id1001=kFeatureDLSS_RR; sl.common id 4294967295 = kFeatureCommon
+// is always loaded and never requested).
+static constexpr sl::Feature kGameFeatures[] = {
+    sl::kFeatureDLSS, sl::kFeatureReflex, sl::kFeaturePCL, sl::kFeatureDLSS_G, sl::kFeatureDLSS_RR};
+
+// sl::Preferences holds raw pointers into THESE process-lifetime buffers (SL keeps a copy of the
+// struct, not necessarily of everything it points at - keep both alive to slShutdown).
+static std::wstring g_sl_plugin_dir;
+static const wchar_t* g_sl_path_ptrs[1] = {nullptr};
+
+// Resolved sl.interposer.dll exports (export table verified with objdump -p on the game's
+// sl.interposer.dll: slInit/slShutdown/slSetD3DDevice/slGetFeatureRequirements/
+// slIsFeatureSupported/slIsFeatureLoaded all present, ordinal-named).
+struct SlApi {
+    HMODULE mod = nullptr;
+    sl::Result (*init)(const sl::Preferences&, const uint64_t) = nullptr;
+    sl::Result (*shutdown)() = nullptr;
+    sl::Result (*setDevice)(void*) = nullptr;
+    sl::Result (*getReqs)(sl::Feature, sl::FeatureRequirements&) = nullptr;
+    sl::Result (*isSupported)(sl::Feature, const sl::AdapterInfo&) = nullptr;
+    sl::Result (*isLoaded)(sl::Feature, bool&) = nullptr;
+    bool ok() const { return mod && init && shutdown && setDevice && getReqs && isSupported && isLoaded; }
+};
+
+static std::wstring widen(const std::string& s) { return std::wstring(s.begin(), s.end()); }   // Wine Z:\ paths are ASCII
 
 // ------------------------------------------------------------------------------------------------
 // tiny JSON number reader for the corpus mode (frame.json / params_<i>.json of the V9 contract,
@@ -340,6 +416,7 @@ int main(int argc, char** argv) {
         else if (a == "--dep-fmt") o.dep_fmt = next();
         else if (a == "--corpus") o.corpus = next();
         else if (a == "--expect-fail") o.expect_fail = true;
+        else if (a == "--sl") o.sl = true;
         else { usage(); return 1; }   // an unknown arg exits 1: Proton probes rely on exactly that
     }
     if (o.frames < 1 || o.frames > 256) FAIL("--frames 1..256");
@@ -351,6 +428,28 @@ int main(int argc, char** argv) {
     // ("wb": binary, so the CRT's text mode cannot turn \n into \r\n and break the parsers).
     CreateDirectoryA(o.odir.c_str(), nullptr);
     g_msg = std::fopen((o.odir + "/client.log").c_str(), "wb");
+
+    // ---- Streamline: interposer FIRST (before our dxgi/D3D12 activity, the ordering the brief
+    // pins: the game loads it at startup and it injects dxgi hooks; Opti's staged dxgi.dll has
+    // already installed its LdrLoadDll hooks from process start if the loader pulled it in).
+    SlApi slapi;
+    if (o.sl) {
+        slapi.mod = LoadLibraryA("sl.interposer.dll");
+        if (!slapi.mod) FAIL("cannot LoadLibrary sl.interposer.dll (run_harness.sh stages it next to the exe)");
+        struct { const char* n; void** p; } want[] = {
+            {"slInit", reinterpret_cast<void**>(&slapi.init)},
+            {"slShutdown", reinterpret_cast<void**>(&slapi.shutdown)},
+            {"slSetD3DDevice", reinterpret_cast<void**>(&slapi.setDevice)},
+            {"slGetFeatureRequirements", reinterpret_cast<void**>(&slapi.getReqs)},
+            {"slIsFeatureSupported", reinterpret_cast<void**>(&slapi.isSupported)},
+            {"slIsFeatureLoaded", reinterpret_cast<void**>(&slapi.isLoaded)},
+        };
+        for (auto& w : want) {
+            *w.p = reinterpret_cast<void*>(GetProcAddress(slapi.mod, w.n));
+            if (!*w.p) FAIL("sl.interposer.dll lacks export %s", w.n);
+        }
+        say("[opti_client] sl.interposer loaded at %p, 6 exports resolved", (void*)slapi.mod);
+    }
 
     if (!o.corpus.empty()) {
         // Corpus mode: formats fixed to the V9 defaults (col RGBA16F, mv RG16F, dep R32F) to match
@@ -425,9 +524,73 @@ int main(int argc, char** argv) {
                 GetProcAddress(ngx, "NVSDK_NGX_D3D12_GetCapabilityParameters") != nullptr,
                 f.Shutdown1 != nullptr);
 
+    // ---- Streamline slInit (game-mirrored preferences; every field cites its archive evidence) --
+    if (o.sl) {
+        // pathsToPlugins[0] = this exe's directory: the archive's findPlugins line reads
+        // "Looking for plugins in .../bin64" (slayer3:309) = the GAME's exe dir, analogously ours.
+        g_sl_plugin_dir = widen(exe_dir);
+        g_sl_path_ptrs[0] = g_sl_plugin_dir.c_str();
+        sl::Preferences pref{};   // SL_STRUCT ctor + field defaults from the vendored v2.14.1 header
+        pref.showConsole = false;
+        pref.logLevel = sl::LogLevel::eVerbose;   // most [sl-cb] evidence; log-only effect
+        pref.pathsToPlugins = g_sl_path_ptrs;
+        pref.numPathsToPlugins = 1;
+        pref.pathToLogsAndData = nullptr;         // no SL file log (header: nullptr disables it); the
+                                                  // callback below captures every line instead
+        pref.logMessageCallback = sl_log_cb;
+        // flags mirror the archive: the OTA manifest WAS requested - "readServerManifest Failed to
+        // open manifest ..." during slInit (slayer3:278) requires eAllowOTA - while the warn
+        // "eLoadDownloadedPlugins flag not passed to preferences" (slayer3:333) pins the MISSING
+        // bit, i.e. exactly eDisableCLStateTracking | eAllowOTA (both defined sl_core_types.h).
+        pref.flags = sl::PreferenceFlags::eDisableCLStateTracking | sl::PreferenceFlags::eAllowOTA;
+        pref.featuresToLoad = kGameFeatures;
+        pref.numFeaturesToLoad = uint32_t(sizeof(kGameFeatures) / sizeof(kGameFeatures[0]));
+        // "initializePlugins ... application ID 101640911" (slayer3:454) - the only preference the
+        // SL log echoes; with applicationId set, sl_core_types.h says engine/engineVersion/projectId
+        // are NOT required (they stay at defaults; see README: the archive's InProjectId GUID is
+        // OptiScaler's own OPTI_GUID, SysUtils.h:33, not a game preference).
+        pref.applicationId = 101640911u;
+        pref.engine = sl::EngineType::eCustom;    // preserved default (sl_appidentity.h: eCustom=0)
+        pref.renderAPI = sl::RenderAPI::eD3D12;
+        const sl::Result r = slapi.init(pref, sl::kSDKVersion);
+        say("SL slInit result=%d (%s) sdk=0x%llx (v2.14.1) appid=%u feats=%u paths=%u\n",
+            int(r), sl_res_name(r), (unsigned long long)sl::kSDKVersion, pref.applicationId,
+            pref.numFeaturesToLoad, pref.numPathsToPlugins);
+    }
+
     // ---- D3D12 device/queue/fence (idiom: ngx_client/main.cpp:234-252) --------------------------
     ID3D12Device* dev = nullptr;
     HR(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&dev)));
+    // slSetD3DDevice IMMEDIATELY after the main device ("should be called IMMEDIATELY after main
+    // device is created", sl_core_api.h slSetD3DDevice doc), then the two probes that predicted
+    // the game's doom, printed as SLDLSS lines for gate g5 / human eyes.
+    if (o.sl) {
+        const sl::Result sr = slapi.setDevice(dev);
+        say("SL slSetD3DDevice result=%d (%s)\n", int(sr), sl_res_name(sr));
+        // AdapterInfo with no LUID on purpose: ID3D12Device exposes no adapter LUID without a
+        // DXGI factory, and the sl_core_api.h doc for slIsFeatureSupported says adapter info is
+        // OPTIONAL - with fields empty SL answers the OS/driver-level question, which is exactly
+        // where the game's "requires driver 512.15.0 or newer - detected 0.0.0" gate lives.
+        sl::AdapterInfo ai{};
+        const sl::Result sup = slapi.isSupported(sl::kFeatureDLSS, ai);
+        say("SLDLSS slIsFeatureSupported(kFeatureDLSS) result=%d (%s) adapter=@(default)\n",
+            int(sup), sl_res_name(sup));
+        bool loaded = false;
+        const sl::Result lr = slapi.isLoaded(sl::kFeatureDLSS, loaded);
+        say("SLDLSS slIsFeatureLoaded(kFeatureDLSS) result=%d (%s) loaded=%d\n",
+            int(lr), sl_res_name(lr), loaded ? 1 : 0);
+        sl::FeatureRequirements fr{};
+        const sl::Result rr = slapi.getReqs(sl::kFeatureDLSS, fr);
+        say("SLDLSS slGetFeatureRequirements(kFeatureDLSS) result=%d (%s) flags=0x%08x threads=%u "
+            "viewports=%u tags=%u driverDetected=%u.%u.%u driverRequired=%u.%u.%u "
+            "osDetected=%u.%u.%u osRequired=%u.%u.%u\n",
+            int(rr), sl_res_name(rr), unsigned(fr.flags), fr.maxNumCPUThreads, fr.maxNumViewports,
+            fr.numRequiredTags, fr.driverVersionDetected.major, fr.driverVersionDetected.minor,
+            fr.driverVersionDetected.build, fr.driverVersionRequired.major,
+            fr.driverVersionRequired.minor, fr.driverVersionRequired.build,
+            fr.osVersionDetected.major, fr.osVersionDetected.minor, fr.osVersionDetected.build,
+            fr.osVersionRequired.major, fr.osVersionRequired.minor, fr.osVersionRequired.build);
+    }
     D3D12_COMMAND_QUEUE_DESC qd{}; qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     ID3D12CommandQueue* q = nullptr; HR(dev->CreateCommandQueue(&qd, IID_PPV_ARGS(&q)));
     ID3D12CommandAllocator* ca = nullptr; HR(dev->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&ca)));
@@ -767,6 +930,10 @@ int main(int argc, char** argv) {
     if (h && f.Release) f.Release(h);
     if (f.Destroy) f.Destroy(p);
     if (f.Shutdown1) f.Shutdown1(dev);
+    if (o.sl) {
+        const sl::Result r = slapi.shutdown();
+        say("SL slShutdown result=%d (%s)\n", int(r), sl_res_name(r));
+    }
 
     // ---- summary ---------------------------------------------------------------------------
     std::vector<double> ev, gp, nzv;

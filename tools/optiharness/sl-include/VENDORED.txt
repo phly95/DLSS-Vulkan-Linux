@@ -1,0 +1,20 @@
+Vendored NVIDIA Streamline SDK include headers (tools/optiharness/sl-include/)
+================================================================================
+Source:      https://github.com/NVIDIA-RTX/Streamline  (tag v2.14.1)
+Commit:      2122257e0fce486f91b385aa63b9a09b0a34b363
+Fetched:     2026-10-30, curl of raw.githubusercontent.com/.../v2.14.1/include/<file>
+Files:       sl.h sl_struct.h sl_consts.h sl_version.h sl_result.h sl_appidentity.h
+             sl_device_wrappers.h sl_core_api.h sl_core_types.h
+
+Why this exact tag: the game's Streamline bootstrap reports
+    "Streamline v2.14.1.98614dad6 ... host SDK v2.14.1"
+(an archive line: runs/OptiScaler.slayer3-noeval.log-20261030:277), so the ABI-
+sensitive sl::Preferences / sl::FeatureRequirements layouts must come from the
+SAME release the game runs, not from a hand-written guess.  sl_abi_check.cpp
+verifies the layouts this harness depends on at compile time; opti_client.cpp
+carries the same static_asserts.
+
+License: each file carries NVIDIA's MIT-style permission notice inline (2022-2024
+NVIDIA CORPORATION); the notices are preserved verbatim above the includer's code.
+These files are unmodified copies - sha1sums can be re-checked against
+raw.githubusercontent.com/NVIDIA-RTX/Streamline/v2.14.1/include/.
