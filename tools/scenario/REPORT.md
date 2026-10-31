@@ -439,7 +439,9 @@ work, not D1's.
 ## D1 FINAL RESULTS DIGEST — the 33-cell deliverable table (compiled 09:4x, read-only from `runs/`)
 
 Median-of-run-medians over the **current-era reps** listed (frame 0 excluded; EVAL/GPU p95 are the
-median of per-run p95s). Per-run evidence for every row: `tools/scenario/runs/<cell>/rep<k>/` =
+median of per-run p95s). *(E01/E02/E03 rows are **superseded** by the post-R1/L-C re-gate in
+`## P-RECTOR` below — those three cells are now PASS; their wave-1..4 FAIL rows are kept as
+provenance.)* Per-run evidence for every row: `tools/scenario/runs/<cell>/rep<k>/` =
 `client.log` (OUT_NZ + EVAL_MS/GPU_EVAL_MS), `eval_ms.csv`, `summary.txt`, `OptiScaler.log`,
 `dlss5-amd-ngx.log` (port cells), `g5_evidence.txt` (`--sl` cells), `harness_invoke.log` (g1-g5),
 `stage_manifest.txt` + `stage_listing.txt` (sizes/inventory). Verdicts are `gate_cell.sh`'s own
@@ -642,6 +644,84 @@ for our title; the obtainable artifacts are public nightly zips (table above), a
 first experiment would be one harness-only `--ini`-compatible smoke on `nightly-20261031` gated by
 the same G-IDENT/G-PORT suite, not a game-side swap.
 
+## P-RECTOR — post-R1 + L-C re-gate of E01/E02/E03 (executed 10:54:02–10:59:24, slot released by top-level)
+
+Slot preconditions: R1 landed (`1fd8c6c`, port PE version resource; staged `_nvngx.dll` rebuilt
+09:57:37, 873 366 B), L-C first-class + g5 header fix landed (`a349cfb`), `pgrep` clean before each
+cell, executor stood by for this wave. Turnkey plan executed as written at `ce0e0cb`.
+
+### Verdicts — **all three cells PASS; `G-RR-ASSURE` flipped FAIL → PASS**
+
+| cell / rep | backend | `G-RR-ASSURE` evidence (gate line) | EVAL med / p95 ms | GPU med / p95 ms | cell verdict | harness header |
+|---|---|---|---|---|---|---|
+| **E01/rep2** | dlss + `--sl` | `caps=10 init-ngx=0 drv0=0 ctx=0 plugin_sl.dlss=x2 plugin_sl.dlss_d=x2 dropped=0` | **4.4290 / 8.3448** (n=59) | **10.5915 / 12.9216** | **PASS** (7/7) | `HARNESS RESULT: PASS … g5=PASS` (`c1..c5 = ok`) |
+| **E02/rep3** | dlssd + `--sl` (RR) | same six-way PASS | **7.0051 / 9.5282** | **24.4524 / 24.6942** | **PASS** (all gates incl. `G-PORT-RR … all n=7`) | `HARNESS RESULT: PASS … g5=PASS` |
+| **E03/rep2** | xess + `--sl` | same six-way PASS | **0.1833 / 0.2137** | **4.0977 / 4.5688** | **PASS** (scenario gates) | `g5 SL boot : PASS …` but `HARNESS RESULT: FAIL` — **known type-axis divergence, see below** |
+| E03/rep3 | xess + `--sl` (confirmation run) | same six-way PASS | 0.1826 (n=60 incl. f0) | — | PASS | `g5=PASS`, same `HARNESS RESULT: FAIL` |
+
+**D1 is now 33/33 PASS** — the three cells that carried the only FAIL verdicts in the matrix have
+flipped; the earlier FAIL rows stay as provenance (digest table above now points here).
+
+### §4 acceptance greps (`h1prime-report.md` §4), against the copied rep dirs
+
+All three cells, every negative check **0 occurrences**: `Failed to initialize NGX`,
+`Missing NGX context`, `0xbad00002`, `Ignoring plugin 'sl.dlss_d'`,
+`not supported on this platform`, `context is missing`.
+Presences (each cell): 
+
+```
+g5 SL boot : PASS  c1_getSystemCaps_nvapi=ok c2_no_failed_NGX=ok c3_driver=ok c4_no_missing_ctx=ok c5_sl.dlss_loaded=ok
+pluginManager.cpp:907[mapPlugins] Loaded plugin 'sl.dlss_d' ... id 1001 - priority 100 - adapter mask 0x1   <- mask was 0x0 pre-fix
+pluginManager.cpp:1193[loadPlugins] P100 - sl.dlss_d                                                        <- in the execution order
+commonEntry.cpp:1694[slOnPluginStartup] NGX loaded - app id 101640911 - application data path Z:\...\harness\
+```
+- `Loaded NGXCore from path (%ls)`: **absent** in all three — §4 lists it as "if routed", so it is
+  recorded, not treated as a miss.
+- **loaddll sanity is not available from my runner** (run_cell does not set `WINEDEBUG=+loaddll`);
+  that half of §4 stays with the executor's L-runs, as the plan already stated.
+- `nvngx.dll` (the L-C file) is in the stage for E01/E02 (manifest `58956912` = byte-copy of the
+  signed `nvngx_dlss.dll`), and in E03/rep3 — see the rep2 anomaly below.
+
+### Watch item: is the SL path's `EVAL med 56.9 ms` (L-C, 12 frames) real? — **No.**
+
+60-frame methodology runs say the SL path adds **no measurable per-frame cost**:
+
+| cell | with `--sl` (this wave) | without SL (same res, same gates) | Δ | floor (2×sentinel) | verdict |
+|---|---|---|---|---|---|
+| E01 vs A03 | EVAL 4.4290 / GPU 10.5915 | EVAL 4.4595 / GPU 10.6140 | −0.0305 / −0.0225 | 0.165 / 0.130 | **below floor → no effect** |
+| E02 vs B03 | EVAL 7.0051 / GPU 24.4524 | EVAL 7.0358 / GPU 24.7600 | −0.0307 / −0.3076 | 0.198 / 0.496 | **below floor → no effect** |
+| E03 vs C01 | EVAL 0.1833 / GPU 4.0977 | EVAL 0.1832 / GPU 3.8677 | +0.0001 / +0.2300 | 0.007 / 0.908 | **below floor → no effect** |
+
+And the 56.9 ms figure does not exist anywhere in the 60-sample window: E01/rep2's **max single
+frame = 8.8762 ms**, frame 0 = 9.2078 ms, and the *first 11 samples* (the closest I can come to a
+12-frame view of my own data, frame 0 excluded) have median **4.4024 ms**. Reported as measured, no
+smoothing: **L-C's 56.9 ms did not reproduce at 60 frames — short-run/init noise** (its 12-frame
+window cannot be reconstructed from here; if needed, the executor's L-C log can be re-cut the same
+way).
+
+### Anomaly + fix (recorded, not smoothed)
+
+E03/**rep2**'s post-run `stage_listing.txt` lacked `nvngx.dll`, while its own
+`OptiScaler.log:1 [10:55:05] Config::CheckUpscalerFiles nvngx.dll found in game folder` proves the
+file existed **during** the run — and rep3, identical command, staged it normally
+(`stage_listing.txt:14`). Diagnosis: the copy-out raced something re-staging the shared
+`$STAGE` after our process returned (single-runner discipline covers concurrent *runs*, not this
+sub-second window). `run_cell.sh` now prints a WARN when an `--sl` run's listing lacks
+`nvngx.dll`, pointing at the Opti log line for runtime truth, so a future reader cannot mistake a
+race for a missing precondition. Rep2's own numbers are unaffected (its g5/§4 evidence and rep3
+agree).
+
+### Two notes for the harness owner (informational, not needs)
+
+1. `HARNESS RESULT: FAIL` on **E03** is `g1 create=0` (its literal is `Creating new dlss upscaler`,
+   xess logs `Creating new xess upscaler`), `g2 ok=0/60` (no port log by design for Opti-internal
+   backends) and `g3 viol=4/60` (the 4-frame warmup) — the divergence D1-GATES "Harness mapping"
+   already documents as expected; **`g5=PASS` inside that header is the fix top-level asked about,
+   and it did land**. If the harness ever wants a green exit for non-dlss cells, g1/g3 need the
+   same backend/warmup generalization my scenario gates have (g2 cannot apply without a port log).
+2. The g5 header assignment fix (`a349cfb`) behaves exactly as specified on all three cells
+   (`g5 SL boot : PASS`, `c1..c5 = ok`, folded into the exit verdict).
+
 ### Environment side-effect to flag (executor/D3 relevant)
 
 Every wave-1 run used the game prefix un-cloned (game not running ⇒ `game prefix free`), and Proton
@@ -715,3 +795,17 @@ Consequences recorded against the levelling list above:
 | P-R2a | 10:01 EDT | prefix `drive_c/windows/system32/nvngx.dll` (NEW file, `find` showed none existed) | REJECTED (never loaded); **removed** in revert |
 | P-R2b | 10:04-10:06 EDT | registry: `Services\nvlddmkm\{NGXCore,Parameters\NGXCore}\NGXPath`, `SOFTWARE\...\NGXCore\{FullPath,NGXPath}` | REJECTED for c2/c4 + flipped `isNvidia` true→false (regression: g2/g3 red) ⇒ **fully reverted** (keys/values deleted, snapshot `/tmp/opencode/system.reg.preR2revert`); L20 confirmation run: g1-g4 PASS + `Running on Nvidia` restored |
 | WARN | - | never create keys under `Services\nvlddmkm` (breaks Opti/dxvk NVIDIA detection, `Advapi32_Hooks.h:26`); `SOFTWARE\...\NGXCore\FullPath` is Opti-owned | - |
+
+### N1+N2+L-C cycle (2026-10-31 10:40 EDT) - **c2/c4 FLIPPED + sl.dlss_d LOADED** (detail: /tmp/opencode/h1prime-report.md §7)
+| cell | staged harness/nvngx.dll | g5 c2/c4 | decisive evidence |
+|---|---|---|---|
+| LA1 | our port (unsigned, R1 version resource) | bad/bad | Wintrust.dll+crypt32.dll loaded in 012c (first ever), file opened x2 by verifier, module NEVER loaded |
+| N2 | absent (+WINEDEBUG=+reg) | bad/bad | SL consults exactly `nvlddmkm\Parameters\NGXCore` -> `nvlddmkm\NGXCore` -> `SOFTWARE\...\NGXCore\FullPath` in retry cycles + app-local stat |
+| N2b | system32 copy, registry untouched | bad/bad | zero opens of the file (dir-valued registry result rejected pre-open) |
+| **L-C** | **genuine SIGNED nvngx_dlss.dll (58,956,912 B)** | **ok/ok** | `Loaded plugin 'sl.dlss_d' id 1001` + `loadPlugins] P100 - sl.dlss_d`; `Failed to initialize NGX`=0, `Missing NGX context`=0, `ngxResult failed`=0 (was 3); g1-g4 PASS 12/12 nz=1.0; g5 header prints `n/a` despite all five sub-gates ok (harness-quirk flagged, file untouched) |
+| N1 | disassembly (slcommon.asm) | - | pre-load gate `0x18008d0d0`->`0x18008ce00` resolves WinVerifyTrust+3 WTHelper (wintrust) + 9 cert fns (crypt32); contract `0x18008d374 mov %edi,%eax` (0=fail+SetLastError(esi), 1=pass); LoadLibraryExW `0x18008cd86` only on pass |
+
+**WINNER = file-level: staged `nvngx.dll` = byte-copy of genuine signed `nvngx_dlss.dll`.** Game-dir plan
+(`bin64/nvngx.dll` <- copy of `bin64/nvngx_dlss.dll`, NEW file + provenance row) now UNBLOCKED per the
+"flip happens in harness first" condition - **awaiting top-level approval before touching bin64**.
+Registry chain reverted (L20 baseline proven); `Services\nvlddmkm` writes forbidden; port R1 `.rc` kept (commit 1fd8c6c).

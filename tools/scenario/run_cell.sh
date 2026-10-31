@@ -125,6 +125,14 @@ for k in $(seq "$START" $((START + REPS - 1))); do
     # stage inventory: records WHICH upscaler companion libs were present (missing libxess.dll /
     # amd_fidelityfx_*.dll is exactly what makes Opti swap backends - need N5).
     ( cd "$STAGE" 2>/dev/null && ls -1 2>/dev/null ) > "$OUT/stage_listing.txt"
+    # Listing sanity for --sl cells: nvngx.dll is the L-C winner file (run_harness stages it only
+    # under --sl). Measured anomaly 10:55 (E03 rep2): the entry was absent from the listing while
+    # OptiScaler.log proves the file existed during the run ("nvngx.dll found in game folder") -
+    # i.e. the copy-out raced something re-staging the shared $STAGE after our process exited.
+    # Flag instead of letting a later reader mistake a race for a missing precondition.
+    if [[ $SL == yes ]] && ! grep -qx 'nvngx.dll' "$OUT/stage_listing.txt"; then
+        echo "   WARN: --sl run but nvngx.dll absent from post-run stage_listing (copy-out race?); check OptiScaler.log 'nvngx.dll found in game folder' for runtime truth" | tee -a "$OUT/stage_listing.txt"
+    fi
     # stage manifest: file names + byte sizes (G-PORT-RR reads nvngx_dlssd.dll from it)
     # NOTE -l (DEREFERENCE) is mandatory here, not cosmetic: every model/sl DLL in the stage is a
     # symlink into the game dir, and plain `stat -c %s` reports the LINK length (~82 B) - so
