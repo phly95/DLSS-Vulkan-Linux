@@ -40,6 +40,11 @@ struct FrameParams {
     int normals_unorm = 0;  // RR: UNORM normals (xyz = 2v - 1)
     int mvhi = 0;      // motion vectors are at output resolution
     int ldr = 0;       // LDR input
+    // D5 (H3 triage, 2026-10-31): "MV.Scale" as the app sets it.  The chain does not consume it
+    // yet (CLI-runner parity: the runner never applies MV.Scale either), but the port now READS
+    // and logs it at 1 Hz so the live in-game value is on record while the H3 sibling gap is
+    // triaged; default 1.0 = the identity the un-applied case implies.
+    float mv_scale = 1.0f;
     float exposure = 1.0f;
     float pre_exposure = 1.0f;
     int reset = 0;     // drop the temporal history

@@ -490,6 +490,18 @@ static bool read_frame_params(NVSDK_NGX_Parameter* p, const FeatureState* s, ngx
     if (ngx_ok(p->vtbl->GetFloat(p, "DLSS.Pre.Exposure", &f))) fp.pre_exposure = f;
     f = 1.0f;
     if (ngx_ok(p->vtbl->GetFloat(p, "DLSS.Exposure.Scale", &f))) fp.exposure = f;
+    f = 1.0f;
+    if (ngx_ok(p->vtbl->GetFloat(p, "MV.Scale", &f))) fp.mv_scale = f;
+    // D5 (H2/H3 triage, 2026-10-31, 1 Hz): jitter pair + MV.Scale + reset/exposure on the record.
+    // H2 asks whether the app ever delivers jitter (SL's "cameraPinholeOffset invalid" would leave
+    // jx/jy at 0 forever); H3 asks what MV.Scale actually is (read-but-unconsumed, see pipeline.h).
+    static unsigned long long d5_last_ms = 0;
+    const unsigned long long d5_now = ngx_ms();
+    if (d5_now - d5_last_ms >= 1000u) {
+        d5_last_ms = d5_now;
+        ngx_log("d5 diag: jx=%.6f jy=%.6f prev=(%.6f,%.6f) mv_scale=%.4f reset=%d pre_exp=%.4f [diag-d5]",
+                fp.jx, fp.jy, fp.jpx, fp.jpy, fp.mv_scale, fp.reset, fp.pre_exposure);
+    }
     // The chain works on whole frames.  A subrect that is not the whole render target would need the
     // gather to read a window of the image, which the port does not have; refuse instead of guessing.
     int sw = int(s->rw), sh = int(s->rh);
@@ -1315,6 +1327,17 @@ __declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_D3D12_Shutdown(void) 
 __declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_D3D12_AllocateParameters(NVSDK_NGX_Parameter** out) {
     if (!out) return NVSDK_NGX_Result_Fail;
     auto* p = new ParametersImpl();
+    // D5/S-route (rr-pixel-diagnosis A1 + A4(i), 2026-10-31): sl.dlss_d's startup queries
+    // params->Get("SuperSamplingDenoising.Available") (dlss_dEntry.cpp:1235-1247); an ABSENT key
+    // returns the bare NVSDK_NGX_Result_Fail (0xBAD00000) and the plugin dies ("DLSSDContext
+    // cannot run" - the in-game RR-black chain).  Every parameter object the port hands out is a
+    // capability surface, so prime the key at creation: all three entry points below forward here
+    // (AllocateParameters / GetParameters / GetCapabilityParameters).  Truthful value 1: RR
+    // (preset F) runs on this port.  (OptiScaler's own writer covers only the non-NVIDIA branch
+    // and writes 0 there - the *other* failure, "DLSSDContext is not available".)
+    p->set_uint("SuperSamplingDenoising.Available", 1u);
+    p->set_uint("SuperSamplingDenoising.FeatureInitResult", 1u);
+    p->set_uint("NeedsUpdatedDriver", 0u);
     *out = p->as_param();
     return NVSDK_NGX_Result_Success;
 }
