@@ -580,6 +580,68 @@ but not wrongness. Recommended scope line for the final report: *"D1 establishes
 correct-input wiring, and ms costs; RR output fidelity is pending an out-of-tree referee against the
 same synthetic inputs, and is explicitly not claimed."*
 
+## D1/D2 REFERENCE PACKAGE — OptiScaler newer-than-v0.9.4: channels, per-area diff, upgrade verdict
+
+*(analysis only, no runs; compiled 10:0x from GitHub APIs + `git diff v0.9.4..FETCH_HEAD` in
+`/tmp/opencode/OptiScaler`, which is a full clone of `optiscaler/OptiScaler`. Our checkout = tag
+**v0.9.4**, `7534ad0`, released 2026-07-18 — measured by the releases API, `published_at
+2026-07-18T21:46:07Z`.)*
+
+### Where newer builds live (how to obtain, all verified this session)
+
+| channel | contents | obtain |
+|---|---|---|
+| **`optiscaler/OptiScaler-nightly`** (org repo, pushed 2026-10-31T10:17Z) | **85 releases `nightly-YYYYMMDD`**, oldest `nightly-20260807`, newest `nightly-20261031` (2026-10-31T10:17:07Z), each with one public asset, latest `OptiScaler_v10.0.0-pre1_20261031.7z` | **public, no auth**: `https://github.com/optiscaler/OptiScaler-nightly/releases/download/nightly-20261031/OptiScaler_v10.0.0-pre1_20261031.7z` (asset names: v10.0.0-pre1 for recent, v0.9.5-pre*/v0.10.0-pre1 in Aug) |
+| **Actions artifacts on `optiscaler/OptiScaler`** | 17 artifacts, newest `OptiScaler_v10.0.0-pre1_20260925.7z` (2026-09-25, 55 732 614 B), older `v0.9.5-pre1..pre4` (Aug-Sep), all `expired=False` | **auth required**: `GET .../actions/artifacts/<id>/zip` with `Accept: application/octet-stream` returned **401** unauthenticated (measured) ⇒ GitHub token or Actions UI |
+| **source (the diff basis)** | `git fetch origin master` → `FETCH_HEAD = 6a7b0336` (2026-10-30) = **4712 commits** since v0.9.4 | already fetched into `/tmp/opencode/OptiScaler`; `git diff v0.9.4..FETCH_HEAD -- <paths>` |
+| releases API | newest official = **v0.9.4** (then v0.9.3, v0.9.2…); also prereleases `nightly` and `0.7-old_nightly` | confirms "no official >0.9.4" |
+
+**"0.9.5.4" (WrongGPU's tested build) matches no tag or asset name** in either repo (checked all 85
+nightly releases + 10 releases + 17 artifacts). Nearest candidate: Actions
+`OptiScaler_v0.9.5-pre4_20260905.7z` — pre4 ↔ internal `.4` is a **hypothesis, not established**.
+WrongGPU itself (`/tmp/opencode/wronggpu/RELEASE-NOTES.md:37`) only says "all through OptiScaler
+0.9.5.4"; it ships no OptiScaler bits ("OptiScaler is supplied separately", `:52`).
+
+### Per-area diff, the five surfaces we fight
+
+| area | v0.9.4 (ours) | master (FETCH_HEAD) | verdict |
+|---|---|---|---|
+| **(i) nvngx.dll / NGXCore provisioning** | `NVNGX_Proxy.h:446 dllNames={_nvngx.dll,nvngx.dll}`; `LibraryLoad_Hooks.cpp:65-68` "nvngx call: … returning this dll!"; `Kernel_Hooks.cpp:191-226` GetFileAttributesW/CreateFileW override so a missing `nvngx.dll` resolves to a *signed* dll; `Crypt32_Hooks.h` / `Wintrust_Hooks.h` signature bypass (1 / 16 refs); `Util.cpp` reads `Services\nvlddmkm\NGXCore\NGXPath` (7 refs) | `NVNGX_Proxy.h:599` same vector; `LibraryLoad_Hooks.cpp:72-75` same "returning this dll!"; `Kernel_Hooks.cpp:250-287` same overrides (now `State::Instance().nvngxReplacement` instead of a file-static); **counts identical** (dllNames 7/7, NGXCore 7/7, Wintrust 16/16); **new**: `Streamline_Hooks.cpp:246-251` compares PE **file versions** of `sl.*.dll` (local vs game, picks the newer into `pathsToPlugins`) | **no new core shipped/forwarded.** Upstream never grew an `nvngx.dll` provider — the machinery is v0.9.4-shaped. The only new version-resource *use* is for SL plugin selection, not for an NGXCore. R1's insight is not mirrored upstream. |
+| **(ii) `Streamline_Hooks.cpp` dlssd-spoof refusal** | `:441-451` "Don't change arch for DLSS/DLSSD…" + `:448 // Don't spoof DLSSD at all { return; }` | `:922-933` byte-equivalent logic (`// Don't spoof DLSSD at all` → `return;`), only refactors around it: `setArch(maxArch, altSystemCaps)`, `activeFgNvngx != FGNvngxReplacement::None`, `fakenvapi::isUsingAsMainNvapi()` | **UNCHANGED.** Upgrading does not remove the DLSSD spoof refusal. |
+| **(iii) HookNgxApi / GetFeatureRequirements** | `NVNGX_Proxy.h:91-135` detours D3D11/D3D12/Vulkan `…GetFeatureRequirements`; export `inputs/NVNGX_DLSS_Dx12.cpp:770-812`: `SuperSampling` → `Supported`/`MinHWArchitecture=0`, else forward to real nvngx, else `AdapterUnsupported` + `FAIL_FeatureNotSupported` | `NVNGX_Proxy.h:148-200` identical + **two new Vulkan extension hooks** (`GetFeatureInstanceExtensionRequirements`, `GetFeatureDeviceExtensionRequirements`); export `:899-947` same structure, but provider-init now gated on **`IdentifyGpu::getPrimaryGpu().dlssCapable`** (`:925, :936`); fallback still `FAIL_FeatureNotSupported` (**never `0xbad00002`**) | **No new answer to our PlatformError.** Master additionally *conditions* forwarding on a new GPU-identification module — on a non-Nvidia/dlss-incapable primary GPU it will skip `InitNVNGX()` entirely (different, not better, for us). |
+| **(iv) `dllmain` isNvidia / init branch** | `isNvidia()` `dllmain.cpp:1691`, early return `:1712`, final `return nvidiaDetected;` `:1765` (real-NvAPI branch `:1745-1757` = the "1749-1756" the D3 notes cite); three branches: dxvk-nvapi → `NvAPI_Initialize`; fakenvapi (`QueryInterface(0x21382138)`/`Fake_InformFGState`) → `nvidiaDetected=false`; real NvAPI → init() == OK | refactored to lambda `isNvidiaViaNvapi` `dllmain.cpp:1687-1749` + `bool possibleNvidia = isNvidiaViaNvapi();` `:1752`; same three branches; fakenvapi branch now logs **`spdlog::error("Using fakenvapi as nvapi64.dll, remove it!")`** and still `nvidiaDetected=false`; adds `CheckQuirks(bool isNvidia)` `:1313` | **Same outcome** (fakenvapi ⇒ not NVIDIA), louder log. Our `Running on Nvidia` gate behaves the same. |
+| **(v) `NGXCore` / `nvngx.dll` / `getNGXFeatureRequirements` references** | `Util.cpp` NGXCore registry (7), `NVNGX_Proxy.h` (3), `Crypt32` (1), `Config.cpp` `nvngxExists` block `:1507-1520` | identical counts; `Config.cpp:2098-2118` same block; **`getNGXFeatureRequirements` (SL's symbol) appears in NEITHER tree** — it lives in `sl.common.dll`, consistent with h1prime | no upstream change on this axis |
+
+**New risk found while diffing (matters to our whole approach):** master introduces
+`misc/IdentifyGpu.cpp` with `gpuInfo.dlssCapable = architecture_id >= NV_GPU_ARCHITECTURE_TU100`
+(`:287`) and gates Streamline config-JSON surgery on
+`primaryGpu.vendorId == VendorId::Nvidia && dlssCapable` at
+`Streamline_Hooks.cpp:987, :1114, :1218, :1507` (clearing SL's advertised VK instance/device
+extensions + 1.2 features when the primary GPU isn't Nvidia-capable). **On our AMD primary GPU that
+gate changes exactly the caps/extension surface we currently spoof** — direction untested.
+Config churn also bit us once already: **`OverrideNvapiDll` no longer exists in master** (3 refs → 0;
+successor is `[Libraries] NvapiPath`, `Config.cpp:822`), while `DxgiFactoryWrapping`,
+`NvngxPath`, `StreamlineSpoofing` survive (3/3/3) and `Dx12Upscaler` grew (2 → 8 refs).
+
+### Verdict — is upgrading cheaper than N3 (patching)?
+
+**No, not as a fix for c2/c4 — keep v0.9.4 as the measured baseline and pursue R1 + the N3 patch
+route; treat an upgrade as its own re-validation project.** Reasons, all from the table above:
+(1) the four surfaces we are fighting are **unchanged or riskier** — the dlssd-spoof refusal is
+verbatim, `GetFeatureRequirements` still cannot produce anything but `FAIL_FeatureNotSupported`
+(no PlatformError fix, no new NGXCore), and the new `IdentifyGpu` gate plausibly *tightens* rather
+than relaxes caps handling on an AMD primary; (2) our D1 digest (33 cells, this file) is measured on
+v0.9.4 — any upgrade invalidates it and costs a full re-run (~40 min) plus an ini-key audit
+(`OverrideNvapiDll` is already gone, so keys must be re-mapped, and our harness template + the
+game's ini both live in that space); (3) 4712 commits / 3 months of delta in a `dllmain.cpp` that
+grew by 1505 lines and a `Streamline_Hooks.cpp` by 2068 lines is a large blast radius for a lever
+with no evidence it touches our root. **Where an upgrade becomes the cheaper path:** if R1 and the
+N3 patch both fail, or if we later want upstream bugfixes for the game itself — WrongGPU validated
+Crimson Desert on the 0.9.5.x generation (`RELEASE-NOTES.md:37`), so that generation is known-good
+for our title; the obtainable artifacts are public nightly zips (table above), and the cheapest
+first experiment would be one harness-only `--ini`-compatible smoke on `nightly-20261031` gated by
+the same G-IDENT/G-PORT suite, not a game-side swap.
+
 ### Environment side-effect to flag (executor/D3 relevant)
 
 Every wave-1 run used the game prefix un-cloned (game not running ⇒ `game prefix free`), and Proton
@@ -646,3 +708,10 @@ Consequences recorded against the levelling list above:
   baseline, game dir untouched.
 - N3 remains held: in-game verification ran 02:24 (game pid 3282740; Xalia `No displays available`
   fatal under examination) — release needs game exited + N1/N2 agent done + executor quiet.
+### R1/R2 cycle (L15-L20, 2026-10-31 10:10 EDT) — full detail in /tmp/opencode/h1prime-report.md §6
+| # | time | what | result / revert |
+|---|---|---|---|
+| P-PORT-R1 | 10:57 EDT | **port source**: new `src/pe/nvngx_version.rc` + `src/vk/build.sh` windres wiring; rebuilt `build/package/_nvngx.dll` (873,366 B, md5 `19942e53`, backup of old DLL `/tmp/opencode/_nvngx.dll.preR1`) | kept; harness `--sl` L15: c2/c4 unchanged, core still not loaded ⇒ version-resource gate falsified |
+| P-R2a | 10:01 EDT | prefix `drive_c/windows/system32/nvngx.dll` (NEW file, `find` showed none existed) | REJECTED (never loaded); **removed** in revert |
+| P-R2b | 10:04-10:06 EDT | registry: `Services\nvlddmkm\{NGXCore,Parameters\NGXCore}\NGXPath`, `SOFTWARE\...\NGXCore\{FullPath,NGXPath}` | REJECTED for c2/c4 + flipped `isNvidia` true→false (regression: g2/g3 red) ⇒ **fully reverted** (keys/values deleted, snapshot `/tmp/opencode/system.reg.preR2revert`); L20 confirmation run: g1-g4 PASS + `Running on Nvidia` restored |
+| WARN | - | never create keys under `Services\nvlddmkm` (breaks Opti/dxvk NVIDIA detection, `Advapi32_Hooks.h:26`); `SOFTWARE\...\NGXCore\FullPath` is Opti-owned | - |
