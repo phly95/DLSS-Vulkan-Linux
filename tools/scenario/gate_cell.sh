@@ -22,10 +22,27 @@ MANI=$REP/stage_manifest.txt
 RC=0
 gate() {  # gate <name> <PASS|FAIL|BLOCKED|DEGRADED> <evidence>
     printf 'GATE %-14s %-8s %s\n' "$1" "$2" "$3"
-    [[ $2 == FAIL ]] && RC=1
-    [[ $2 == BLOCKED ]] && RC=3
+    # precedence: a measured contradiction (FAIL) must SURVIVE a later BLOCKED from a different
+    # gate, else a real defect could be papered over by a missing prerequisite.
+    if [[ $2 == FAIL ]]; then RC=1
+    elif [[ $2 == BLOCKED && $RC -ne 1 ]]; then RC=3
+    fi
 }
-count() { grep -c -- "$1" "$2" 2>/dev/null || true; }   # grep -c prints 0 on no-match
+# count [ -E | -F ] <pattern> <file> -> a NUMBER, always.
+# Accepted two earlier bugs, both measured this session: (1) the naive body indexed "$1"/"$2"
+# while callers passed a flag first, so `count -F 'x' file` silently greped for the two-char string
+# "-F" and everything read EMPTY (stages printed `ok=/60`); (2) without -E, `[0-9]+` is a LITERAL
+# in BRE, so '^OUT_NZ [0-9]+ nz=' matched nothing and G-ART reported OUT_NZ x0 while awk on the same
+# file found all 60. ERE is now the default and a missing file yields 0, never an empty string.
+count() {
+    local opt=E out
+    if [[ ${1:-} == -E || ${1:-} == -F ]]; then opt=${1#-}; shift; fi
+    # `grep -c$opt` with opt="-E" produced the single token `-c-E`, which GNU grep rejects as
+    # `invalid option -- '-'` -> empty (suppressed) -> every count read 0 while awk/other greps on the
+    # SAME file worked. Keep the letter, concatenate as `-cE`.
+    out=$(grep "-c$opt" -- "${1:-}" "${2:-}" 2>/dev/null) || true
+    printf '%s\n' "${out:-0}"
+}
 
 # --- G-ART ------------------------------------------------------------------------------------
 missing=""
@@ -85,8 +102,25 @@ n_ok=$(count -E 'eval #[0-9]+ OK:' "$PLOG")
 n_fail=$(count -E 'eval #[0-9]+ FAIL:' "$PLOG")
 n_fmt=$(count -F 'fmt col=0 mv=1 dep=0' "$PLOG")
 n_d19=$(count -F 'Depth: DXGI format 19 is not one this bridge decodes' "$PLOG")
+# RR input-gap detector (measured 03:09 on B03/E02): the port CREATES feature 13 and builds the RR
+# chain fine, but the SR-shaped harness passes only Color/MotionVectors/Depth, so every evaluate
+# refuses at the first RR input (nvngx.cpp:1133-1136 wants GBuffer.Normals R16G16B16A16_SFLOAT +
+# GBuffer.Roughness R32_SFLOAT). That is a HARNESS input gap - need N4 - never a product defect,
+# same class as issue 1's Depth refusal. Detected so G-PORT/G-OUT/G-PORT-RR all report BLOCKED.
+rr_gap=0; rr_slots=""
+if [[ $BACKEND == dlssd ]]; then
+    n_chainready=$(count 'chain ready' "$PLOG")
+    n_nullref=$(count 'eval #[0-9]+ FAIL:.*GetD3D12Resource returned null' "$PLOG")
+    if [[ $n_chainready -ge 1 && $n_nullref -ge $FRAMES && $n_ok -eq 0 ]]; then
+        rr_gap=1
+        rr_slots=$(grep -ohE 'slot=[A-Za-z.]+' "$PLOG" 2>/dev/null | sort -u | paste -sd, -)
+        rr_slots=${rr_slots:-<unknown>}
+    fi
+fi
 if [[ $n_ok -ge $FRAMES && $n_fail -eq 0 && $n_fmt -ge 1 && $n_d19 -eq 0 ]]; then
     gate G-PORT PASS "ok=$n_ok/$FRAMES fail=0 fmtX$n_fmt depth19=$n_d19"
+elif [[ $rr_gap -eq 1 ]]; then
+    gate G-PORT BLOCKED "RR feature=13 created + chain built, but $n_nullref/$FRAMES evaluates refuse on harness-missing inputs (first: $rr_slots) - need N4, NOT a product failure"
 else
     gate G-PORT FAIL "ok=$n_ok/$FRAMES fail=$n_fail fmtX$n_fmt depth19=$n_d19"
 fi
@@ -101,9 +135,14 @@ if [[ $BACKEND == dlssd ]]; then
         gate G-PORT-RR FAIL "nvngx_dlssd.dll size=$size want=48343664 (nvngx.cpp:187-189)"
     else
         n_rr=$(count -E 'eval #[0-9]+ OK: id=[0-9]+ feature=13' "$PLOG")
-        n_rrchain=$(count -E 'RR [0-9]+x[0-9]+: creating the frame chain from .*/rr' "$PLOG")
+        # port's real line: `RR 2560x1440 -> 3840x2160: creating the frame chain from .../ngx-weights/rr`
+        n_rrchain=$(count -E 'RR [0-9]+x[0-9]+ -> [0-9]+x[0-9]+: creating the frame chain from .*[/"]rr' "$PLOG")
         if [[ $n_rr -ge $FRAMES && $n_rrchain -ge 1 ]]; then
             gate G-PORT-RR PASS "feature=13 OK x$n_rr chain-from-rr x$n_rrchain (size 48343664)"
+        elif [[ $rr_gap -eq 1 ]]; then
+            # measured 03:09: create SUCCEEDED (feature=13, preset F, chain from .../rr, 13.4 s build)
+            # and only the evaluate refuses on inputs the harness does not have => BLOCKED(N4).
+            gate G-PORT-RR BLOCKED "RR create OK (feature=13, chain-from-rr x$n_rrchain) but 0/$FRAMES evaluates succeed: harness supplies no GBuffer inputs ($rr_slots) - need N4"
         else
             gate G-PORT-RR FAIL "feature=13 OK x$n_rr/$FRAMES rr-chain x$n_rrchain"
         fi
@@ -120,8 +159,15 @@ fi
 # --- G-OUT ------------------------------------------------------------------------------------
 viol=$(awk '/^OUT_NZ /{ split($3,a,"="); if (a[2]+0 < 0.10) bad++ } END{ print bad+0 }' "$PARSE")
 mn=$(awk '/^OUT_NZ /{ split($3,a,"="); v=a[2]+0; if(!h||v<m){m=v;h=1} } END{ if(h) printf "%.6f",m }' "$PARSE")
-[[ $viol -eq 0 ]] && gate G-OUT PASS "all frames nz>=0.10 (min nz=$mn)" \
-                  || gate G-OUT FAIL "viol=$viol/$FRAMES min nz=$mn"
+# if/else, NOT `cond && gate PASS || gate FAIL`: gate() ends in `[[ $2 == BLOCKED ]] && RC=3`, which
+# returns 1 on a PASS, so the `||` branch fired too and every PASS also printed a FAIL (measured 02:54).
+if [[ $viol -eq 0 ]]; then
+    gate G-OUT PASS "all frames nz>=0.10 (min nz=$mn)"
+elif [[ ${rr_gap:-0} -eq 1 ]]; then
+    gate G-OUT BLOCKED "black output is the expected consequence of the RR input gap (N4): the evaluate never ran"
+else
+    gate G-OUT FAIL "viol=$viol/$FRAMES min nz=$mn"
+fi
 
 # --- G-TIME -----------------------------------------------------------------------------------
 stats() {  # stdin ascending numbers -> "n median p95"
@@ -136,7 +182,11 @@ gp=$(grep -E '^GPU_EVAL_MS [0-9]+ [0-9]+(\.[0-9]+)?$' "$PARSE" | awk '$2!="0"{pr
 read -r n_g med_g p95_g <<<"$gp"
 n_na=$(count -E '^GPU_EVAL_MS [0-9]+ n/a' "$PARSE")
 nan=$(count -E 'nan|inf|NaN|Inf' "$REP/eval_ms.csv")
-if [[ $n_e -ge $((FRAMES - 1)) ]] && awk -v m="$med_e" 'BEGIN{exit !(m>0)}'; then
+if [[ ${rr_gap:-0} -eq 1 ]]; then
+    # these brackets sit on a REFUSAL path (measured: EVAL ~2.5 ms = Opti entry only,
+    # GPU ~0.002 ms = no GPU work submitted) - report them as observed but NOT reportable ms.
+    gate G-TIME BLOCKED "$n_e samples over a REFUSED evaluate (EVAL med=$med_e p95=$p95_e, GPU med=$med_g) - N4 input gap, exclude from any ms table"
+elif [[ $n_e -ge $((FRAMES - 1)) ]] && awk -v m="$med_e" 'BEGIN{exit !(m>0)}'; then
     if [[ $nan -gt 0 ]]; then
         gate G-TIME FAIL "nan/inf token in eval_ms.csv x$nan"
     elif [[ $n_g -gt 0 ]] && awk -v m="$med_g" 'BEGIN{exit !(m>0)}'; then
@@ -169,8 +219,12 @@ if [[ $SL -eq 1 ]]; then
     elif [[ $BACKEND == dlssd && $n_pld -eq 0 ]]; then
         fail="$fail sl.dlss_d-not-loaded"
     fi
-    [[ -z $fail ]] && gate G-RR-ASSURE PASS "caps=$n_caps init-ngx=$n_init drv0=$n_drv ctx=$n_miss plugin_sl.dlss=x$n_pl plugin_sl.dlss_d=x$n_pld dropped=$n_ign" \
-                    || gate G-RR-ASSURE FAIL "$fail"
+    # if/else, not `[[ ]] && gate PASS || gate FAIL`: gate() returns non-zero on PASS (see G-OUT note)
+    if [[ -z $fail ]]; then
+        gate G-RR-ASSURE PASS "caps=$n_caps init-ngx=$n_init drv0=$n_drv ctx=$n_miss plugin_sl.dlss=x$n_pl plugin_sl.dlss_d=x$n_pld dropped=$n_ign"
+    else
+        gate G-RR-ASSURE FAIL "$fail"
+    fi
 fi
 
 case $RC in 0) v=PASS;; 3) v=BLOCKED;; *) v=FAIL;; esac

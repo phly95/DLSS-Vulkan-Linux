@@ -1,0 +1,572 @@
+[03:04:14.917127] [W] OptiScaler v0.9.4-final (7534ad0) loaded
+[03:04:14.917140] [W] ---------------------------------
+[03:04:14.917142] [W] OptiScaler is freely downloadable from
+[03:04:14.917144] [W] GitHub : https://github.com/optiscaler/OptiScaler/releases
+[03:04:14.917145] [W] Nexus  : https://www.nexusmods.com/site/mods/986
+[03:04:14.917147] [W] If you paid for these files, you've been scammed!
+[03:04:14.917148] [W] DO NOT USE IN MULTIPLAYER GAMES
+[03:04:14.917150] [I] 
+[03:04:14.917152] [I] LogLevel: 1
+[03:04:14.917153] [I] 
+[03:04:14.917157] [I] Windows version: Windows 10 (10.0.19045)
+[03:04:14.917160] [I] Config parameters:
+[03:04:14.917161] [I] Upscalers.Dx12Upscaler: dlss
+[03:04:14.917163] [I] DLSS.Enabled: true
+[03:04:14.917164] [I] Log.LogLevel: 1
+[03:04:14.917166] [I] Log.LogToFile: true
+[03:04:14.917167] [I] Sharpness.OverrideSharpness: false
+[03:04:14.917169] [I] Sharpness.Sharpness: 0
+[03:04:14.917170] [I] CAS.Enabled: false
+[03:04:14.917172] [I] CAS.MotionSharpnessEnabled: false
+[03:04:14.917173] [I] OutputScaling.Enabled: false
+[03:04:14.917174] [I] Hotfix.CheckForUpdate: false
+[03:04:14.917176] [I] Libraries.NvngxPath: _nvngx.dll
+[03:04:14.917178] [I] 
+[03:04:14.917180] [I] Setting DllPath to Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[03:04:14.917181] [I] 
+[03:04:14.917191] [I] 
+[03:04:14.917194] [I] IsRunningOnWine Running on Wine 10.0!
+[03:04:14.917195] [I] 
+[03:04:14.917197] [I] Check for DLSS files
+[03:04:14.917214] [I] Util::FindFilePath nvngx_dlss.dll found at Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[03:04:14.917227] [I] Util::FindFilePath nvngx_dlssd.dll found at Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[03:04:14.917896] [I] 
+[03:04:14.925802] [D] isNvidia Using dxvk-nvapi
+[03:04:14.929119] [D] isNvidia Detected: true
+[03:04:14.929135] [I] Running on Nvidia
+[03:04:14.929142] [I] Enabling DLSS
+[03:04:14.929148] [I] Disabling DxgiSpoofing
+[03:04:14.929154] [I] 
+[03:04:14.929178] [I] CheckQuirks Game's Exe: opti_client.exe
+[03:04:14.929185] [I] CheckQuirks Game Name: 
+[03:04:14.929191] [I] CheckQuirks Game Version: 
+[03:04:14.929196] [I] CheckQuirks Game Engine: Other
+[03:04:14.929424] [I] 
+[03:04:14.930671] [I] CheckWorkingMode OptiScaler working as dxgi.dll, system dll loaded
+[03:04:14.930688] [D] DxgiProxy::Init dxgi.dll loaded at 6FFFFB7D0000
+[03:04:14.930741] [I] Config::CheckUpscalerFiles nvngx.dll found in game folder
+[03:04:14.930773] [I] Util::FindFilePath nvngx_dlss.dll found at Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[03:04:14.930832] [W] Config::CheckUpscalerFiles libxess.dll not found!
+[03:04:14.930845] [D] CheckWorkingMode dxgi.dll already in memory
+[03:04:14.930848] [D] DxgiHooks::Hook 
+[03:04:14.930908] [D] KernelHooks::HookBase 
+[03:04:14.930940] [D] CheckWorkingMode Check for d3d12
+[03:04:14.930943] [D] CheckWorkingMode d3d12.dll already in memory
+[03:04:14.930947] [D] D3D12Hooks::Hook 
+[03:04:14.931156] [D] CheckWorkingMode Loading vulkan-1.dll for Linux, result: 6FFFFB7B0000
+[03:04:14.931160] [D] CheckWorkingMode Hooking vulkan-1.dll
+[03:04:14.931431] [I] Vulkan_wDx12::Hook Attaching Vulkan vkQueueSubmit hook
+[03:04:14.931562] [D] Vulkan_wDx12::InitializeStateTrackerFunctionTable State tracker function table initialized
+[03:04:14.933587] [D] KernelHooks::Hook 
+[03:04:14.933632] [I] 
+[03:04:14.933635] [D] FfxApiProxy::InitFfxDx12 Trying to load amd_fidelityfx_loader_dx12.dll
+[03:04:14.933818] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_loader_dx12.dll, returning nullptr!
+[03:04:14.933821] [D] FfxApiProxy::InitFfxDx12 Trying to load amd_fidelityfx_dx12.dll
+[03:04:14.933969] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_dx12.dll, returning nullptr!
+[03:04:14.933971] [I] 
+[03:04:14.933974] [D] FfxApiProxy::InitFfxDx12_SR Trying to load amd_fidelityfx_upscaler_dx12.dll
+[03:04:14.934125] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_upscaler_dx12.dll, returning nullptr!
+[03:04:14.934127] [I] FfxApiProxy::InitFfxDx12_SR LoadResult: false
+[03:04:14.934133] [I] 
+[03:04:14.934136] [D] FfxApiProxy::InitFfxDx12_FG Trying to load amd_fidelityfx_framegeneration_dx12.dll
+[03:04:14.934293] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_framegeneration_dx12.dll, returning nullptr!
+[03:04:14.934295] [I] FfxApiProxy::InitFfxDx12_FG LoadResult: false
+[03:04:14.934297] [I] 
+[03:04:14.934299] [D] FfxApiProxy::InitFfxDx12_Denoiser Trying to load amd_fidelityfx_denoiser_dx12.dll
+[03:04:14.934448] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_denoiser_dx12.dll, returning nullptr!
+[03:04:14.934450] [I] FfxApiProxy::InitFfxDx12_Denoiser LoadResult: false
+[03:04:14.934452] [I] 
+[03:04:14.934454] [D] FfxApiProxy::InitFfxDx12_Radiance Trying to load amd_fidelityfx_radiancecache_dx12.dll
+[03:04:14.934604] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_radiancecache_dx12.dll, returning nullptr!
+[03:04:14.934607] [I] FfxApiProxy::InitFfxDx12_Radiance LoadResult: false
+[03:04:14.934608] [I] FfxApiProxy::InitFfxDx12 LoadResult: false
+[03:04:14.934610] [I] 
+[03:04:14.934612] [D] FfxApiProxy::InitFfxDx12_SR Trying to load amd_fidelityfx_upscaler_dx12.dll
+[03:04:14.934758] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_upscaler_dx12.dll, returning nullptr!
+[03:04:14.934760] [I] FfxApiProxy::InitFfxDx12_SR LoadResult: false
+[03:04:14.934761] [I] 
+[03:04:14.934763] [D] FfxApiProxy::InitFfxDx12_FG Trying to load amd_fidelityfx_framegeneration_dx12.dll
+[03:04:14.934918] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_framegeneration_dx12.dll, returning nullptr!
+[03:04:14.934920] [I] FfxApiProxy::InitFfxDx12_FG LoadResult: false
+[03:04:14.934921] [I] 
+[03:04:14.934923] [D] FfxApiProxy::InitFfxDx12_Denoiser Trying to load amd_fidelityfx_denoiser_dx12.dll
+[03:04:14.935071] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_denoiser_dx12.dll, returning nullptr!
+[03:04:14.935073] [I] FfxApiProxy::InitFfxDx12_Denoiser LoadResult: false
+[03:04:14.935075] [I] 
+[03:04:14.935077] [D] FfxApiProxy::InitFfxDx12_Radiance Trying to load amd_fidelityfx_radiancecache_dx12.dll
+[03:04:14.935227] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_radiancecache_dx12.dll, returning nullptr!
+[03:04:14.935229] [I] FfxApiProxy::InitFfxDx12_Radiance LoadResult: false
+[03:04:14.935231] [D] XeSSProxy::InitXeSS Trying to load libxess.dll
+[03:04:14.935931] [W] Util::LoadProxyLibrary Can't find libxess.dll, returning nullptr!
+[03:04:14.935934] [I] XeSSProxy::InitXeSS LoadResult: false
+[03:04:14.935937] [D] XeSSProxy::InitXeSSDx11 Trying to load libxess_dx11.dll
+[03:04:14.936086] [W] Util::LoadProxyLibrary Can't find libxess_dx11.dll, returning nullptr!
+[03:04:14.936088] [I] XeSSProxy::InitXeSSDx11 LoadResult: false
+[03:04:14.936091] [D] XeFGProxy::InitXeFG Trying to load libxess_fg.dll
+[03:04:14.936234] [W] Util::LoadProxyLibrary Can't find libxess_fg.dll, returning nullptr!
+[03:04:14.936237] [D] XeLLProxy::InitXeLL Trying to load libxell.dll
+[03:04:14.936911] [W] Util::LoadProxyLibrary Can't find libxell.dll, returning nullptr!
+[03:04:14.936913] [I] NVNGXProxy::InitNVNGX 
+[03:04:14.936916] [D] NVNGXProxy::InitNVNGX Trying to load _nvngx.dll
+[03:04:14.937303] [I] Util::LoadProxyLibrary _nvngx.dll loaded from override path: _nvngx.dll
+[03:04:14.937310] [I] NVNGXProxy::InitNVNGX Loaded from Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\_nvngx.dll
+[03:04:14.937312] [I] NVNGXProxy::InitNVNGX Getting nvngx method addresses
+[03:04:14.937313] [D] HookNgxApi Trying to hook NgxApi
+[03:04:14.937316] [I] HookNgxApi NVSDK_NGX_XXXXXX_GetFeatureRequirements found, hooking!
+[03:04:14.937331] [I] 
+[03:04:14.937333] [D] InitFSR4Update 
+[03:04:14.937515] [I] InitFSR4Update amdxc64.dll loaded
+[03:04:14.937519] [D] InitFSR4Update Hooking AmdExtD3DCreateInterface
+[03:04:14.937529] [I] OverrideNvapiDll not set, setting it to: false
+[03:04:14.937531] [I] 
+[03:04:14.937541] [I] HookFSR2ExeInputs Trying to hook FSR2 methods
+[03:04:14.937546] [D] HookFSR2ExeInputs ffxFsr2ContextCreate_Dx12: 0
+[03:04:14.937548] [D] HookFSR2ExeInputs ffxFsr2ContextDispatch_Dx12: 0
+[03:04:14.937554] [D] HookFSR2ExeInputs ffxFsr20ContextDispatch_Dx12: 0
+[03:04:14.937556] [D] HookFSR2ExeInputs ffxFsr2TinyContextDispatch_Dx12: 0
+[03:04:14.937558] [D] HookFSR2ExeInputs ffxFsr2ContextDestroy_Dx12: 0
+[03:04:14.937560] [D] HookFSR2ExeInputs ffxFsr2GetUpscaleRatioFromQualityMode_Dx12: 0
+[03:04:14.937562] [D] HookFSR2ExeInputs ffxFsr2GetRenderResolutionFromQualityMode_Dx12: 0
+[03:04:14.937572] [I] HookFSR3ExeInputs Trying to hook FSR3 methods
+[03:04:14.937576] [D] HookFSR3ExeInputs ffxFsr3UpscalerContextCreate_Dx12: 0
+[03:04:14.937578] [D] HookFSR3ExeInputs ffxFsr3UpscalerContextDispatch_Dx12: 0
+[03:04:14.937580] [D] HookFSR3ExeInputs ffxFsr3UpscalerContextDestroy_Dx12: 0
+[03:04:14.937582] [D] HookFSR3ExeInputs ffxFsr3UpscalerGetUpscaleRatioFromQualityMode_Dx12: 0
+[03:04:14.937584] [D] HookFSR3ExeInputs ffxFsr3UpscalerGetRenderResolutionFromQualityMode_Dx12: 0
+[03:04:14.937603] [I] 
+[03:04:14.937605] [I] Init done
+[03:04:14.937606] [I] ---------------------------------------------
+[03:04:14.937608] [I] 
+[03:04:14.938481] [D] hkD3D12CreateDevice Adapter: 0, Level: C000, Caller: opti_client.exe
+[03:04:14.938787] [D] D3D12Hooks::HookAgility Hooking D3D12GetInterface from D3D12 Agility SDK
+[03:04:14.938813] [D] hkD3D12GetInterface D3D12GetInterface called: 6FFFFDEECDF0, 6FFFFDEEEC20, Caller: d3d12.dll
+[03:04:14.938818] [D] hkD3D12GetInterface D3D12GetInterface called: 6FFFFDEECE00, 6FFFFDEEEC30, Caller: d3d12.dll
+[03:04:14.938822] [D] hkCreateDXGIFactory1 Caller: d3d12core.dll
+[03:04:14.940441] [D] hkvkGetInstanceProcAddr vkCreateInstance
+[03:04:14.943511] [I] VulkanSpoofing::hkvkCreateInstance Skipping because DXVK/VKD3D is creating a D3D device
+[03:04:14.946250] [D] hkvkCreateInstance State::Instance().VulkanInstance captured: CB86B0
+[03:04:14.946262] [D] hkvkGetInstanceProcAddr vkCreateDevice
+[03:04:14.947113] [W] DxgiSpoofing::AttachToAdapter DxgiSpoofing and DxgiVRAM is disabled, skipping hooking
+[03:04:14.947569] [D] hkvkGetInstanceProcAddr vkCreateInstance
+[03:04:14.948470] [I] VulkanSpoofing::hkvkCreateInstance Skipping because DXVK/VKD3D is creating a D3D device
+[03:04:14.949569] [D] hkvkCreateInstance State::Instance().VulkanInstance captured: CB8750
+[03:04:14.949593] [D] hkvkGetInstanceProcAddr vkCreateDevice
+[03:04:14.965528] [I] VulkanSpoofing::hkvkCreateDevice Skipping because DXVK/VKD3D is creating a D3D device
+[03:04:14.968450] [D] hkvkCreateDevice _PD captured: CB8768
+[03:04:14.968466] [D] hkvkCreateDevice _device captured: CB9FB0
+[03:04:14.968525] [D] HookDevice Hooking VkDevice
+[03:04:14.970232] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool CC08C0 created for queue family 1
+[03:04:15.041268] [D] hkD3D12CreateDevice o_D3D12CreateDevice result: 0
+[03:04:15.041285] [D] hkD3D12CreateDevice Device captured: 1530080
+[03:04:15.041288] [D] HookToDevice Dx12
+[03:04:15.041329] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool CC59E0 created for queue family 0
+[03:04:15.041412] [D] HookToCommandList Hooked RootSignature functions
+[03:04:15.041444] [D] hkD3D12CreateDevice final result: 0
+[03:04:15.041549] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool CC5A40 created for queue family 0
+[03:04:15.042001] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool CDA450 created for queue family 0
+[03:04:15.046626] [D] UpdateInitPaths Feature Path [0]: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[03:04:15.046635] [D] UpdateInitPaths Feature Path [1]: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[03:04:15.046637] [D] UpdateInitPaths Feature Path [2]: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[03:04:15.046639] [D] UpdateInitPaths Feature Path [3]: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[03:04:15.046641] [I] NVSDK_NGX_D3D12_Init calling NVNGXProxy::D3D12_Init
+[03:04:15.046645] [I] NVSDK_NGX_D3D12_Init calling NVNGXProxy::D3D12_Init result: 1
+[03:04:15.046648] [I] NVSDK_NGX_D3D12_Init_Ext AppId: 322376503
+[03:04:15.046651] [I] NVSDK_NGX_D3D12_Init_Ext SDK: 15
+[03:04:15.046653] [I] NVSDK_NGX_D3D12_Init_Ext InApplicationDataPath .
+[03:04:15.046683] [D] NVSDK_NGX_D3D12_Init was called NVSDK_NGX_D3D12_Init_Ext
+[03:04:15.046686] [I] NVSDK_NGX_D3D12_AllocateParameters calling NVNGXProxy::D3D12_AllocateParameters
+[03:04:15.046690] [I] NVSDK_NGX_D3D12_AllocateParameters calling NVNGXProxy::D3D12_AllocateParameters result: 1, ptr: 8B4CF0
+[03:04:15.046700] [I] NVSDK_NGX_D3D12_CreateFeature HandleId: 1000000
+[03:04:15.046702] [I] NVSDK_NGX_D3D12_CreateFeature Creating new dlss upscaler
+[03:04:15.046706] [I] IFeature::SetHandle Handle: 1000000
+[03:04:15.046709] [I] IFeature::SetInitParameters SharpenEnabled flag overrided by user: false
+[03:04:15.046711] [I] IFeature::SetInitParameters Init Flag AutoExposure: false
+[03:04:15.046713] [I] IFeature::SetInitParameters Init Flag DepthInverted: false
+[03:04:15.046714] [I] IFeature::SetInitParameters Init Flag IsHdr: true
+[03:04:15.046716] [I] IFeature::SetInitParameters Init Flag JitteredMV: false
+[03:04:15.046718] [I] IFeature::SetInitParameters Init Flag LowResMV: true
+[03:04:15.046720] [I] IFeature::SetInitParameters Init Flag SharpenEnabled: false
+[03:04:15.046723] [I] IFeature::SetInitParameters Render Resolution: 1920x1080, Display Resolution 3840x2160, Quality: 0
+[03:04:15.046727] [D] HookNgxApi Trying to hook NgxApi
+[03:04:15.046730] [I] HookNgxApi NVSDK_NGX_XXXXXX_GetFeatureRequirements found, hooking!
+[03:04:15.046752] [I] DLSSFeatureDx12::DLSSFeatureDx12 binding complete!
+[03:04:15.546899] [I] DLSSFeatureDx12::Init Creating DLSS feature
+[03:04:15.547005] [D] DLSSFeature::ProcessInitParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:15.547025] [D] DLSSFeature::ProcessInitParams Original Preset_DLAA 13
+[03:04:15.547035] [D] DLSSFeature::ProcessInitParams Original Preset_UltraQuality 13
+[03:04:15.547043] [D] DLSSFeature::ProcessInitParams Original Preset_Quality 13
+[03:04:15.547052] [D] DLSSFeature::ProcessInitParams Original Preset_Balanced 13
+[03:04:15.547060] [D] DLSSFeature::ProcessInitParams Original Preset_Performance 13
+[03:04:15.547068] [D] DLSSFeature::ProcessInitParams Original Preset_UltraPerformance 13
+[03:04:17.328241] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool CD92A0 created for queue family 0
+[03:04:21.685126] [I] DLSSFeatureDx12::Init _CreateFeature result: NVSDK_NGX_Result_Success
+[03:04:21.692395] [I] DLSSFeature::ReadVersion DLSS v310.9.1 loaded.
+[03:04:21.692424] [D] RCAS_Dx12::RCAS_Dx12 RCAS start!
+[03:04:21.692550] [D] D3D12Hooks::Hook 
+[03:04:21.713643] [D] OS_Dx12::OS_Dx12 OutputScaling start!
+[03:04:21.760790] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:21.760829] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:21.760834] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:21.760837] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:21.760839] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:21.773189] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:22.137827] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:22.137858] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:22.137862] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:22.137865] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:22.137866] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:22.143232] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:22.554101] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:22.554127] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:22.554130] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:22.554133] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:22.554134] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:22.558444] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:22.904585] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:22.904612] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:22.904616] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:22.904618] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:22.904620] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:22.908940] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:23.404855] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:23.404888] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:23.404893] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:23.404895] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:23.404897] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:23.409306] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:23.832746] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:23.832771] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:23.832774] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:23.832776] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:23.832778] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:23.837126] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:24.359810] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:24.359840] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:24.359844] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:24.359846] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:24.359848] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:24.368097] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:24.751809] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:24.751832] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:24.751836] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:24.751839] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:24.751841] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:24.756205] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:25.137545] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:25.137570] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:25.137573] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:25.137576] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:25.137578] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:25.141797] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:25.525902] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:25.525926] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:25.525930] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:25.525933] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:25.525935] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:25.531348] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:25.900171] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:25.900195] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:25.900199] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:25.900201] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:25.900203] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:25.905326] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:26.333255] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:26.333302] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:26.333312] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:26.333318] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:26.333323] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:26.341630] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:26.779421] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:26.779443] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:26.779447] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:26.779449] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:26.779451] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:26.783715] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:27.105165] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:27.105190] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:27.105193] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:27.105196] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:27.105197] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:27.109494] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:27.498485] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:27.498509] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:27.498513] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:27.498515] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:27.498517] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:27.502780] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:27.872108] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:27.872139] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:27.872144] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:27.872147] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:27.872150] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:27.878471] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:28.274514] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:28.274539] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:28.274543] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:28.274546] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:28.274547] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:28.278917] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:28.671357] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:28.671392] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:28.671396] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:28.671398] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:28.671400] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:28.675772] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:29.043252] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:29.043277] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:29.043281] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:29.043283] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:29.043285] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:29.047717] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:29.470662] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:29.470695] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:29.470699] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:29.470702] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:29.470706] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:29.475199] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:29.909976] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:29.909999] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:29.910003] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:29.910006] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:29.910008] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:29.914386] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:30.304791] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:30.304817] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:30.304821] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:30.304824] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:30.304826] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:30.309348] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:30.694496] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:30.694520] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:30.694523] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:30.694526] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:30.694527] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:30.698946] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:31.084061] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:31.084087] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:31.084092] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:31.084095] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:31.084098] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:31.088433] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:31.485761] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:31.485784] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:31.485787] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:31.485790] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:31.485792] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:31.490122] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:31.870901] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:31.870929] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:31.870933] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:31.870936] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:31.870938] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:31.875324] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:32.272086] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:32.272112] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:32.272116] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:32.272119] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:32.272121] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:32.276600] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:32.685231] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:32.685264] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:32.685275] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:32.685284] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:32.685287] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:32.689611] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:33.101529] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:33.101553] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:33.101556] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:33.101559] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:33.101561] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:33.106134] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:33.514722] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:33.514746] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:33.514750] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:33.514752] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:33.514754] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:33.519077] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:33.896732] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:33.896755] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:33.896759] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:33.896761] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:33.896763] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:33.901482] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:34.283952] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:34.283978] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:34.283983] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:34.283986] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:34.283987] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:34.290026] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:34.669780] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:34.669804] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:34.669808] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:34.669811] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:34.669813] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:34.678015] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:35.065287] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:35.065313] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:35.065316] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:35.065319] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:35.065320] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:35.069601] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:35.484016] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:35.484039] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:35.484043] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:35.484045] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:35.484047] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:35.490098] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:35.885844] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:35.885867] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:35.885875] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:35.885878] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:35.885880] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:35.890539] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:36.305247] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:36.305271] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:36.305275] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:36.305277] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:36.305280] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:36.311341] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:36.697278] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:36.697301] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:36.697304] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:36.697307] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:36.697309] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:36.701669] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:37.075514] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:37.075540] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:37.075544] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:37.075546] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:37.075548] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:37.079808] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:37.515147] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:37.515170] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:37.515174] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:37.515176] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:37.515179] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:37.519430] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:37.900823] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:37.900855] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:37.900860] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:37.900863] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:37.900866] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:37.905319] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:38.207505] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:38.207530] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:38.207535] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:38.207538] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:38.207541] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:38.211936] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:38.504840] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:38.504863] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:38.504868] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:38.504871] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:38.504874] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:38.509375] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:38.799415] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:38.799441] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:38.799445] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:38.799454] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:38.799457] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:38.803821] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:39.186396] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:39.186423] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:39.186427] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:39.186430] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:39.186434] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:39.190736] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:39.460989] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:39.461012] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:39.461016] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:39.461018] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:39.461020] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:39.465384] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:39.758233] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:39.758257] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:39.758261] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:39.758263] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:39.758265] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:39.762765] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:40.132668] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:40.132693] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:40.132697] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:40.132699] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:40.132701] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:40.137097] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:40.494713] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:40.494736] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:40.494740] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:40.494742] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:40.494744] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:40.499099] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:40.774429] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:40.774452] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:40.774456] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:40.774459] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:40.774461] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:40.778843] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:41.049570] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:41.049595] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:41.049599] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:41.049601] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:41.049603] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:41.053976] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:41.322603] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:41.322625] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:41.322629] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:41.322631] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:41.322638] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:41.327187] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:41.590861] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:41.590889] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:41.590894] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:41.590897] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:41.590900] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:41.595955] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:41.986848] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:41.986873] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:41.986877] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:41.986879] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:41.986882] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:41.991175] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:42.364694] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:42.364725] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:42.364730] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:42.364733] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:42.364735] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:42.372496] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:42.726544] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:42.726568] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:42.726572] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:42.726574] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:42.726577] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:42.731039] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:43.073847] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:43.073871] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:43.073876] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:43.073878] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:43.073880] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:43.078229] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:43.352244] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:43.352267] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:43.352271] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:43.352273] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:43.352275] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:43.356739] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:43.724298] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:43.724323] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:43.724327] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:43.724329] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:43.724332] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:43.728516] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:44.084646] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:04:44.084671] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[03:04:44.084675] [D] DLSSFeatureDx12::Evaluate Depth exist, 8A7110
+[03:04:44.084677] [D] DLSSFeatureDx12::Evaluate Velocity exist, 8A7F00
+[03:04:44.084684] [D] DLSSFeatureDx12::Evaluate Output exist, 8A84C0
+[03:04:44.088918] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:04:44.425902] [I] NVSDK_NGX_D3D12_ReleaseFeature releasing feature with id 1000000
+[03:04:44.429873] [I] NVSDK_NGX_D3D12_DestroyParameters calling NVNGXProxy::D3D12_DestroyParameters
+[03:04:44.429885] [I] NVSDK_NGX_D3D12_DestroyParameters calling NVNGXProxy::D3D12_DestroyParameters result: 1
+[03:04:44.435434] [I] 
+[03:04:44.435442] [I] DLL_PROCESS_DETACH
+[03:04:44.435444] [I] Unloading OptiScaler

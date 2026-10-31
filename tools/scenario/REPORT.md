@@ -165,6 +165,138 @@ Ranked by cost; each remains a single-variable experiment, backup-first, one rel
 Decision rule (unchanged): one variable per lever, `.bak-*` before any binary/xml/ini touch,
 ship-line never edited, every claim re-cited to `file:line` or a log quote.
 
+---
+
+## D1 wave 1 — MEASURED (2026-10-31 02:49:15–03:10:55 EDT, slot released by top-level 02:48)
+
+21 runs total (6 tier-A cells × 3 reps + close-out sentinel rep4 + E01/E02 (`--sl`) + B03 × 3).
+All logs kept per rep under `tools/scenario/runs/<cell>/rep<k>/` (`OptiScaler.log`,
+`dlss5-amd-ngx.log`, `client.log`, `eval_ms.csv`, `summary.txt`, `g5_evidence.txt`,
+`stage_manifest.txt`). Frames 1..59 per run (frame 0 excluded repo-wide).
+**Median of the 3 run-medians** is reported; sentinel A03 defines the noise floor.
+
+### Noise floor (sentinel A03, 4 reps, dlss / Quality / 2560x1440 -> 3840x2160)
+
+| rep | EVAL_MS med / p95 | GPU_EVAL_MS med / p95 | gates |
+|---|---|---|---|
+| rep1 | 4.4711 / 6.1431 | 10.6174 / 13.0206 | PASS 7/7 |
+| rep2 | 4.3936 / 6.2472 | 10.6106 / 12.9222 | PASS 7/7 |
+| rep3 | 4.4760 / 7.8884 | 10.5804 / 12.7740 | PASS 7/7 |
+| rep4 (close-out, after 5 cells) | 4.4479 / 7.8100 | 10.6455 / 12.8483 | PASS 7/7 |
+
+ranges: EVAL 0.0824 ms, GPU 0.0651 ms ⇒ per G-EFFECT the reporting threshold is
+**2× = 0.165 ms (EVAL), 0.130 ms (GPU)**. Close-out rep4 sits mid-range ⇒ no drift over wave 1.
+
+### Tier A: dlss × 6 quality levels (RR=off), 3 reps each — all 18 runs PASS 7/7 gates
+
+| cell | render -> out | EVAL med (p95) ms | GPU med (p95) ms | gates |
+|---|---|---|---|---|
+| A01 DLAA | 3840x2160 -> 3840x2160 | 4.4663 (7.5120) | **19.7137** (20.7421) | PASS ×3 |
+| A02 Ultra Quality | 2954x1662 -> 3840x2160 | 4.4171 (8.6545) | **13.3211** (15.8435) | PASS ×3 |
+| A03 Quality *(sentinel)* | 2560x1440 -> 3840x2160 | 4.4711 (6.2472) | **10.6106** (12.9222) | PASS ×3 |
+| A04 Balanced | 2228x1254 -> 3840x2160 | 4.4367 (7.4179) | **8.9988** (11.3753) | PASS ×3 |
+| A05 Performance | 1920x1080 -> 3840x2160 | 4.4357 (8.2525) | **8.1175** (9.1530) | PASS ×3 |
+| A06 Ultra Performance | 1280x720 -> 3840x2160 | 4.3522 (6.8823) | **5.5119** (6.9321) | PASS ×3 |
+
+Every run: `G-ART PASS OUT_NZ x60`, `G-STAGE nvngx_dlss.dll=58956912`, `G-IDENT 'Creating new
+dlss upscaler'x1 fsr_fallback=0 nvngx_loaded=1 Running on Nvidia`, `G-PORT ok=60/60 fmt col=0
+mv=1 dep=0`, `G-PORT-SR no feature=13`, `G-OUT min nz=1.000000`, harness rc=0.
+
+**What the numbers say (and don't):**
+- **GPU is resolvable and monotone in render resolution**: 19.71 → 13.32 → 10.61 → 9.00 → 8.12 →
+  5.51 ms across DLAA→UltraPerf. Every adjacent gap is ≥ 0.879 ms, i.e. ≥ 6.8× the 0.130 ms
+  threshold. The biggest absolute savings: DLAA→Quality −9.10 ms; the smallest, Balanced→Performance
+  −0.88 ms (the 4K render is already GPU-bound before the render resolution drops).
+- **CPU-side (EVAL) shows NO resolvable effect of the quality preset**: cell medians span
+  4.3522–4.4711 = 0.119 ms < 0.165 ms threshold ⇒ reported as *below the noise floor*, no ranking.
+  Consistent with a fixed per-evaluate overhead dominating (Opti entry + copy setup), stated as
+  observation, not proven mechanism.
+- **One outlier observed, kept, not smoothed**: A05 rep2 p95 = 54.3534 ms (a single ~54 ms frame)
+  while its median = 4.4380 — p95 over 59 samples is dominated by one hitch; the table uses the
+  median-of-medians, so it is unaffected. Recorded so nobody "cleans" it later.
+
+### Tier E (`--sl`, Streamline booted headless) — D3-grade evidence, captured at first hit
+
+**E01 (dlss / Quality / RR off / `--sl`) — G-RR-ASSURE FAIL (3 of 6 subchecks), everything else
+PASS.** Harness g5: `c1_getSystemCaps_nvapi=ok  c2_no_failed_NGX=bad(x2)  c3_driver=ok
+c4_no_missing_ctx=bad(x2)  c5_sl.dlss_loaded=ok`. Full lines, `runs/E01/rep1/g5_evidence.txt`:
+
+```
+:16 commonInterface.cpp:290[getSystemCaps] NVIDIA driver 999.99
+:17 commonInterface.cpp:315[getSystemCaps] Adapter 0 architecture 0x130 implementation 0x2 revision 0xffffffff - bit 0x1 - LUID 0.1010
+:g5 | nvapi: ... sl-requirements: driverDetected=999.99.0 driverRequired=512.15.0
+:42 pluginManager.cpp:907[mapPlugins] Loaded plugin 'sl.dlss' - version 2.14.1.98614dad6 PRODUCTION - id 0 - priority 100 - adapter mask 0x1
+:47 pluginManager.cpp:907[mapPlugins] Loaded plugin 'sl.dlss_d' - version 2.14.1.98614dad6 PRODUCTION - id 1001 - priority 100 - adapter mask 0x0
+:68 pluginManager.cpp:1090[loadPlugins] Ignoring plugin 'sl.dlss_d' since it is not supported on this platform   [gate counts 6 lines matching `Ignoring plugin 'sl.dlss_d'` OR `adapter mask 0x0`]
+:83 commonEntry.cpp:1748[slOnPluginStartup] Failed to initialize NGX, any SL feature requiring NGX will be unloaded and disabled
+:114 dlssEntry.cpp:923[slOnPluginStartup] Missing NGX context - DLSSContext cannot run
+```
+
+**This is the in-game doom trio reproduced headlessly — while SR itself is fully healthy**
+(60/60 port evals OK, `HARNESS RESULT: FAIL (opti_client rc=0, exe summary RESULT=PASS, g5=FAIL)`).
+The clean implication, and the strongest new D3-grade fact of the session: **the caps gate can be
+GREEN (driver 999.99 ≥ 512.15, architecture present) and `Failed to initialize NGX` / `Missing NGX
+context` / `sl.dlss_d` exclusion still occur.** So the `0.0.0`-caps fix that the in-game
+`DxgiFactoryWrapping=false` lever targets is *necessary but not sufficient* — the remaining root is
+downstream of caps, matching H-1' (Opti's own `HookNgxApi`/`GetFeatureRequirements` surface, L4).
+E01 timing (SR + SL, 1 rep): EVAL 4.4764 / p95 5.3243, GPU 10.4249 — vs sentinel 4.4711 / 10.6106:
+EVAL +0.0053 ms (below the 0.165 floor ⇒ no effect claim permitted; and G-EFFECT forbids claims
+across a FAILing cell anyway). Gate counts: 6 `Ignoring plugin 'sl.dlss_d'` / `adapter mask 0x0`
+matching lines, 2× `Failed to
+initialize NGX`, 2× `Missing NGX context`.
+
+### Tier B RR (`Dx12Upscaler=dlssd`, `--ini inis/dlssd.ini`) — **BLOCKED(N4), reclass 03:11**
+
+B03 × 3 and E02 × 1, identity each time: `G-IDENT 'Creating new dlssd upscaler'x1 fsr_fallback=0
+nvngx_loaded=1`. Port side, `runs/B03/rep1/dlss5-amd-ngx.log`:
+
+```
+[    614 ms] RR 2560x1440 -> 3840x2160: creating the frame chain from /home/deck/DLSS-Vulkan-Linux/build/ngx-weights/rr
+[  14042 ms] RR preset F 2560x1440 -> 3840x2160: chain ready in 13428 ms, 28 pipelines, weights .../ngx-weights/rr
+[  14046 ms] D3D12 CreateFeature: id=1 feature=13 preset=F 2560x1440 -> 3840x2160 [diag-v1]
+[  14137 ms] eval #1 FAIL: id=1 feature=13 preset=F n=3 slot=GBuffer.Normals why=GetD3D12Resource returned null for this key ctx=[no ID3D12Resource]
+```
+Opti echoes `_EvaluateFeature result: BAD00000` / `Upscaling done: false` ×60.
+
+⇒ **RR create + RR chain build WORK headlessly through our port** (feature 13, preset F, rr weights);
+the only blocker is that the SR-shaped harness never binds `GBuffer.Normals`/`GBuffer.Roughness`
+(`src/pe/nvngx.cpp:1133-1136`) ⇒ **need N4** (D1-DESIGN §6). Gates changed to `BLOCKED` (never FAIL)
+with precedence kept so a real FAIL still wins; refusal ms (EVAL ~2.49, GPU ~0.002) are excluded
+from all tables. E02 additionally fails G-RR-ASSURE exactly as E01 (same three subchecks).
+
+### Environment side-effect to flag (executor/D3 relevant)
+
+Every wave-1 run used the game prefix un-cloned (game not running ⇒ `game prefix free`), and Proton
+10.0 printed on first touch:
+
+```
+Proton: Upgrading prefix from GE-Proton11-6 to 10.1000-105 (/home/deck/.local/share/Steam/steamapps/compatdata/3321460/)
+Proton: Prefix has an invalid version?! You may want to back up user files and delete this prefix.
+```
+(`runs/A03/rep1/run.stdout.log:1-2`) — i.e. **the shared prefix's Proton version marker was flipped
+10.1000-105 by the harness, and Proton itself called it invalid.** The executor should expect the
+game's next GE-Proton11-6 launch to re-assert its own version; no user files were written by us and
+`tools/verify/**` stayed untouched. Re-verified: launch line in `localconfig.vdf:2894` never edited
+this session.
+
+### Wave-1 scoreboard
+
+| tier | cells run | runs | PASS | FAIL | BLOCKED |
+|---|---|---|---|---|---|
+| A (dlss × 6 quality, RR off) | 6 | 19 (incl close-out sentinel) | 19 | 0 | 0 |
+| E (`--sl`) | E01, E02 | 2 | 0 | 2 (G-RR-ASSURE, expected current state) | 0 |
+| B (RR on via `dlssd`) | B03 | 3 | 0 | 0 | 3 (N4 — RR create itself PASSED) |
+
+Cells remaining unrun: B01,B02,B04,B05,B06 (N4), C01-C03 + D01-D15 (18, N1-ready, not yet scheduled),
+E03 (N1-ready).
+
+**Disk provenance:** wave 1 produced 1440 read-back frames `out_*.f32` × 127 MB = **178 GB** in
+`tools/scenario/runs/` (4K RGB32F × 60 × reps). Purged at 03:1x with
+`find tools/scenario/runs -name 'out_*.f32' -delete` (evidence retained: 2.9 MB of logs/CSV/manifests;
+freed 178 GB, `/home` 87%→82% `df`). Nothing in any gate or number above depends on them (`OUT_NZ` is
+a client.log line), each is re-derivable in ~25 s by re-running its cell, and `run_cell.sh` now purges
+them after gating (`KEEP_FRAMES=1` opts out) so no later session repeats this.
+
 ### D4 addendum — L4 verdict folded in (received 02:3x from top-level; report `/tmp/opencode/lever-runner-L4.md`)
 
 Measured verdict: substituting the staged `nvngx_dlss*.dll` with our port changed **nothing** —

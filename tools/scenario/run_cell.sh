@@ -67,25 +67,53 @@ if [[ $busy -eq 1 ]]; then
 fi
 
 # ---- precondition 3: no other harness run ----------------------------------------------------
-if pgrep -f "run_harness.sh" >/dev/null 2>&1; then
-    echo "REFUSE: another run_harness.sh is live (shared staging dir)" >&2
+# Precise match on purpose: a naive `pgrep -f run_harness.sh` matches ANY process whose cmdline even
+# quotes the name - my own wrapper shell, the top-level scheduler's prompt-posting shell, etc.
+# (measured 02:52: it refused against the scheduler's own message). Real invocations have an argv
+# element that IS the script path (bash <path>/run_harness.sh --out ...), so require THAT shape.
+harness_live=""
+for p in $(pgrep -f 'run_harness\.sh' 2>/dev/null); do
+    [[ $p -eq $$ ]] && continue
+    if tr '\0' '\n' < "/proc/$p/cmdline" 2>/dev/null | grep -qE '(^|.*/)run_harness\.sh$'; then
+        harness_live="$harness_live $p"
+    fi
+done
+if [[ -n $harness_live ]]; then
+    echo "REFUSE: another run_harness.sh is live (shared \$STAGE): pids$harness_live - wait or ping top-level" >&2
+    exit 2
+fi
+if pgrep -f 'opti_client\.exe' >/dev/null 2>&1; then
+    echo "REFUSE: an opti_client.exe process is already running" >&2
     exit 2
 fi
 
 SL_ARG=(); [[ $SL == yes ]] && SL_ARG=(--sl)
 echo "== D1 cell $CELL  tier=$TIER backend=$BACKEND rr=$RR quality=$QUALITY ${W}x${H}->${OW}x${OH} frames=$FRAMES reps=$REPS sl=$SL ini=${INI_CASE:-<harness template>}"
 
-overall=0
-for k in $(seq 1 "$REPS"); do
-    OUT=$RUNS/$CELL/rep$k
+overall=0; PASSN=0; FAILN=0; BLOCKN=0
+# --reps N means "N MORE rep dirs, appended": existing rep* dirs are never overwritten (a sentinel
+# re-run must keep its earlier samples, or the drift check compares against erased history).
+START=$(( $(ls -d "$RUNS/$CELL"/rep* 2>/dev/null | wc -l) + 1 ))
+[[ $START -gt 1 ]] && echo "  (appending at rep$START: $((START-1)) existing rep dir(s) kept)"
+for k in $(seq "$START" $((START + REPS - 1))); do
+    # ABSOLUTE path, deliberately: run_harness.sh converts --out with winpath() (run_harness.sh:224
+    # `Z:${1//\//\\}`), so a relative path becomes the drive-relative `Z:tools\scenario\...` and the
+    # exe's fopen(o.odir + "/client.log") (opti_client.cpp:430) resolves against the STAGE cwd -> it
+    # fails, g_msg stays null, and EVERY [opti_client] line is silently lost (measured 02:49: A03 rep1
+    # looked like `rc=1` with no message at all). Never pass --out/--csv relative from here.
+    OUT=$ROOT/$RUNS/$CELL/rep$k
     mkdir -p "$OUT"
-    echo "-- rep $k/$REPS -> $OUT"
+    echo "-- rep $k/$REPS -> ${OUT#$ROOT/}"
     bash "$HARN" --out "$OUT" --frames "$FRAMES" \
         --w "$W" --h "$H" --ow "$OW" --oh "$OH" "${SL_ARG[@]}" "${INI_ARG[@]}" \
         > "$OUT/harness_invoke.log" 2>&1
     rc=$?
-    echo "   harness rc=$rc (non-zero is EXPECTED for non-dlss backends: g1's literal is"
-    echo "   'Creating new dlss upscaler' - run_harness.sh:250; see D1-GATES 'Harness mapping')"
+    if [[ $BACKEND == dlss ]]; then
+        echo "   harness rc=$rc (a non-zero rc for a dlss cell means a real gate failure - see below)"
+    else
+        echo "   harness rc=$rc (non-zero is EXPECTED for non-dlss backends: g1's literal is"
+        echo "   'Creating new dlss upscaler' - run_harness.sh:250; see D1-GATES 'Harness mapping')"
+    fi
 
     # ---- copy the stage out (the next run wipes it, run_harness.sh:111) -------------------------
     STAGE=$ROOT/build/optiharness/harness
@@ -106,11 +134,24 @@ for k in $(seq 1 "$REPS"); do
 
     bash tools/scenario/gate_cell.sh "$OUT" "$BACKEND" "$FRAMES" $([[ $SL == yes ]] && echo --sl)
     grc=$?
-    [[ $grc -eq 1 ]] && overall=1
-    [[ $grc -eq 3 && $overall -eq 0 ]] && overall=3
+    if [[ $grc -eq 1 ]]; then FAILN=$((FAILN+1)); overall=1
+    elif [[ $grc -eq 3 ]]; then BLOCKN=$((BLOCKN+1)); [[ $overall -eq 0 ]] && overall=3
+    else PASSN=$((PASSN+1))
+    fi
+
+    # Purge the read-back frames AFTER gating: they are 127 MB EACH at 4K x 60 frames x reps (wave 1
+    # ended at 1440 files = 178 GB in tools/scenario/runs for 9 cells). Nothing a gate reads lives
+    # in them - OUT_NZ, EVAL_MS/GPU_EVAL_MS, the port verdicts and the harness's own gates all come
+    # from client.log/eval_ms.csv/the port+Opti logs, which are kept. Re-derivable in ~25 s per rep
+    # by re-running the cell. --keep-frames turns the purge off for a pixel forensics need.
+    if [[ ${KEEP_FRAMES:-0} != 1 ]]; then
+        n_purged=$(find "$OUT" -maxdepth 1 -name 'out_*.f32' | wc -l)
+        find "$OUT" -maxdepth 1 -name 'out_*.f32' -delete
+        [[ $n_purged -gt 0 ]] && echo "   purged $n_purged read-back .f32 from ${OUT#$ROOT/} (KEEP_FRAMES=1 to keep)"
+    fi
 done
 
-echo "== cell $CELL done, overall=$overall (0 pass/blocked, 1 fail, 3 blocked)"
+echo "== cell $CELL done: PASS=$PASSN FAIL=$FAILN BLOCKED=$BLOCKN"
 case $overall in 0) v=OK;; 3) v=BLOCKED;; *) v=FAIL;; esac
 echo "== remember: sentinel discipline — re-run A03 after every 5th cell (D1-DESIGN §4.4/§7)"
 exit $overall

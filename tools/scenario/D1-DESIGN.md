@@ -95,10 +95,19 @@ both dims are acceptable; 2954x1662 is used for exactness to the classifier cons
   companion-DLL check expects **`nvngx_dlssd.dll` of exactly 48 343 664 B** next to `_nvngx.dll`
   (`nvngx.cpp:187-189`).
 
-**Open (stated, not resolved): whether in-game RR is `dlssd`-as-upscaler or a simultaneous
-SR+RR combo.** In-game proof of which semantics Crimson Desert uses is D3/EXECUTOR territory; D1
-labels its RR=on cells "Opti `dlssd` backend" in every artifact so the mapping back to the game can
-be argued from evidence later instead of assumed.
+**Mapping question — SETTLED 2026-10-31 by the background probe** (`/tmp/opencode/d1-rr-mapping.md`,
+read-only, every claim cited there): in-game RR is **simultaneous SR + RR**, not "`dlssd` as the
+upscaler" — SR is created from `Dx12Upscaler` (`NVNGX_DLSS_Dx12.cpp:621-640`) and RR as an
+*independent* NGX feature from `GetFeature("dlssd")` (`:642-652`), and OptiScaler exposes **no RR
+enable key at all** (`[DLSSD]` is presets-only, `Config.cpp:300-333`). The game-side option is
+`_enableRayReconstruction` (present as a string in `CrimsonDesert.exe`; **absent** from
+`user_engine_option_save.xml`, so its stored state is unknown) → Streamline `kFeatureDLSS_RR = 1001`
+→ shipped `sl.dlss_d.dll` → feature 13. `auto` never picks `dlssd` (`Config.cpp:1561-1562`).
+Consequences for this design: (i) `Dx12Upscaler=dlssd` is kept as the RR=on level but is **labelled
+an approximate encoding** in every artifact — a faithful replication of the game would need SR *and*
+RR simultaneously, which `opti_client.cpp` cannot request today (it creates exactly one feature,
+`NVSDK_NGX_Feature_SuperSampling`, `opti_client.cpp:759`); (ii) the RR cells' meaning is "does our
+port serve feature 13", which is the assurance question underneath the game toggle.
 
 ## 3. Cell registry
 
@@ -166,7 +175,8 @@ Cell id: `<tier><nn>` (e.g. `A03`, `B06`). 33 rows total.
 |---|---|---|---|
 | N1 | **LANDED 2026-10-31 02:4x (commit `3795535`)** — `run_harness.sh --ini <path>` stages a caller-chosen `OptiScaler.ini`, validated pre-stage (missing file / no `[section]` ⇒ `HARNESS FAIL: --ini:` rc 1), absent = byte-for-byte old behaviour, printed as `ini=<path>` | harness owner — done | tiers C/D unblocked. Cell inis live in `tools/scenario/inis/` (one per backend: `dlssd/xess/fsr22/fsr31.ini`), each a copy of the harness template with `[Upscalers] Dx12Upscaler` as the single difference; `run_cell.sh` passes `--ini` for every non-`dlss` cell. |
 | N2 | **LANDED 2026-10-31 02:4x (commit `3795535`)** — `nvngx_dlssd.dll` symlinked at `run_harness.sh:117` beside `nvngx_dlss.dll` (`:115`), source missing ⇒ hard preflight die (`:102`) | harness owner — done | tier B/E-RR unblocked on staging. The port still demands exactly 48 343 664 B (`nvngx.cpp:187-189`) ⇒ `G-PORT-RR` verifies the size from a deref'd manifest; L4's side-finding (a plain `cp` of the port over `nvngx_dlss.dll` breaks SR, `nvngx.cpp:187-191`) is what `G-STAGE` guards. |
-| N3 | released execution slot: harness agent (N1/N2) done **+** game exited **+** executor quiet; top-level sends "SLOT RELEASED" | top-level / EXECUTOR | all 33 cells. Held: executor's in-game verification was live at 02:24 (pid 3282740). |
+| N4 | **harness RR inputs**: `opti_client.cpp` must create and bind `GBuffer.Normals` (`VK_FORMAT_R16G16B16A16_SFLOAT`) and `GBuffer.Roughness` (`VK_FORMAT_R32_SFLOAT`) for `dlssd` cells (port's mandatory RR slots, `src/pe/nvngx.cpp:1133-1136`) | harness owner (`tools/optiharness/**`) | **measured 03:09 (B03/E02)**: RR *create succeeds* — `RR 2560x1440 -> 3840x2160: creating the frame chain from .../ngx-weights/rr`, `D3D12 CreateFeature: id=1 feature=13 preset=F`, chain ready 13 428 ms / 28 pipelines — then all 60 evaluates refuse `slot=GBuffer.Normals why=GetD3D12Resource returned null for this key`. Gate class = BLOCKED (harness input gap), never FAIL; the refusals' ms (EVAL ~2.5 / GPU ~0.002) are excluded from every table. Precedent: issue 1's Depth slot, which the harness likewise learned to feed (`README:96`). |
+| N3 | released execution slot: harness agent (N1/N2) done **+** game exited **+** executor quiet; top-level sends "SLOT RELEASED" | top-level / EXECUTOR | **LANDED 02:49; wave 1 ran then** (02:49–03:11). |
 
 ## 7. Run plan (execution order once N1/N2/slots clear)
 

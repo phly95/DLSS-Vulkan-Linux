@@ -69,6 +69,19 @@ Same numbers the harness g2 uses (`run_harness.sh:267-284`):
   (`src/pe/nvngx.cpp:187-189`). **Missing → gate yields `BLOCKED-N2`, not FAIL** (environment
   not yet provisioned — never report a provisioning gap as a product result).
 
+### Re-classification rule (added after the first RR cell): `rr_gap` ⇒ BLOCKED(N4), not FAIL
+
+Measured 03:09 on B03/E02: the port is asked for `feature=13`, **creates** it and builds the RR
+chain from `.../ngx-weights/rr` (create line `D3D12 CreateFeature: id=1 feature=13 preset=F`), but
+the harness supplies only Color/MotionVectors/Depth, so every evaluate refuses at the port's first
+mandatory RR input — `slot=GBuffer.Normals why=GetD3D12Resource returned null for this key`
+(`src/pe/nvngx.cpp:1133-1136`: `GBuffer.Normals` R16G16B16A16_SFLOAT, `GBuffer.Roughness`
+R32_SFLOAT). `gate_cell.sh` therefore computes `rr_gap` (chain built **and** `null`-refusals ≥
+frames **and** zero OKs) and reports G-PORT / G-PORT-RR / G-OUT / G-TIME as **BLOCKED**, with the
+refusal's ms explicitly excluded from any table (EVAL ~2.5 ms = Opti entry, GPU ~0.002 ms = no GPU
+work). Gate precedence: a real FAIL from another gate still wins, so this can never mask a defect
+(`gate()` keeps `RC=1` over `RC=3`). Not triggered by a *create* failure — that stays FAIL.
+
 ### G-PORT-SR (RR=off cells)
 
 - no RR evaluates leaked in: `grep -cE 'feature=13'` == 0 in `dlss5-amd-ngx.log`
