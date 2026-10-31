@@ -429,8 +429,12 @@ and this table is the first full-baseline that such a round can be judged agains
 **Disk:** auto-purge held across all 55 runs — 0 `out_*.f32`, `runs/` = 12 MB.
 
 **Matrix status: 33/33 cells have run** (B03/E02 carry both their pre-N4 BLOCKED and post-N4 PASS
-reps; C01/C03 likewise pre-N5/N5). Only E01/E02 remain non-PASS, both on `G-RR-ASSURE` — the
-in-game SL trio, which is D2/H-1' work, not D1's.
+reps; C01/C03 likewise pre-N5/N5; E03 run at 09:38 as the last cell). The only non-PASS cells are
+the three `--sl` ones — **E01/E02/E03 all fail `G-RR-ASSURE` on the identical trio** (`init-ngx`,
+`missing-ctx`, `sl.dlss_d-dropped(x6)`), i.e. the failure is *backend-independent*: xess+SL (E03:
+EVAL 0.1835 / GPU 3.8250 vs non-SL C01 0.1832 / 3.8601 ⇒ SL's presence costs nothing measurable on
+the type axis either) fails it exactly as dlss+SL (E01) and dlssd+SL (E02) do. That trio is D2/H-1'
+work, not D1's.
 
 ### Environment side-effect to flag (executor/D3 relevant)
 
