@@ -815,3 +815,8 @@ Consequences recorded against the levelling list above:
 "flip happens in harness first" condition - **awaiting top-level approval before touching bin64**.
 Registry chain reverted (L20 baseline proven); `Services\nvlddmkm` writes forbidden; port R1 `.rc` kept (commit 1fd8c6c).
 | G1 | 2026-10-31 11:0x EDT | `bin64/nvngx.dll` **NEW file** (find/ls proved no predecessor, no backup possible) = byte-copy of `bin64/nvngx_dlss.dll` (cmp OK, md5 source==copy `a0dac8ab01c00f56a1de1bc383f4147c`, 58,956,912 B, Authenticode Security Directory 0x3837400+0x2870 present) | APPROVED by top-level after E01-E03 GREEN (a349cfb first-class staging); harness-proven winner (L-C) applied game-side; levers G2 `DxgiFactoryWrapping=false` + Opti dxgi.dll IN + fakenvapi.dll present all left as-is |
+
+### D3 execution (2026-10-31 11:25 EDT) — G1 kept in place; in-game SL boot still blocked by LAUNCH PATH (detail h1prime §9)
+- D3a direct chain (cwd=bin64, full Steam env): Opti boots (+0.3 s) then engine-level stall, no `hkD3D12CreateDevice`/`slInit`/`getSystemCaps` for 3 min (archive `runs/OptiScaler.log.D3a-stall-111908`) — G1 inert on this layer, as §8.2 predicted.
+- D3b/D3c Steam URL forward x3: client assert-crash each time (dumps `assert_20261031112059_9`, `...112450_{3,6,9}`), no game process.
+- Verified byte-exact launch line before+after; `bin64/nvngx.dll` intact (byte-copy, md5 `a0dac8ab...`); all other levers untouched; zero leftovers. Pending: a working launch path (proposed: xdotool UI-Play / Proton-10 direct A-B).

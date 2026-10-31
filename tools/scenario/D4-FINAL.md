@@ -1,8 +1,10 @@
 # D4 — final consolidated report (skeleton: every input exists except D3)
 
 **Owner:** `ses_e6f7044eeffeSSITmFI4a0g4Mb` (master-2). **Assembled 2026-10-31 ~11:0x EDT, no runs.**
-**Status:** D1 DONE (33/33 PASS) · D2 closed to "SL gate cracked headlessly" · **D3 = the only slot
-below that is unfilled** · D4 = this document. The running log this document consolidates is
+**Status:** D1 DONE (33/33 PASS) · D2 closed to "SL gate cracked headlessly" · **D3 = LAUNCH-PATH-
+BLOCKED after 3 attempts; G1 kept game-side with provenance; two approved one-shot levers (N-B, then
+N-A) outstanding, hard stop after — see §5 for the verbatim closing sentence** · D4 = this document.
+The running log this document consolidates is
 [`REPORT.md`](REPORT.md); the machine-readable matrix is [`D1-MATRIX.csv`](D1-MATRIX.csv).
 
 > FILL RULE: the D3 section is the executor's (he fills it or hands rows to top-level). Every other
@@ -106,20 +108,41 @@ are duplicated here so they survive.
 
 ## 5. ▓▓ D3 SLOT — IN-GAME EVIDENCE (EXECUTOR TO FILL) ▓▓
 
-Status: **PENDING**. Rows below are the required evidence; each needs `file:line` or a log quote.
+**STATUS (2026-10-31 11:1x, from the executor's report via top-level; evidence rows still his):**
+
+- **G1 applied and kept game-side**: staged `nvngx.dll` = byte-copy of the game's signed
+  `nvngx_dlss.dll` in `bin64/` — `cmp`-identical, Authenticode **Security Directory** verified,
+  and the permanent Steam launch line byte-exact before/after (provenance = executor's report;
+  not independently re-measured by this session).
+- **In-game verification = LAUNCH-PATH-BLOCKED after 3 attempts**: Steam URL assert-wall ×2, plus
+  one direct `ntsync` stall **pre-`slInit`** ×1 ⇒ the money-shot items (a)–(e) below were **never
+  reached**, so no in-game log claim exists either way.
+- **Two approved one-shot levers remain**, hard stop after: **N-B** (Proton 10.0 direct A/B, first)
+  then **N-A** (xdotool `Play`, second). Their outcomes land as rows here.
+
+> **THE D3 SENTENCE, to be used verbatim wherever this is summarized (and to be D4's closing wording
+> if N-B and N-A fail):** *harness-side SR+RR-via-Streamline assurance is PROVEN (E01/E02/E03
+> `G-RR-ASSURE` PASS, `g5 SL boot : PASS` c1–c5, `sl.dlss` + `sl.dlss_d` mask 0x1, zero
+> `Failed to initialize NGX` / `Missing NGX context` / `0xbad00002`, 60/60 SR and 60/60 RR
+> evaluates through the port); in-game confirmation is pending a working launch path, **not**
+> pending the fix.**
+
+Rows below are the required in-game evidence; each needs `file:line` or a log quote.
 
 | # | claim to prove in-game | evidence required | status |
 |---|---|---|---|
-| 1 | launch line final state unchanged | `userdata/49277565/config/localconfig.vdf:2894` exact string = `WINEDLLOVERRIDES=winmm,dxgi=n,b PROTON_FORCE_NVAPI=1 DLSS5_AMD_WEIGHTS=/home/deck/DLSS-Vulkan-Linux/build/ngx-weights %command%` | PENDING |
-| 2 | caps live (the P1 lever's whole point) | `OptiScaler.log` `getSystemCaps` — driver ≥ 512.15, **not** `0.0.0`; no `NVAPI failed to initialize` | PENDING |
-| 3 | SR available & rendering | `Loaded plugin 'sl.dlss' … adapter mask 0x1`; port `eval #K OK: … feature=1` counts; no black screen (game frame / user report) | PENDING |
-| 4 | RR available (menu path) | menu/save: `_enableRayReconstruction` present **and** set in `user_engine_option_save.xml`; Opti `Creating DLSSD feature` / `GetFeature("dlssd")`; `Loaded plugin 'sl.dlss_d' … adapter mask 0x1`, **no** `Ignoring plugin 'sl.dlss_d'` | PENDING |
-| 5 | SL doom trio stays absent in-game | zero `Failed to initialize NGX` · `Missing NGX context` · `0xbad00002` in the session log | PENDING |
-| 6 | RR actually evaluates with the game's real G-buffer | port `eval #K OK: … feature=13 n=7` (or the game's real slot set) — non-black, still ORACLE-PENDING per §6 | PENDING |
-| 7 | timing sanity vs harness baselines | optional: one in-game EVAL/GPU figure, compared against §2 without claiming harness/game equivalence | PENDING |
+| 1 | launch line final state unchanged | `userdata/49277565/config/localconfig.vdf:2894` exact string = `WINEDLLOVERRIDES=winmm,dxgi=n,b PROTON_FORCE_NVAPI=1 DLSS5_AMD_WEIGHTS=/home/deck/DLSS-Vulkan-Linux/build/ngx-weights %command%` | **PROVEN (reported, executor)** — byte-exact before/after the G1 intervention |
+| 1b | G1 file provenance | `cmp`-identical to game `nvngx_dlss.dll` + Authenticode Security Directory verified | **PROVEN (reported, executor)** |
+| 2 | caps live (the P1 lever's whole point) | `OptiScaler.log` `getSystemCaps` — driver ≥ 512.15, **not** `0.0.0`; no `NVAPI failed to initialize` | BLOCKED (launch path) |
+| 3 | SR available & rendering | `Loaded plugin 'sl.dlss' … adapter mask 0x1`; port `eval #K OK: … feature=1` counts; no black screen (game frame / user report) | BLOCKED (launch path) |
+| 4 | RR available (menu path) | menu/save: `_enableRayReconstruction` present **and** set in `user_engine_option_save.xml`; Opti `Creating DLSSD feature` / `GetFeature("dlssd")`; `Loaded plugin 'sl.dlss_d' … adapter mask 0x1`, **no** `Ignoring plugin 'sl.dlss_d'` | BLOCKED (launch path) |
+| 5 | SL doom trio stays absent in-game | zero `Failed to initialize NGX` · `Missing NGX context` · `0xbad00002` in the session log | BLOCKED (launch path) |
+| 6 | RR actually evaluates with the game's real G-buffer | port `eval #K OK: … feature=13 n=7` (or the game's real slot set) — non-black, still ORACLE-PENDING per §6 | BLOCKED (launch path) |
+| 7 | timing sanity vs harness baselines | optional: one in-game EVAL/GPU figure, compared against §2 without claiming harness/game equivalence | BLOCKED (launch path) |
 
-*(Rows 1-7 are the template; attach `bin64/runs/<date>-*` log names or screenshot paths in the
-status column as they land.)*
+*(Attempts log so far: 3 — Steam URL assert-wall ×2, direct ntsync stall pre-`slInit` ×1. Pending:
+N-B then N-A; hard stop after those. Fill rows with `bin64/runs/<date>-*` log names or screenshot
+paths as they land; if N-B and N-A fail, close D4 with the boxed sentence above.)*
 
 ## 6. RR output verification — scope line (final-report wording, unchanged from `REPORT.md`)
 
