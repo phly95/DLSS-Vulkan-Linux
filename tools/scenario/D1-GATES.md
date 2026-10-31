@@ -73,11 +73,17 @@ Same numbers the harness g2 uses (`run_harness.sh:267-284`):
 
 Measured 03:09 on B03/E02: the port is asked for `feature=13`, **creates** it and builds the RR
 chain from `.../ngx-weights/rr` (create line `D3D12 CreateFeature: id=1 feature=13 preset=F`), but
-the harness supplies only Color/MotionVectors/Depth, so every evaluate refuses at the port's first
-mandatory RR input — `slot=GBuffer.Normals why=GetD3D12Resource returned null for this key`
-(`src/pe/nvngx.cpp:1133-1136`: `GBuffer.Normals` R16G16B16A16_SFLOAT, `GBuffer.Roughness`
-R32_SFLOAT). `gate_cell.sh` therefore computes `rr_gap` (chain built **and** `null`-refusals ≥
-frames **and** zero OKs) and reports G-PORT / G-PORT-RR / G-OUT / G-TIME as **BLOCKED**, with the
+the harness supplied only Color/MotionVectors/Depth, so every evaluate refused at the port's first
+mandatory RR input — `slot=GBuffer.Normals why=GetD3D12Resource returned null for this key`.
+**Correction 04:1x — FOUR inputs, not two** (this section first named Normal+Roughness only): the
+port's `extra[]` at `src/pe/nvngx.cpp:1133-1136` = `GBuffer.Normals` (R16G16B16A16_SFLOAT),
+`DLSS.Input.DiffuseAlbedo` (R16G16B16A16_SFLOAT), `DLSS.Input.SpecularAlbedo`
+(R16G16B16A16_SFLOAT), `GBuffer.Roughness` (R32_SFLOAT), all four fetched per RR frame (`:1152-1161`),
+the same set as the frozen referee's `kRrInputs` (`tools/verify/ngx_client/main.cpp:91-98`).
+N4 landed with all four bound; `G-PORT-RR` now fails if any of the four is absent, and expects the
+RR-appropriate format triplet `fmt col=0 mv=10 dep=0` (feature 13 re-derives RG32F MV to code 10,
+`nvngx.cpp:1177`), while SR cells keep `mv=1`. `gate_cell.sh` computes `rr_gap` (chain built **and**
+`null`-refusals ≥ frames **and** zero OKs) and reports G-PORT / G-PORT-RR / G-OUT / G-TIME as **BLOCKED**, with the
 refusal's ms explicitly excluded from any table (EVAL ~2.5 ms = Opti entry, GPU ~0.002 ms = no GPU
 work). Gate precedence: a real FAIL from another gate still wins, so this can never mask a defect
 (`gate()` keeps `RC=1` over `RC=3`). Not triggered by a *create* failure — that stays FAIL.

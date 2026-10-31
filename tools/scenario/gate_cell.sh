@@ -127,7 +127,13 @@ if [[ $USES_PORT -eq 0 ]]; then
 else
 n_ok=$(count -E 'eval #[0-9]+ OK:' "$PLOG")
 n_fail=$(count -E 'eval #[0-9]+ FAIL:' "$PLOG")
-n_fmt=$(count -F 'fmt col=0 mv=1 dep=0' "$PLOG")
+# Forwarded-motion-vector code differs per feature: with rg32 inputs an SR session prints
+# `fmt col=0 mv=1 dep=0` while feature 13 re-derives the same RG32F MV to code 10
+# (`src/pe/nvngx.cpp:1177`: `fp.fmt_mv = rr ? 10 : 1`; referee cells sr_M_mv1_dep1 / rr_F_fmt_a,
+# run_all.sh:183/192). Hardcoding mv=1 here would fail every healthy dlssd cell - fixed per backend.
+MV_EXPECT=1; [[ $BACKEND == dlssd ]] && MV_EXPECT=10
+EXPECT_FMT="fmt col=0 mv=$MV_EXPECT dep=0"
+n_fmt=$(count -F "$EXPECT_FMT" "$PLOG")
 n_d19=$(count -F 'Depth: DXGI format 19 is not one this bridge decodes' "$PLOG")
 # RR input-gap detector (measured 03:09 on B03/E02): the port CREATES feature 13 and builds the RR
 # chain fine, but the SR-shaped harness passes only Color/MotionVectors/Depth, so every evaluate
@@ -145,11 +151,11 @@ if [[ $BACKEND == dlssd ]]; then
     fi
 fi
 if [[ $n_ok -ge $FRAMES && $n_fail -eq 0 && $n_fmt -ge 1 && $n_d19 -eq 0 ]]; then
-    gate G-PORT PASS "ok=$n_ok/$FRAMES fail=0 fmtX$n_fmt depth19=$n_d19"
+    gate G-PORT PASS "ok=$n_ok/$FRAMES fail=0 '$EXPECT_FMT'x$n_fmt depth19=$n_d19"
 elif [[ $rr_gap -eq 1 ]]; then
     gate G-PORT BLOCKED "RR feature=13 created + chain built, but $n_nullref/$FRAMES evaluates refuse on harness-missing inputs (first: $rr_slots) - need N4, NOT a product failure"
 else
-    gate G-PORT FAIL "ok=$n_ok/$FRAMES fail=$n_fail fmtX$n_fmt depth19=$n_d19"
+    gate G-PORT FAIL "ok=$n_ok/$FRAMES fail=$n_fail '$EXPECT_FMT'x$n_fmt (want mv=$MV_EXPECT) depth19=$n_d19"
 fi
 
 if [[ $BACKEND == dlssd ]]; then
@@ -165,11 +171,34 @@ if [[ $BACKEND == dlssd ]]; then
         # port's real line: `RR 2560x1440 -> 3840x2160: creating the frame chain from .../ngx-weights/rr`
         n_rrchain=$(count -E 'RR [0-9]+x[0-9]+ -> [0-9]+x[0-9]+: creating the frame chain from .*[/"]rr' "$PLOG")
         if [[ $n_rr -ge $FRAMES && $n_rrchain -ge 1 ]]; then
-            gate G-PORT-RR PASS "feature=13 OK x$n_rr chain-from-rr x$n_rrchain (size 48343664)"
+            # N4 data contract: the RR evaluate must BIND ALL FOUR synthetic inputs - the port's
+            # extra[] (nvngx.cpp:1133-1136: GBuffer.Normals, DLSS.Input.DiffuseAlbedo,
+            # DLSS.Input.SpecularAlbedo, GBuffer.Roughness), all four fetched at collect_frame
+            # (nvngx.cpp:1152-1161), matching the frozen referee's kRrInputs (ngx_client/main.cpp:91-98).
+            # Values are frame-independent synthetic constants (Normals analytic gradient,
+            # Diffuse=0.5, Specular=0.04, Roughness=0.5) => OUTPUT IS ORACLE-PENDING: non-black
+            # proves the pass ran, NOT that RR reconstructed correctly (referee story still owed).
+            # Match the KEY as logged by the port, which prints Slot.name (nvngx.cpp:1133-1136 pairs
+            # {"GBuffer.Roughness", "Roughness"}, {"GBuffer.Normals", "GBuffer.Normals"}). First run
+            # grepped 'GBuffer.Roughness' and FAILed every healthy B cell (04:2x) even though eval #1
+            # showed `[6 Roughness ...]` - name-vs-key, not a missing bind. Match either spelling.
+            # Also require n=7 (3 common + 4 RR) on every RR OK line = the full slot set.
+            miss=""
+            for k in 'GBuffer.Normals' 'DiffuseAlbedo' 'SpecularAlbedo' 'Roughness'; do
+                [[ $(count -F "$k" "$PLOG") -ge 1 ]] || miss="$miss $k"
+            done
+            n_full=$(count -E 'eval #[0-9]+ OK: id=[0-9]+ feature=13 n=7' "$PLOG")
+            if [[ -z $miss && $n_full -ge $FRAMES ]]; then
+                gate G-PORT-RR PASS "feature=13 OK x$n_rr (all n=7: col/mv/dep+nrm/alb/spa/rgh) chain-from-rr x$n_rrchain; OUTPUT ORACLE-PENDING (synthetic RR inputs, no referee yet)"
+            elif [[ -n $miss ]]; then
+                gate G-PORT-RR FAIL "feature=13 runs but RR input(s) never bound:$miss (N4 binding incomplete)"
+            else
+                gate G-PORT-RR FAIL "RR inputs mentioned but only $n_full/$FRAMES OK lines carry n=7 (incomplete slot set)"
+            fi
         elif [[ $rr_gap -eq 1 ]]; then
             # measured 03:09: create SUCCEEDED (feature=13, preset F, chain from .../rr, 13.4 s build)
             # and only the evaluate refuses on inputs the harness does not have => BLOCKED(N4).
-            gate G-PORT-RR BLOCKED "RR create OK (feature=13, chain-from-rr x$n_rrchain) but 0/$FRAMES evaluates succeed: harness supplies no GBuffer inputs ($rr_slots) - need N4"
+            gate G-PORT-RR BLOCKED "RR create OK (feature=13, chain-from-rr x$n_rrchain) but 0/$FRAMES evaluates succeed: harness supplies no RR inputs ($rr_slots) - need N4"
         else
             gate G-PORT-RR FAIL "feature=13 OK x$n_rr/$FRAMES rr-chain x$n_rrchain"
         fi
@@ -190,7 +219,11 @@ mn=$(awk '/^OUT_NZ /{ split($3,a,"="); v=a[2]+0; if(!h||v<m){m=v;h=1} } END{ if(
 # if/else, NOT `cond && gate PASS || gate FAIL`: gate() ends in `[[ $2 == BLOCKED ]] && RC=3`, which
 # returns 1 on a PASS, so the `||` branch fired too and every PASS also printed a FAIL (measured 02:54).
 if [[ $viol -eq 0 ]]; then
-    gate G-OUT PASS "all frames nz>=0.10 (min nz=$mn)"
+    if [[ $BACKEND == dlssd ]]; then
+        gate G-OUT PASS "all frames nz>=0.10 (min nz=$mn) | RR: non-black proves ONLY that the pass ran - ORACLE-PENDING (synthetic inputs, no referee yet)"
+    else
+        gate G-OUT PASS "all frames nz>=0.10 (min nz=$mn)"
+    fi
 elif [[ ${rr_gap:-0} -eq 1 ]]; then
     gate G-OUT BLOCKED "black output is the expected consequence of the RR input gap (N4): the evaluate never ran"
 else

@@ -259,10 +259,17 @@ nvngx_loaded=1`. Port side, `runs/B03/rep1/dlss5-amd-ngx.log`:
 Opti echoes `_EvaluateFeature result: BAD00000` / `Upscaling done: false` ×60.
 
 ⇒ **RR create + RR chain build WORK headlessly through our port** (feature 13, preset F, rr weights);
-the only blocker is that the SR-shaped harness never binds `GBuffer.Normals`/`GBuffer.Roughness`
-(`src/pe/nvngx.cpp:1133-1136`) ⇒ **need N4** (D1-DESIGN §6). Gates changed to `BLOCKED` (never FAIL)
+the only blocker was the harness binding none of the port's **four** mandatory RR inputs
+(`src/pe/nvngx.cpp:1133-1136` = `GBuffer.Normals` + `DLSS.Input.DiffuseAlbedo` +
+`DLSS.Input.SpecularAlbedo` + `GBuffer.Roughness`, fetched at `:1152-1161`) ⇒ **need N4**
+(D1-DESIGN §6). *Correction 04:1x: this paragraph first said "GBuffer.Normals/GBuffer.Roughness"
+only — 2 of 4; the true set is the four above, equal to the frozen referee's `kRrInputs`
+(`tools/verify/ngx_client/main.cpp:91-98`).* Gates then changed to `BLOCKED` (never FAIL)
 with precedence kept so a real FAIL still wins; refusal ms (EVAL ~2.49, GPU ~0.002) are excluded
-from all tables. E02 additionally fails G-RR-ASSURE exactly as E01 (same three subchecks).
+from all tables. E02 additionally failed G-RR-ASSURE exactly as E01 (same three subchecks).
+N4 landed after wave 1, so these cells get re-run below (§ "D1 wave 3 — RR tier"), with two gate
+changes first: `fmt col=0 mv=10 dep=0` for feature 13 (`nvngx.cpp:1177`), and the four-input
+binding assertion.
 
 ### Wave 2 — upscaler type axis (C/D), 03:53:36–04:11:22 EDT, + fsr22 sentinel 04:1x
 
@@ -335,6 +342,95 @@ C01/C03 (6 runs) → BLOCKED(N5); still unrun: D01-D05 (xess) + D11-D15 (fsr31) 
 B01/B02/B04-B06 = N4-blocked, E03 (N1-ready, not scheduled).
 `out_*.f32`: purged automatically by `run_cell.sh` after gating (0 files on disk; `tools/scenario/runs`
 stays ≤ 6 MB).
+
+### Wave 3 — RR tier after N4 + the type axis after N5 (04:2x–09:35 EDT)
+
+Commits in between: `9fc35a5` (N4 = four RR input slots) and `b685fcf` (N5 = stage the upscaler
+companions). 55 runs this wave: B01-B06 ×3 (B03 appended as rep4-6), 12 xess/fsr31 cells ×3
+(C01/C03 appended), sentinels C01 rep7 + C03 rep7, E02 rep2.
+
+**Gate fixes the runs forced, both measured:**
+- **`mv` is per-feature**: feature 13 prints `fmt col=0 mv=10 dep=0` (`nvngx.cpp:1177`
+  `fp.fmt_mv = rr ? 10 : 1`), so the hardcoded `mv=1` failed every healthy RR cell until
+  `EXPECT_FMT` became backend-dependent (`MV_EXPECT=10` for `dlssd`). Harness g1/g2 had already
+  learned the same thing (`run_harness.sh:242-249`).
+- **name-vs-key false FAIL**: my four-input assertion grepped `GBuffer.Roughness`, but the port logs
+  `Slot.name` = `Roughness` (`nvngx.cpp:1136` pairs `{"GBuffer.Roughness","Roughness"}`) ⇒ all six
+  B cells FAILed on a slot that was bound all along (`eval #1 OK … n=7 … [6 Roughness …]`). Fixed to
+  match either spelling **plus** require `n=7` (3 common + 4 RR) on every RR OK line.
+- **4-slot correction**: DESIGN/GATES/REPORT said N4 needed 2 inputs; the truth is four —
+  `GBuffer.Normals`, `DLSS.Input.DiffuseAlbedo`, `DLSS.Input.SpecularAlbedo`, `GBuffer.Roughness`
+  (`nvngx.cpp:1133-1136`, fetched `:1152-1161`, = referee `kRrInputs`, `ngx_client/main.cpp:91-98`).
+  All three places corrected in place with an explicit "this row first said 2" marker.
+
+**N5 confirmation (the evidence you asked for, `runs/C01/rep4`):**
+`Creating new xess upscaler` ×2, `fsr_fallback=0`, **no** `CheckUpscalerFiles … not found`, and the
+`ChangeFeature changing backend to …` line now names **xess itself** (`:217 … to xess`,
+`init successful for xess`), with 8 companion DLLs in `stage_listing.txt`. Same for fsr31
+(`:215 … to fsr31`). The pre-N5 runs (C01/C03 rep1-3) stay on disk as BLOCKED(N5) provenance.
+
+**RR tier — dlssd, 60 frames, 3 reps each (median of run-medians):**
+
+| cell | render -> 4K | EVAL med ms | GPU med ms | gates |
+|---|---|---|---|---|
+| B01 DLAA | 3840x2160 | 7.0886 | **50.7897** | PASS ×3 |
+| B02 UltraQ | 2954x1662 | 7.0330 | **31.3426** | PASS ×3 |
+| B03 Quality | 2560x1440 | 7.0358 | **24.7600** | PASS ×3 (rep4-6; rep1-3 = pre-N4 BLOCKED, kept) |
+| B04 Balanced | 2228x1254 | 7.0365 | **20.0992** | PASS ×3 |
+| B05 Performance | 1920x1080 | 7.0147 | **15.7362** | PASS ×3 |
+| B06 UltraPerf | 1280x720 | 6.9438 | **9.0559** | PASS ×3 |
+
+every run: `G-IDENT 'Creating new dlssd upscaler'`, `G-PORT ok=60/60 'fmt col=0 mv=10 dep=0'x60`,
+`G-PORT-RR … all n=7 … OUTPUT ORACLE-PENDING`, `G-OUT nz=1.000000` with the oracle caveat,
+`G-STAGE nvngx_dlssd.dll=48343664`.
+RR floor (B03 ×3): EVAL range 0.099 → threshold **0.198**; GPU range 0.248 → threshold **0.495**.
+⇒ EVAL across the RR tier spans 0.160 ms ⇒ **below the floor, no CPU ranking**; GPU gaps 4.4–14.1 ms
+are all resolvable (and exceed even the widest intra-cell spread seen, 3.76 ms in B02).
+RR-vs-SR at 2560×1440 (B03 vs A03): CPU 7.0358 vs 4.4711 (**+2.56 ms, ×1.57**), GPU 24.7600 vs
+10.6106 (**+14.15 ms, ×2.33**) — independently corroborated by the N4 agent's 12-frame smoke
+(EVAL 7.1221 / GPU 24.1245 vs SR 4.4160 / 10.2298). Chain build stays one-time (~13.3 s).
+
+**E02 rep2 = the D3-grade decoupling result**: with the SL stack booted, RR still runs 60/60 through
+our port (`G-PORT-RR PASS … n=7`, EVAL 7.0371 / GPU 24.5138 — same numbers as the non-SL B03),
+while `G-RR-ASSURE` still FAILs on the same trio (`init-ngx`, `missing-ctx`, `sl.dlss_d-dropped(x6)`).
+⇒ **Streamline's refusal and our RR capability are now provably independent**: the port+Opti dlssd
+path serves RR; what stays broken is the SL-side gating (H-1' territory), in the harness and
+in-game alike.
+
+**Type axis completed — xess (6 cells ×3, sentinels C01 rep7) and fsr31 (6 ×3, sentinel C03 rep7):**
+
+| backend / quality | EVAL med ms | GPU med ms |
+|---|---|---|
+| xess DLAA / UQ / Q / Bal / Perf / UPerf | 0.1864 / 0.1841 / 0.1832 / 0.1722 / 0.1717 / 0.1741 | 4.2261 / 4.4986 / 3.8601 / 3.8401 / 3.7039 / 3.7143 |
+| fsr31 DLAA / UQ / Q / Bal / Perf / UPerf | 0.1271 / 0.1267 / 0.1267 / 0.1180 / 0.1164 / 0.1181 | 3.0274 / 2.2870 / 2.1540 / 1.8114 / 1.9028 / 1.9088 |
+
+Floors: xess GPU 0.908 ms (rep range 0.454!), fsr31 GPU 0.265 ms; EVAL floors 0.007 / 0.006.
+G-EFFECT applied: **xess GPU gaps are ALL below its 0.908 floor ⇒ the xess quality axis is
+unranked** (it also shows no resolution trend — worth a future look, not a claim); xess EVAL
+Q(0.1832) vs Bal/Perf(≈0.172) = ~0.011 > 0.007 ⇒ resolvable. fsr31 GPU: DLAA→UQ 0.740 ✓ and
+Q→Bal 0.343 ✓ resolvable, the rest below 0.265 ✗; fsr31 EVAL Q vs Bal 0.0087 > 0.006 ✓.
+
+**Comparative table at 2560×1440 → 3840×2160 (Quality), median of run-medians, all cells identity-
+gated:**
+
+| path | EVAL ms | GPU ms | n |
+|---|---|---|---|
+| fsr22 (Opti internal) | 0.0946 | 1.7158 | 4 |
+| fsr31 (Opti + amd dll) | 0.1267 | 2.1540 | 3+sent |
+| xess (Opti + libxess) | 0.1832 | 3.8601 | 3+sent |
+| **dlss → our port** | 4.4711 | 10.6106 | 4 |
+| **dlssd (RR) → our port** | 7.0358 | 24.7600 | 3 |
+
+Same caveats as wave 2, now with a fifth row: the port paths carry their own copies + record and are
+not like-for-like against Opti's internal backends; the CPU gap (×47 vs fsr22) is already attributed
+to the port by the `--direct` A/B; **mechanism still unrooted** ⇒ candidate for a later lever round,
+and this table is the first full-baseline that such a round can be judged against.
+
+**Disk:** auto-purge held across all 55 runs — 0 `out_*.f32`, `runs/` = 12 MB.
+
+**Matrix status: 33/33 cells have run** (B03/E02 carry both their pre-N4 BLOCKED and post-N4 PASS
+reps; C01/C03 likewise pre-N5/N5). Only E01/E02 remain non-PASS, both on `G-RR-ASSURE` — the
+in-game SL trio, which is D2/H-1' work, not D1's.
 
 ### Environment side-effect to flag (executor/D3 relevant)
 
