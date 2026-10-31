@@ -22,6 +22,10 @@
 #   nvngx_dlssd.dll       SYMLINK (absolute, same waypoint) to the game's real NVIDIA DLSS-D
 #                          companion, 48 343 664 bytes - the RR cells need it next to _nvngx.dll
 #                          (nvngx.cpp:187-189); absent source dies in preflight like nvngx_dlss.dll
+#   nvngx.dll             (--sl only) BYTE-COPY of the game's signed nvngx_dlss.dll: SL's
+#                          WinVerifyTrust gate rejects any unsigned core (L15/LA1); L-C proved
+#                          the signed copy flips g5 c2/c4 + loads sl.dlss_d. Staged pre-run, so
+#                          no keeper loop is needed (the old L12-14 keeper workaround is gone).
 #   upscaler companions    SYMLINKS (absolute, same waypoint, N5) to the upscaler libs OptiScaler
 #                          probes next to its own dxgi.dll: amd_fidelityfx_loader_dx12/dx12/
 #                          upscaler_dx12/framegeneration_dx12/denoiser_dx12/radiancecache_dx12,
@@ -122,6 +126,15 @@ if [[ $MODE == opti ]]; then ln -s "$DXGI_SRC" "$STAGE/dxgi.dll"; fi
 ln -s "$GAME/nvngx_dlss.dll" "$STAGE/nvngx_dlss.dll"
 # same waypoint, same ABSOLUTE style as nvngx_dlss.dll: the real NVIDIA DLSS-D (RR) companion
 ln -s "$GAME/nvngx_dlssd.dll" "$STAGE/nvngx_dlssd.dll"
+# WINNING L-C CONFIG (h1prime-report.md 7.3, 2026-10-31): SL's pre-LoadLibrary gate on
+# <appdir>\nvngx.dll is WinVerifyTrust - only a genuine SIGNED NVIDIA dll passes (our port,
+# even with the R1 .rc version resource, is rejected before LoadLibrary: L15/LA1 c2/c4 bad).
+# A byte-copy of the game's own nvngx_dlss.dll flipped c2/c4 to ok AND pulled sl.dlss_d (id
+# 1001) into the SL execution order - first all-green g5 in 15 cells. Byte-copy (not symlink)
+# to match the proven L-C cell exactly. --sl ONLY: non-sl cells keep the exact 33-cell
+# baseline file set (this file's presence flips Opti's State.nvngxExists -> Kernel_Hooks
+# CreateFileW/GetFileAttributesW redirect, Kernel_Hooks.cpp:191-226).
+if [[ $SLMODE -eq 1 ]]; then cp "$GAME/nvngx_dlss.dll" "$STAGE/nvngx.dll"; fi
 # N5 (D1-DESIGN.md:179, REPORT.md:279-295): OptiScaler probes these upscaler companion dlls
 # beside its own dxgi.dll on EVERY start (Config::CheckUpscalerFiles, FfxApi_Proxy.h:211/368/539/
 # 677/819, XeSS_Proxy.h:247) and silently rewrites the backend when the one its chosen upscaler
@@ -395,6 +408,10 @@ if [[ $SLMODE -eq 1 ]]; then
         if ver_ge "$got" "$need"; then c3=ok; drv_note="detected $got >= required $need"
         else c3="bad(detected $got < required $need)"; drv_note="detected $got < required $need"; fi
     fi
+    # g5 must be ASSIGNED here: it starts "n/a" and this loop only ever sets FAIL, so an
+    # all-ok run used to print "n/a" AND fail the final verdict (first seen on L-C, the first
+    # run where every subcheck was ok). PASS unless a subcheck demotes it.
+    g5=PASS
     for c in "$c1" "$c2" "$c3" "$c4" "$c5"; do [[ $c == ok ]] || g5=FAIL; done
     g5note="c1_getSystemCaps_nvapi=$c1  c2_no_failed_NGX=$c2  c3_driver=$c3  c4_no_missing_ctx=$c4  c5_sl.dlss_loaded=$c5"
     # the EXACT measured nvapi/driver numbers, whatever they are (game archive: NVAPI failed +
