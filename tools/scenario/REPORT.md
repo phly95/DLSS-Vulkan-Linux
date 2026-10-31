@@ -436,6 +436,150 @@ EVAL 0.1835 / GPU 3.8250 vs non-SL C01 0.1832 / 3.8601 ⇒ SL's presence costs n
 the type axis either) fails it exactly as dlss+SL (E01) and dlssd+SL (E02) do. That trio is D2/H-1'
 work, not D1's.
 
+## D1 FINAL RESULTS DIGEST — the 33-cell deliverable table (compiled 09:4x, read-only from `runs/`)
+
+Median-of-run-medians over the **current-era reps** listed (frame 0 excluded; EVAL/GPU p95 are the
+median of per-run p95s). Per-run evidence for every row: `tools/scenario/runs/<cell>/rep<k>/` =
+`client.log` (OUT_NZ + EVAL_MS/GPU_EVAL_MS), `eval_ms.csv`, `summary.txt`, `OptiScaler.log`,
+`dlss5-amd-ngx.log` (port cells), `g5_evidence.txt` (`--sl` cells), `harness_invoke.log` (g1-g5),
+`stage_manifest.txt` + `stage_listing.txt` (sizes/inventory). Verdicts are `gate_cell.sh`'s own
+(they can be re-derived at any time with `bash tools/scenario/gate_cell.sh <repdir> <backend> 60 [--sl]`).
+
+| cell | axis | backend | quality | reps | EVAL med | EVAL p95 | GPU med | GPU p95 | verdict | era / provenance |
+|---|---|---|---|---|---|---|---|---|---|---|
+| A01 | SR | dlss | DLAA | 3 | 4.4663 | 7.5120 | 19.7137 | 20.7421 | PASS ×3 | wave1 |
+| A02 | SR | dlss | UltraQuality | 3 | 4.4171 | 8.6545 | 13.3211 | 15.8435 | PASS ×3 | wave1 |
+| **A03 (sentinel)** | SR | dlss | Quality | **4** | **4.4595** | 7.0286 | **10.6140** | 12.8852 | PASS ×4 | wave1 + close-out rep4 |
+| A04 | SR | dlss | Balanced | 3 | 4.4367 | 7.4179 | 8.9988 | 11.3753 | PASS ×3 | wave1 |
+| A05 | SR | dlss | Performance | 3 | 4.4357 | 8.2525 | 8.1175 | 9.0680 | PASS ×3 | wave1 (rep2 p95 54.35 outlier logged) |
+| A06 | SR | dlss | UltraPerformance | 3 | 4.3522 | 6.8823 | 5.5119 | 6.9244 | PASS ×3 | wave1 |
+| B01 | RR | dlssd | DLAA | 3 | 7.0886 | 12.5470 | 50.7897 | 51.2028 | PASS ×3 | wave3 post-N4 |
+| B02 | RR | dlssd | UltraQuality | 3 | 7.0330 | 12.1755 | 31.3426 | 31.6116 | PASS ×3 | wave3 post-N4 |
+| B03 | RR | dlssd | Quality | 3 | 7.0358 | 12.9891 | 24.7600 | 25.4000 | PASS ×3 | wave3 post-N4; **rep1-3 = pre-N4 BLOCKED kept** |
+| B04 | RR | dlssd | Balanced | 3 | 7.0365 | 13.4226 | 20.0992 | 20.3519 | PASS ×3 | wave3 post-N4 |
+| B05 | RR | dlssd | Performance | 3 | 7.0147 | 12.9220 | 15.7362 | 18.4865 | PASS ×3 | wave3 post-N4 |
+| B06 | RR | dlssd | UltraPerformance | 3 | 6.9438 | 12.6514 | 9.0559 | 11.1308 | PASS ×3 | wave3 post-N4 |
+| C01 | type | xess | Quality | 4 | 0.1832 | 0.2676 | 3.8677 | 4.5293 | PASS ×4 | wave4 post-N5; **rep1-3 = pre-N5 BLOCKED kept**; rep7 sentinel |
+| C02 | type | fsr22 | Quality | 4 | 0.0945 | 1.2185 | 1.7747 | 2.1014 | PASS ×4 | wave2; rep4 sentinel |
+| C03 | type | fsr31 | Quality | 4 | 0.1270 | 1.4366 | 2.1564 | 2.4224 | PASS ×4 | wave4 post-N5; **rep1-3 = pre-N5 BLOCKED kept**; rep7 sentinel |
+| D01 | type | xess | DLAA | 3 | 0.1864 | 0.2255 | 4.2261 | 4.9240 | PASS ×3 | wave4 |
+| D02 | type | xess | UltraQuality | 3 | 0.1841 | 0.2354 | 4.4986 | 4.7004 | PASS ×3 | wave4 |
+| D03 | type | xess | Balanced | 3 | 0.1722 | 0.2154 | 3.8401 | 4.5154 | PASS ×3 | wave4 |
+| D04 | type | xess | Performance | 3 | 0.1717 | 0.2831 | 3.7039 | 4.3715 | PASS ×3 | wave4 |
+| D05 | type | xess | UltraPerformance | 3 | 0.1741 | 0.2846 | 3.7143 | 5.4852 | PASS ×3 | wave4 |
+| D06 | type | fsr22 | DLAA | 3 | 0.0941 | 1.1999 | 2.5593 | 2.7722 | PASS ×3 | wave2 |
+| D07 | type | fsr22 | UltraQuality | 3 | 0.0949 | 1.2713 | 2.1114 | 2.3437 | PASS ×3 | wave2 (rep2 p95 41.04 outlier logged) |
+| D08 | type | fsr22 | Balanced | 3 | 0.0864 | 1.1944 | 1.7553 | 1.9947 | PASS ×3 | wave2 |
+| D09 | type | fsr22 | Performance | 3 | 0.0869 | 1.1866 | 1.6753 | 1.6963 | PASS ×3 | wave2 |
+| D10 | type | fsr22 | UltraPerformance | 3 | 0.0872 | 1.1843 | 1.5202 | 2.2325 | PASS ×3 | wave2 |
+| D11 | type | fsr31 | DLAA | 3 | 0.1271 | 1.4540 | 3.0274 | 3.4386 | PASS ×3 | wave4 |
+| D12 | type | fsr31 | UltraQuality | 3 | 0.1267 | 1.4193 | 2.2870 | 2.6574 | PASS ×3 | wave4 |
+| D13 | type | fsr31 | Balanced | 3 | 0.1181 | 1.4189 | 1.8114 | 2.2606 | PASS ×3 | wave4 |
+| D14 | type | fsr31 | Performance | 3 | 0.1164 | 1.4013 | 1.9028 | 2.1437 | PASS ×3 | wave4 |
+| D15 | type | fsr31 | UltraPerformance | 3 | 0.1181 | 1.5115 | 1.9088 | 2.3421 | PASS ×3 | wave4 |
+| E01 | SL diag | dlss | Quality | 1 | 4.4764 | 5.3243 | 10.4249 | 12.8407 | **FAIL (G-RR-ASSURE only)**; all others PASS | wave1 `--sl`; D3-grade trio captured |
+| E02 | SL diag + RR | dlssd | Quality | 1 | 7.0371 | 10.4226 | 24.5138 | 25.2236 | **FAIL (G-RR-ASSURE only)**; RR gates PASS | wave3 post-N4 `--sl`; rep1 = pre-N4 BLOCKED kept |
+| E03 | SL diag | xess | Quality | 1 | 0.1835 | 0.2256 | 3.8250 | 4.5408 | **FAIL (G-RR-ASSURE only)** | wave4 `--sl` |
+
+**Sentinel rows / noise floors (the numbers every claim above is gated against, G-EFFECT):**
+
+| sentinel | reps | EVAL range → ×2 floor | GPU range → ×2 floor |
+|---|---|---|---|
+| A03 dlss/Quality | 4 | 0.0824 → **0.165 ms** | 0.0651 → **0.130 ms** |
+| C02 fsr22/Quality | 4 | 0.0023 → **0.0046 ms** | 0.2344 → **0.469 ms** |
+| C01 xess/Quality | 4 | 0.0035 → **0.007 ms** | 0.4542 → **0.908 ms** |
+| C03 fsr31/Quality | 4 | 0.0030 → **0.006 ms** | 0.1323 → **0.265 ms** |
+| B03 dlssd/Quality (RR) | 3 | 0.0992 → **0.198 ms** | 0.2478 → **0.496 ms** |
+
+Rounding note: wave-3's text wrote "0.495"; the exact double of 0.2478 is 0.4956 → 0.496.
+
+**Digest reconciliation (so no two tables in this file disagree):** A03/C01/C02/C03 medians here
+include their sentinel rep (4 reps), while the wave-1/2/3 tables quoted the first 3 — e.g. A03
+4.4595 here vs 4.4711 in wave 1 (same runs, different rep count). Both are correct for their
+stated rep sets; this digest is the authoritative one because it names its reps.
+
+**Verdict summary:** 30 cells fully PASS; 3 cells (E01/E02/E03) PASS on every gate except
+`G-RR-ASSURE`, i.e. the in-game SL trio, reproduced headlessly and backend-independently. No cell is
+currently BLOCKED; the BLOCKED-era archives (B03 rep1-3, C01/C03 rep1-3, E02 rep1) are retained as
+provenance for N4/N5.
+
+### Post-R1 re-gate plan for E01/E02/E03 (TURNKEY — written 09:4x, **not executed**; slot to be released explicitly)
+
+Context: the executor's R1 gives the port a PE version resource so Streamline accepts it as
+NGXCore; acceptance is `/tmp/opencode/h1prime-report.md` §4. Nothing below has been run.
+
+```bash
+cd /home/deck/DLSS-Vulkan-Linux
+
+# 0) PRECONDITIONS (no harness run):
+#    P1 the harness copies build/package/_nvngx.dll (run_harness.sh:51, :120) -> it MUST be the R1 build
+stat -c '%y %s' build/package/_nvngx.dll            # newer than 9fc35a5, size will differ from 871812
+objdump -x build/package/_nvngx.dll | grep -iA1 '.rsrc' | head    # PE .rsrc present (version resource)
+#    P2 SL's NGXCore loader wants the NAME nvngx.dll in the stage; run_harness stages only
+#       _nvngx.dll (line 120), so this file must exist at run time - SEE NEED R1-a below. Check after
+#       the first run (stage_listing.txt is copied into the rep dir):
+#         grep -qx 'nvngx.dll' tools/scenario/runs/E01/rep2/stage_listing.txt || echo "MISSING nvngx.dll"
+#    P3 released slot (top-level) + no other runner: run_cell.sh enforces both, fail-closed.
+
+# 1) RUN, one cell at a time, append-only (never overwrites an existing rep):
+bash tools/scenario/run_cell.sh E01 --reps 1      # -> runs/E01/rep2   (--sl, dlss)
+bash tools/scenario/run_cell.sh E02 --reps 1      # -> runs/E02/rep3   (--sl, dlssd + RR)
+bash tools/scenario/run_cell.sh E03 --reps 1      # -> runs/E03/rep2   (--sl, xess)
+
+# 2) RE-GATE each new rep (also re-derives every other gate, archive-safe, no run):
+for r in E01/rep2 E02/rep3 E03/rep2; do
+  be=dlss; case $r in E02/*) be=dlssd;; E03/*) be=xess;; esac
+  bash tools/scenario/gate_cell.sh tools/scenario/runs/$r "$be" 60 --sl \
+    | tee tools/scenario/runs/$r/gate.regate-R1.txt
+done
+#    PASS criterion for all three: `GATE G-RR-ASSURE PASS` (today: FAIL init-ngx missing-ctx
+#    sl.dlss_d-dropped(x6)) and `CELL VERDICT: PASS`. Everything else already passed.
+
+# 3) ACCEPTANCE GREPS, h1prime-report.md §4, against the rep dirs (logs are copied OUT of the wiped
+#    staging dir by run_cell.sh, so these stay valid after later runs):
+R=tools/scenario/runs/E01/rep2
+grep -E 'g5 SL boot|c2_no_failed_NGX|c4_no_missing_ctx'  $R/harness_invoke.log   # want: ok / PASS
+grep -qF 'Failed to initialize NGX'                       $R/g5_evidence.txt && echo BAD-c2
+grep -qF 'Missing NGX context'                            $R/g5_evidence.txt && echo BAD-c4
+grep -qF '0xbad00002'                                     $R/g5_evidence.txt && echo BAD-platform
+grep -qF "Ignoring plugin 'sl.dlss_d'"                    $R/g5_evidence.txt && echo BAD-rr-drop
+grep -qF 'not supported'                                  $R/g5_evidence.txt && echo BAD-rr-notsup
+grep -E 'Loaded NGXCore from path|NGX loaded - app id'    $R/g5_evidence.txt || echo "no NGXCore line (only if SL routed it)"
+grep -E 'P1001-sl\.dlss_d|Loaded plugin .sl\.dlss_d'      $R/g5_evidence.txt
+grep -E "context is missing"                              $R/g5_evidence.txt && echo BAD-ctx-missing
+#    (all BAD-* must print NOTHING; the last dlss_d grep must be non-empty)
+#    loaddll sanity (`Loaded L"...harness\nvngx.dll"`) needs WINEDEBUG=+loaddll, which run_cell does
+#    not set - that evidence stays with the executor's L-runs; my cells prove the g5/Opti side.
+
+# 4) On success: append the three verdict flips to tools/scenario/REPORT.md (D1 closes 33/33 PASS,
+#    G-RR-ASSURE historical FAIL rows stay as provenance) and re-gate nothing else.
+```
+
+**NEED R1-a (blocking for step 0/P2):** `run_harness.sh` stages `_nvngx.dll` only; the acceptance
+gloss in h1prime §4 expects `nvngx.dll` in the stage (the executor's L-runs injected it with a keeper
+loop). Either the harness owner stages `nvngx.dll` as a copy beside `_nvngx.dll` (mirroring the
+`nvngx_dlss.dll` waypoint, `run_harness.sh:115-117`) or R1's own acceptance path must declare which
+name SL is expected to load. Until that is settled my three cells would test R1 only partially.
+
+### ORACLE-PENDING — what RR *output* verification still owes (design only, no work done)
+
+D1's RR numbers are **performance-only**: with N4's frame-independent synthetics (normals = analytic
+unit-normal gradient, `DiffuseAlbedo`=0.5, `SpecularAlbedo`=0.04, `Roughness`=0.5), a green `G-OUT`
+proves feature 13 *ran and wrote pixels*, not that anything was reconstructed correctly, so no RR
+*quality* claim is in scope yet. Three candidate referee routes and why none exists today: (a) the
+frozen `tools/verify/**` referee already speaks `kRrInputs` (`ngx_client/main.cpp:91-98`) but its RR
+cells (`rr_F_fmt_a`, `run_all.sh:192`) drive the port's **native** runner path, not the
+Opti-in-the-loop path D1 measures — re-pointing it at `opti_client` is a new fixture and the verify
+tree is frozen, so it would have to live out-of-tree (e.g. under `tools/scenario/`); (b) NVIDIA's
+genuine `nvngx_dlssd.dll` cannot be a ground-truth generator here (it needs a real NVIDIA D3D12
+driver); (c) there is no analytic truth — a constant-roughness synthetic scene has no closed-form RR
+answer. A cheap interim check that needs no referee and is fully specified: **stability** — with
+`KEEP_FRAMES=1` on one designated RR cell, the same synthetic inputs must yield byte-identical
+`out_*.f32` across reps (they are frame-independent by construction), which would catch nondeterminism
+but not wrongness. Recommended scope line for the final report: *"D1 establishes RR presence,
+correct-input wiring, and ms costs; RR output fidelity is pending an out-of-tree referee against the
+same synthetic inputs, and is explicitly not claimed."*
+
 ### Environment side-effect to flag (executor/D3 relevant)
 
 Every wave-1 run used the game prefix un-cloned (game not running ⇒ `game prefix free`), and Proton
