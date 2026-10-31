@@ -1634,9 +1634,18 @@ void FrameChain::dispatch(VkCommandBuffer cmd, const std::string& name,
     if (it == pipelines.end()) return;
     const auto& p = it->second;
     static const bool trace = std::getenv("DLSS5_AMD_TRACE") != nullptr;
-    if (trace)
+    if (trace) {
         std::fprintf(stderr, "DISPATCH frame%d %-14s %-34s grid %ux%ux%u\n", fc, name.c_str(),
                      trace_label.c_str(), gx, gy, gz);
+        // The DLL's stderr never reaches a log under Wine (hg run_all:320 redirects nothing useful), so
+        // the trace is also appended to the working directory like ngx_log does -- otherwise a harness
+        // run under Proton can only show the frames, never the grids that produced them.
+        if (FILE* f = std::fopen("dlss5-amd-trace.log", "a")) {
+            std::fprintf(f, "DISPATCH frame%d %-14s %-34s grid %ux%ux%u\n", fc, name.c_str(),
+                         trace_label.c_str(), gx, gy, gz);
+            std::fclose(f);
+        }
+    }
 
     VkDescriptorSetAllocateInfo dsai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     dsai.descriptorPool = dpool;
