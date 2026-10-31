@@ -75,6 +75,7 @@ usage() {
     echo "      [--direct] [--sl] [--sl-rr] [--out DIR] [--ini PATH] [--mv-fmt rg32|rg16] [--dep-fmt d32s8|r32f]"
     echo "      [--corpus DIR] [--w W] [--h H] [--ow W] [--oh H]"
     echo "      env: SL_NVAPI_VER=<n>  also sets DXVK_NVAPI_DRIVER_VERSION=<n> for the run"
+    echo "           SL_NVAPI_ARCH=<ID> also sets DXVK_NVAPI_GPU_ARCH=<ID> (e.g. AD100 - D5 RR arch gate)"
 }
 die() { echo "HARNESS FAIL: $*" >&2; exit 1; }
 
@@ -251,8 +252,14 @@ SL_ARGS=()
 [[ $SLRR -eq 1 ]] && SL_ARGS+=(--sl-rr)
 # Optional one-line lever: SL_NVAPI_VER -> DXVK_NVAPI_DRIVER_VERSION (dxvk-nvapi wants a DECIMAL
 # number 100..99999, e.g. 57602 for "576.02" - dxvk-nvapi README), passed through verbatim.
+# SL_NVAPI_ARCH -> DXVK_NVAPI_GPU_ARCH (dxvk-nvapi's GPU-architecture override: AD100 etc. -
+# the D5 RR arch gate needs Ada-class caps (0x190 >= TU100 for sl.dlss_d's adapter mask) while
+# keeping dxvk-nvapi as the provider: fakenvapi gives 0x190 too but breaks the genuine core's
+# getNGXFeatureRequirements with 0xbad00005, measured rr4 - so arch via dxvk-nvapi, never via a
+# provider swap.  In-game this is the launch-line env var, D5 cycle evidence in scenario/REPORT).
 SL_ENV=()
 [[ -n ${SL_NVAPI_VER:-} ]] && SL_ENV=("DXVK_NVAPI_DRIVER_VERSION=$SL_NVAPI_VER")
+[[ -n ${SL_NVAPI_ARCH:-} ]] && SL_ENV+=("DXVK_NVAPI_GPU_ARCH=$SL_NVAPI_ARCH")
 STDOUT_LOG=$OUTD/run.stdout.log
 echo "  running ($(date +%H:%M:%S), timeout 900 s)..."
 (
