@@ -3,9 +3,9 @@
 **Owner:** `ses_e6f7044eeffeSSITmFI4a0g4Mb` (master-2). **Assembled 2026-10-31 ~11:0x EDT, no runs.**
 **Status:** D1 DONE (33/33 PASS) · D2 closed to "SL gate cracked headlessly" · **RE-SCOPED 2026-10-31
 (user decision): the OptiScaler path is ARCHIVED for in-game use; the new target is standalone
-(game direct + port) = D5 (§8 slot open, executor)** · D3 = LAUNCH-PATH-
-BLOCKED after 3 attempts; G1 kept game-side with provenance; two approved one-shot levers (N-B, then
-N-A) outstanding, hard stop after — see §5; its boxed closing sentence is **superseded-pending-D5** · D4 = this document.
+(game direct + port) = D5 (§8 slot open, executor)** · **D3 CLOSED as "harness-proven, in-game
+launch-path-blocked"** (N-B reproduced the stall runtime-independently; N-A had no UI window; both
+shots spent, hard stop honored — REPORT § "N-B + N-A", h1prime §10) · D4 = this document.
 The running log this document consolidates is
 [`REPORT.md`](REPORT.md); the machine-readable matrix is [`D1-MATRIX.csv`](D1-MATRIX.csv).
 
@@ -140,21 +140,27 @@ are duplicated here so they survive.
 
 ## 5. ▓▓ D3 SLOT — IN-GAME EVIDENCE (EXECUTOR TO FILL) ▓▓
 
-**STATUS (2026-10-31 11:1x, from the executor's report via top-level; evidence rows still his):**
+**STATUS (2026-10-31 11:57 — D3 CLOSED; rows 2–7 never reached):**
 
 - **G1 applied and kept game-side**: staged `nvngx.dll` = byte-copy of the game's signed
-  `nvngx_dlss.dll` in `bin64/` — `cmp`-identical, Authenticode **Security Directory** verified,
-  and the permanent Steam launch line byte-exact before/after (provenance = executor's report;
-  not independently re-measured by this session).
-- **In-game verification = LAUNCH-PATH-BLOCKED after 3 attempts**: Steam URL assert-wall ×2, plus
-  one direct `ntsync` stall **pre-`slInit`** ×1 ⇒ the money-shot items (a)–(e) below were **never
-  reached**, so no in-game log claim exists either way.
-- **Two approved one-shot levers remain**, hard stop after: **N-B** (Proton 10.0 direct A/B, first)
-  then **N-A** (xdotool `Play`, second). Their outcomes land as rows here.
+  `nvngx_dlss.dll` in `bin64/` — `cmp`-identical, Authenticode **Security Directory** verified after
+  every attempt, and the permanent Steam launch line byte-exact before/after (provenance: executor's
+  report, REPORT § "N-B + N-A"; not independently re-measured by this session).
+- **In-game verification LAUNCH-PATH-BLOCKED through all 5 attempts**, and now closed deliberately:
+  Steam URL assert-wall ×2, direct `ntsync` stall pre-`slInit` ×1, then the two sanctioned one-shots —
+  **N-B** (direct Proton 10.0 A/B): stall **reproduces** at `RunVersionCheck`+0.3 s with
+  `hkD3D12CreateDevice`=0 ⇒ runtime-independent engine-startup/launch-context issue (Xalia *is*
+  further along under P10; archives `runs/OptiScaler.log.NB-stall-p10-*`, prefix regs restored from
+  the pre-NB snapshot, md5-verified); **N-A** (xdotool Play): client healthy but **no Steam UI window
+  mapped** (6 polls) and no screenshot tooling ⇒ blocked, no forward issued.
+- **Deliberative final state (top-level verdict):** G1 `bin64/nvngx.dll` **KEPT**,
+  `DxgiFactoryWrapping=false` **kept**, `OverrideNvapiDll=auto`, launch line byte-exact,
+  prefix regs GE-Proton11-native.
+- ⇒ rows 2–7 below are marked **NOT OBTAINED (launch-path, D3 closed)** rather than pending forever;
+  they are *not* pending the fix (there is no outstanding fix — harness-side assurance is proven).
 
-> **THE D3 SENTENCE — ⚑ SUPERSEDED-PENDING-D5 (kept verbatim):** it remains the closing wording for
-> **D3's own** launch-path story if N-B and N-A fail, but it **no longer closes D4** — the final
-> report's closing now follows the standalone outcome (§8). Original text, unmodified:
+> **THE D3 SENTENCE — ⚑ ACTIVATED (N-B and N-A both failed) as D3's closing wording; still NOT
+> D4's closing, which follows the standalone outcome (§8).** Kept verbatim, original text:
 >
 > *"harness-side SR+RR-via-Streamline assurance is PROVEN (E01/E02/E03
 > `G-RR-ASSURE` PASS, `g5 SL boot : PASS` c1–c5, `sl.dlss` + `sl.dlss_d` mask 0x1, zero
@@ -168,16 +174,17 @@ Rows below are the required in-game evidence; each needs `file:line` or a log qu
 |---|---|---|---|
 | 1 | launch line final state unchanged | `userdata/49277565/config/localconfig.vdf:2894` exact string = `WINEDLLOVERRIDES=winmm,dxgi=n,b PROTON_FORCE_NVAPI=1 DLSS5_AMD_WEIGHTS=/home/deck/DLSS-Vulkan-Linux/build/ngx-weights %command%` | **PROVEN (reported, executor)** — byte-exact before/after the G1 intervention |
 | 1b | G1 file provenance | `cmp`-identical to game `nvngx_dlss.dll` + Authenticode Security Directory verified | **PROVEN (reported, executor)** |
-| 2 | caps live (the P1 lever's whole point) | `OptiScaler.log` `getSystemCaps` — driver ≥ 512.15, **not** `0.0.0`; no `NVAPI failed to initialize` | BLOCKED (launch path) |
-| 3 | SR available & rendering | `Loaded plugin 'sl.dlss' … adapter mask 0x1`; port `eval #K OK: … feature=1` counts; no black screen (game frame / user report) | BLOCKED (launch path) |
-| 4 | RR available (menu path) | menu/save: `_enableRayReconstruction` present **and** set in `user_engine_option_save.xml`; Opti `Creating DLSSD feature` / `GetFeature("dlssd")`; `Loaded plugin 'sl.dlss_d' … adapter mask 0x1`, **no** `Ignoring plugin 'sl.dlss_d'` | BLOCKED (launch path) |
-| 5 | SL doom trio stays absent in-game | zero `Failed to initialize NGX` · `Missing NGX context` · `0xbad00002` in the session log | BLOCKED (launch path) |
-| 6 | RR actually evaluates with the game's real G-buffer | port `eval #K OK: … feature=13 n=7` (or the game's real slot set) — non-black, still ORACLE-PENDING per §6 | BLOCKED (launch path) |
-| 7 | timing sanity vs harness baselines | optional: one in-game EVAL/GPU figure, compared against §2 without claiming harness/game equivalence | BLOCKED (launch path) |
+| 2 | caps live (the P1 lever's whole point) | `OptiScaler.log` `getSystemCaps` — driver ≥ 512.15, **not** `0.0.0`; no `NVAPI failed to initialize` | NOT OBTAINED (launch-path; D3 closed) |
+| 3 | SR available & rendering | `Loaded plugin 'sl.dlss' … adapter mask 0x1`; port `eval #K OK: … feature=1` counts; no black screen (game frame / user report) | NOT OBTAINED (launch-path; D3 closed) |
+| 4 | RR available (menu path) | menu/save: `_enableRayReconstruction` present **and** set in `user_engine_option_save.xml`; Opti `Creating DLSSD feature` / `GetFeature("dlssd")`; `Loaded plugin 'sl.dlss_d' … adapter mask 0x1`, **no** `Ignoring plugin 'sl.dlss_d'` | NOT OBTAINED (launch-path; D3 closed) |
+| 5 | SL doom trio stays absent in-game | zero `Failed to initialize NGX` · `Missing NGX context` · `0xbad00002` in the session log | NOT OBTAINED (launch-path; D3 closed) |
+| 6 | RR actually evaluates with the game's real G-buffer | port `eval #K OK: … feature=13 n=7` (or the game's real slot set) — non-black, still ORACLE-PENDING per §6 | NOT OBTAINED (launch-path; D3 closed) |
+| 7 | timing sanity vs harness baselines | optional: one in-game EVAL/GPU figure, compared against §2 without claiming harness/game equivalence | NOT OBTAINED (launch-path; D3 closed) |
 
-*(Attempts log so far: 3 — Steam URL assert-wall ×2, direct ntsync stall pre-`slInit` ×1. Pending:
-N-B then N-A; hard stop after those. Fill rows with `bin64/runs/<date>-*` log names or screenshot
-paths as they land; if N-B and N-A fail, close D4 with the boxed sentence above.)*
+*(Attempts: 5 total — Steam URL assert-wall ×2, direct ntsync stall pre-`slInit` ×1, N-B Proton 10.0
+A/B (stall reproduced ⇒ runtime-independent), N-A xdotool Play (no mapped Steam window). D3 CLOSED
+"harness-proven / in-game launch-path-blocked" (h1prime §10, REPORT § "N-B + N-A"); the boxed
+sentence above is D3's close-out; D4 closes on §8.)*
 
 ## 6. RR output verification — scope line (final-report wording, unchanged from `REPORT.md`)
 
