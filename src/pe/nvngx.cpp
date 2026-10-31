@@ -837,7 +837,21 @@ static NVSDK_NGX_Result record_bridge(VkCommandBuffer cmd, FeatureState* s, cons
                         size_t(c->width()) * c->height() * 16, fi);   // the chain's color pitch is 16 B/px
             std::fclose(fi);
         }
-        ngx_log("dumped chain out/in of frame 0 (out %ux%u, in %dx%d)",
+        // S3 (SR-quality hunt, 2026-10-31 evening): every other artifact (shaders/weights/formats/
+        // jitter/geometry) is byte-identical to the good-era archives, and D1 A06 PASSED the exact
+        // in-game geometry headless - so the untested input is the MV/Depth CONTENT VERBATIM.  The
+        // eval pitch lines give the planes: MotionVectors 1280x720+8B chain 10240B=1280 tx (8 B/px,
+        // in-game fmt mv=1 = RG32F), Depth ...+4B chain 5120B=1280 tx (4 B/px).  Staging is
+        // host-visible and allocated *16 - writing 8/4 B/px is in-bounds (pipeline.h:122-127).
+        if (FILE* fm = std::fopen("dlss5-amd-dump_mv.bin", "wb")) {
+            std::fwrite(c->in_mv(), 1, size_t(c->width()) * c->height() * 8, fm);
+            std::fclose(fm);
+        }
+        if (FILE* fd = std::fopen("dlss5-amd-dump_dep.bin", "wb")) {
+            std::fwrite(c->in_depth(), 1, size_t(c->width()) * c->height() * 4, fd);
+            std::fclose(fd);
+        }
+        ngx_log("dumped chain out/in of frame 0 (out %ux%u, in %dx%d) + mv/dep planes",
                 c->out_width(), c->out_height(), c->width(), c->height());
     }
     // Per-frame verdict: the slices recorded while recording frame N are readable from frame N+1.
