@@ -9,6 +9,9 @@
 #   bash tools/optiharness/run_harness.sh --sl                # ALSO boot the game's Streamline stack
 #                                                             # (gates g1-g4 + g5; SL_NVAPI_VER=<n>
 #                                                             #  adds DXVK_NVAPI_DRIVER_VERSION=<n>)
+#   bash tools/optiharness/run_harness.sh \
+#       --ini "/path/to/cell_A03.ini"                         # stage THAT ini as OptiScaler.ini
+#                                                             # (default: OptiScaler.harness.ini)
 #
 # What it stages (build/optiharness/harness/, all git-ignored):
 #   _nvngx.dll            copied from --nvngx (default build/package/_nvngx.dll - the freshly
@@ -16,9 +19,13 @@
 #   dxgi.dll, nvngx_dlss.dll   SYMLINKS into the game folder (read-only usage: OptiScaler
 #                          v0.9.4's proxy dxgi.dll; the port's CreateFeature size check needs
 #                          nvngx_dlss.dll = 58 956 912 bytes next to _nvngx.dll, nvngx.cpp:189)
+#   nvngx_dlssd.dll       SYMLINK (absolute, same waypoint) to the game's real NVIDIA DLSS-D
+#                          companion, 48 343 664 bytes - the RR cells need it next to _nvngx.dll
+#                          (nvngx.cpp:187-189); absent source dies in preflight like nvngx_dlss.dll
 #   dlss5-amd/shaders     -> build/shaders when its .spv files exist, else the game's copy
-#   OptiScaler.ini        generated from tools/optiharness/OptiScaler.harness.ini (the GAME's ini
-#                          is never read: Config.cpp:45 loads the ini next to the dxgi.dll)
+#   OptiScaler.ini        generated from tools/optiharness/OptiScaler.harness.ini, or from the
+#                          --ini <path> file when given (the GAME's ini is never read: Config.cpp:45
+#                          loads the ini next to the dxgi.dll)
 #   sl.interposer.dll + 10 sl.*.dlls  SYMLINKS (all 11 game plugins; read-only) - the Streamline
 #                          stack the --sl mode boots (app-id/flags/features pulled from the
 #                          runs/OptiScaler.slayer3* archive; see README)
@@ -43,10 +50,11 @@ EXPECT=0
 MODE=opti
 SLMODE=0
 EXTRA=()
+INI_OVERRIDE=           # empty = stage the default OptiScaler.harness.ini (byte-for-byte as before)
 
 usage() {
     echo "usage: tools/optiharness/run_harness.sh [--nvngx PATH] [--expect-fail] [--frames N]"
-    echo "      [--direct] [--sl] [--out DIR] [--mv-fmt rg32|rg16] [--dep-fmt d32s8|r32f]"
+    echo "      [--direct] [--sl] [--out DIR] [--ini PATH] [--mv-fmt rg32|rg16] [--dep-fmt d32s8|r32f]"
     echo "      [--corpus DIR] [--w W] [--h H] [--ow W] [--oh H]"
     echo "      env: SL_NVAPI_VER=<n>  also sets DXVK_NVAPI_DRIVER_VERSION=<n> for the run"
 }
@@ -60,6 +68,7 @@ while [[ $# -gt 0 ]]; do
         --direct) MODE=direct; shift;;
         --sl) SLMODE=1; shift;;
         --out) OUTD=$2; shift 2;;
+        --ini) INI_OVERRIDE=$2; shift 2;;
         --help|-h) usage; exit 0;;
         --mv-fmt|--dep-fmt|--w|--h|--ow|--oh|--corpus) EXTRA+=("$1" "$2"); shift 2;;
         *) echo "unknown argument: $1" >&2; usage; exit 2;;
@@ -67,6 +76,16 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ---- preflight ----------------------------------------------------------------------------------
+# --ini <path>: stage THAT file as the harness OptiScaler.ini instead of the default template.
+# Validated HERE - before anything is built, staged or run - so a bad path can never boot a run on
+# the wrong config: the file must exist and must look like an ini (at least one [section] header).
+INI=$TOOL/OptiScaler.harness.ini
+if [[ -n $INI_OVERRIDE ]]; then
+    INI=$INI_OVERRIDE
+    [[ -f "$INI" ]] || die "--ini: no such file: $INI"
+    grep -qE '^[[:space:]]*\[[^]]+\]' "$INI" || \
+        die "--ini: $INI does not look like an ini (no [section] header)"
+fi
 [[ -f "$NVNGX" ]] || die "no port DLL at $NVNGX (this script never builds the port: build/package/_nvngx.dll must pre-exist)"
 if [[ ! -f "$EXE" || "$TOOL/opti_client.cpp" -nt "$EXE" || "$TOOL/build.sh" -nt "$EXE" ]]; then
     bash "$TOOL/build.sh" || die "build.sh"
@@ -79,6 +98,8 @@ DXGI_SRC="$GAME/dxgi.dll"
 [[ -f "$DXGI_SRC" ]] || DXGI_SRC="$GAME/dxgi.dll.optiscaler-off"
 [[ -f "$DXGI_SRC" ]] || die "no OptiScaler dxgi.dll in $GAME (nor dxgi.dll.optiscaler-off)"
 [[ -f "$GAME/nvngx_dlss.dll" ]] || die "no nvngx_dlss.dll in $GAME (the port's CreateFeature check refuses without it)"
+# same failure semantics as nvngx_dlss.dll above: a missing source is fatal, never a dangling link
+[[ -f "$GAME/nvngx_dlssd.dll" ]] || die "no nvngx_dlssd.dll in $GAME (the D1 RR cells need the DLSS-D companion beside _nvngx.dll)"
 # shaders: prefer the port's own build output; fall back to the game's installed copy
 SHDIR=
 if compgen -G "$ROOT/build/shaders/*.spv" > /dev/null; then SHDIR=$ROOT/build/shaders
@@ -92,6 +113,8 @@ mkdir -p "$STAGE/dlss5-amd"
 cp "$NVNGX" "$STAGE/_nvngx.dll"
 if [[ $MODE == opti ]]; then ln -s "$DXGI_SRC" "$STAGE/dxgi.dll"; fi
 ln -s "$GAME/nvngx_dlss.dll" "$STAGE/nvngx_dlss.dll"
+# same waypoint, same ABSOLUTE style as nvngx_dlss.dll: the real NVIDIA DLSS-D (RR) companion
+ln -s "$GAME/nvngx_dlssd.dll" "$STAGE/nvngx_dlssd.dll"
 # Streamline: all 11 of the game's sl.*.dlls (read-only symlinks), so sl.interposer finds its
 # plugins in the exe dir exactly like the game's findPlugins in bin64 (archive:545/309).
 SL_DLLS=(sl.interposer.dll sl.common.dll sl.dlss.dll sl.dlss_d.dll sl.dlss_g.dll sl.reflex.dll
@@ -101,11 +124,11 @@ for s in "${SL_DLLS[@]}"; do
     ln -s "$GAME/$s" "$STAGE/$s"
 done
 ln -s "$SHDIR" "$STAGE/dlss5-amd/shaders"
-cp "$TOOL/OptiScaler.harness.ini" "$STAGE/OptiScaler.ini"
+cp "$INI" "$STAGE/OptiScaler.ini"     # $INI = --ini <path>, or the harness template when absent
 cp "$EXE" "$STAGE/opti_client.exe"
 mkdir -p "$OUTD"
 rm -f "$OUTD"/out_*.f32 "$OUTD/eval_ms.csv" "$OUTD/summary.txt" "$OUTD/client.log" "$OUTD/run.stdout.log"
-echo "  staged $STAGE (nvngx=$(basename "$NVNGX"), shaders=$SHDIR, mode=$MODE, frames=$FRAMES)"
+echo "  staged $STAGE (nvngx=$(basename "$NVNGX"), ini=$INI, shaders=$SHDIR, mode=$MODE, frames=$FRAMES)"
 
 # ---- Proton selection: copied from tools/verify/run_all.sh:282-301 (V9 probe block) ---------------
 # Probe newest-that-works only with `timeout 20 ... --nonsense-arg`: a healthy build rejects it

@@ -200,7 +200,7 @@ reads.  The two FAILING checks are the decisive doom lines anyway (`Failed to in
 | `opti_client.cpp` | the exe: host sequence `Init → AllocateParameters → CreateFeature → per-frame EvaluateFeature` (the NVSDK export surface verified by `objdump -p` on the shipped dxgi.dll: 53+ NVSDK entries), synthetic/corpus inputs, timing pairs, read-back + black detector, the `--sl` Streamline boot + `SLDLSS` probes |
 | `OptiScaler.harness.ini` | the harness-local ini template (each key and every deliberately-unset key documented inline) |
 | `build.sh` | cross-compile to `build/optiharness/opti_client.exe`, FMT16=1 (Output RGBA16F = `DLSS5_AMD_OUT_F16=1` of the package), mirrors `tools/verify/ngx_client/build.sh` incl. the podman fallback; runs `sl_abi_check.cpp` on host g++ first |
-| `run_harness.sh` | staging (port DLL copy, OptiScaler + `nvngx_dlss.dll` + 11 sl.* + shaders as symlinks, ini), prefix-busy detection + clone, Proton 10.0-pinned probe, env incl. `SL_NVAPI_VER`, run, gates g1-g5 |
+| `run_harness.sh` | staging (port DLL copy, OptiScaler + `nvngx_dlss.dll` + `nvngx_dlssd.dll` + 11 sl.* + shaders as symlinks, ini = `--ini` file or the template), prefix-busy detection + clone, Proton 10.0-pinned probe, env incl. `SL_NVAPI_VER`, run, gates g1-g5 |
 | `sl-include/` | the nine NVIDIA Streamline v2.14.1 headers, verbatim from tag v2.14.1 (`VENDORED.txt` = url/commit/date/licence) |
 | `sl_abi_check.cpp` | hand-derived layout assertions, host-compiled by build.sh before every cross-build |
 
@@ -278,3 +278,27 @@ before they load anything; `PROTON=<path>` skips the probe.
       port `recorded in` median 0 ms (GetTickCount ms granularity; first frame 13 ms)
     --expect-fail (archived pre-fix DLL): EVAL_MS median ~3.4 ms, GPU_EVAL_MS ~0.002 ms
       (the refusal does no GPU work), 12/12 `slot=Depth`, outputs all zero.
+
+## 2026-10-31 - `--ini <path>` (N1) and staged `nvngx_dlssd.dll` (N2)
+
+    bash tools/optiharness/run_harness.sh --ini tools/scenario/inis/cell_B03.ini  # stage THAT ini
+    bash tools/optiharness/run_harness.sh                                         # default template
+
+- **`--ini <path>`** (optional, parsed like `--out`/`--nvngx`): stage THAT file's contents as the
+  harness `OptiScaler.ini` instead of `tools/optiharness/OptiScaler.harness.ini`.  Absent = the old
+  behaviour byte-for-byte (the default variable *is* the old literal path, same `cp`).  Validated
+  before anything is built, staged or run: no such file or no `[section]` header ⇒
+  `HARNESS FAIL: --ini: ...` rc 1.  The effective path is printed in the normal status line
+  (`staged ... (nvngx=..., ini=<path>, ...)`); the game's ini is still never read or written
+  (OptiScaler reads the staged copy, `Config.cpp:45`).
+- **`nvngx_dlssd.dll`** is now staged on the same waypoint as `nvngx_dlss.dll`, same ABSOLUTE
+  symlink style, source = the game's `bin64/nvngx_dlssd.dll` (the real NVIDIA DLSS-D companion,
+  48 343 664 B, `nvngx.cpp:187-189`).  Missing source dies in preflight exactly like
+  `nvngx_dlss.dll` does - the sibling is fatal, so this is too, never a dangling link.  This is what
+  the D1 RR cells (N2) were blocked on.
+- **Consistency note for `tools/scenario` (not changed here)**: nothing under `optiharness/` writes a
+  staging manifest (checked `opti_client.cpp`, `build.sh`, this README) - `run_cell.sh:87` does, with
+  `stat -c %s`, which reports the *symlink length*, not the target size (`nvngx_dlss.dll` reads 82,
+  not 58956912).  `gate_cell.sh` G-STAGE / G-PORT-RR compare target byte sizes, so they need
+  `stat -Lc %s` (one character) in `run_cell.sh` before any manifest size gate can go green.
+- Both flags parse-validated (bash -n + usage paths); not exercised end-to-end — execution slots release later.
