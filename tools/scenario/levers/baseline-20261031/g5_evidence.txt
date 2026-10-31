@@ -1,0 +1,646 @@
+[opti_client] sl.interposer loaded at 00006ffffd3b0000, 6 exports resolved
+[opti_client] mode=opti frames=12 1920x1080 -> 3840x2160 mv=rg32 dep=d32s8
+[opti_client] exports: Init_Ext=1 GetCapabilityParameters=1 Shutdown1=1
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:039ms:476us]pluginManager.cpp:430[setHostSDKVersion] Streamline v2.14.1.98614dad6 - built on Fri Aug 28 13:38:13 2026 - host SDK v2.14.1
+[sl-cb][warn] [00-24-33][streamline][warn][tid:436][0s:042ms:175us]ota.cpp:743[readServerManifest] Failed to open manifest file at: C:\ProgramData\NVIDIA/NGX/models/nvngx_config.txt
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:062ms:037us]ota.cpp:832[getNVDAArchitecture] Found NVIDIA GPUs, [000000000021DFA0]: 1
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:064ms:706us]ota.cpp:838[getNVDAArchitecture] Found GPU 0, arch=0x130
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:067ms:002us]ota.cpp:908[checkForOTA] Requesting optional updates!
+[sl-cb][error] [00-24-33][streamline][error][tid:436][0s:069ms:496us]ota.cpp:236[invokeNGXUpdater] NGX Updater not available. OTA downloads are disabled.
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:072ms:103us]pluginManager.cpp:545[findPlugins] Looking for plugins in Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\ ...
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:074ms:766us]pluginManager.cpp:1048[loadPlugins] eLoadDownloadedPlugins flag not passed to preferences, OTA'd plugins will not be loaded!
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:095ms:853us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:099ms:037us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:102ms:003us]commonInterface.cpp:165[getSystemCaps] Enumerating up to 8 adapters but only one of them can be used to create a device - no mGPU support in this SDK
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:105ms:907us]commonInterface.cpp:287[getSystemCaps] >-----------------------------------------
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:108ms:806us]commonInterface.cpp:290[getSystemCaps] NVIDIA driver 999.99
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:110ms:879us]commonInterface.cpp:315[getSystemCaps] Adapter 0 architecture 0x130 implementation 0x2 revision 0xffffffff - bit 0x1 - LUID 0.1010
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:113ms:374us]commonInterface.cpp:321[getSystemCaps] -----------------------------------------<
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:116ms:499us]commonEntry.cpp:2039[getOSVersionAndUpdateTimerResolution] Preferred high resolution timer resolution (5000) is unsupported, trying 10000 [100 ns units] instead.
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:136ms:509us]commonEntry.cpp:2045[getOSVersionAndUpdateTimerResolution] Changed high resolution timer resolution to 10000 [100 ns units].
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:139ms:880us]commonEntry.cpp:2124[updateEmbeddedJSON] Detected Windows OS version 10.0.19045
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:141ms:942us]pluginManager.cpp:907[mapPlugins] Loaded plugin 'sl.common' - version 2.14.1.98614dad6 PRODUCTION - id 4294967295 - priority 0 - adapter mask 0x1 - interposer 'no'
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:146ms:423us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:149ms:143us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[sl-cb][warn] [00-24-33][streamline][warn][tid:436][0s:151ms:481us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.deepdvc' since it is was not requested by the host
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:153ms:954us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:156ms:383us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:157ms:982us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeDepth' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDirectSR`
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:161ms:641us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeMotionVectors' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDirectSR`
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:165ms:484us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeScalingInputColor' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDirectSR`
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:169ms:116us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeScalingOutputColor' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDirectSR`
+SL slInit result=0 (eOk) sdk=0x2000e0001fedc (v2.14.1) appid=101640911 feats=5 paths=1
+[sl-cb][warn] [00-24-33][streamline][warn][tid:436][0s:173ms:123us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.directsr' since it is was not requested by the host
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:176ms:907us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:179ms:450us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[sl-cb][error] [00-24-33][streamline][error][tid:436][0s:181ms:804us]commonEntry.cpp:1093[getNGXFeatureRequirements] ngxResult failed 0xbad00002
+[sl-cb][warn] [00-24-33][streamline][warn][tid:436][0s:183ms:347us]dlssEntry.cpp:208[updateEmbeddedJSON] Failed to obtain DLSS min spec requirements from NGX, using SL defaults
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:185ms:096us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeDepth' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDLSS`
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:187ms:582us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeMotionVectors' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDLSS`
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:190ms:073us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeScalingInputColor' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDLSS`
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:193ms:076us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeScalingOutputColor' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDLSS`
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:196ms:887us]pluginManager.cpp:907[mapPlugins] Loaded plugin 'sl.dlss' - version 2.14.1.98614dad6 PRODUCTION - id 0 - priority 100 - adapter mask 0x1 - interposer 'no'
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:201ms:287us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:203ms:978us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[sl-cb][error] [00-24-33][streamline][error][tid:436][0s:206ms:164us]commonEntry.cpp:1093[getNGXFeatureRequirements] ngxResult failed 0xbad00002
+[sl-cb][warn] [00-24-33][streamline][warn][tid:436][0s:208ms:345us]dlss_dEntry.cpp:210[updateEmbeddedJSON] DLSSD feature is not supported. Please check if you have a valid nvngx_dlssd.dll or your driver is supporting DLSSD.
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:212ms:628us]pluginManager.cpp:907[mapPlugins] Loaded plugin 'sl.dlss_d' - version 2.14.1.98614dad6 PRODUCTION - id 1001 - priority 100 - adapter mask 0x0 - interposer 'no'
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:215ms:863us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:217ms:945us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[sl-cb][error] [00-24-33][streamline][error][tid:436][0s:219ms:729us]commonEntry.cpp:1093[getNGXFeatureRequirements] ngxResult failed 0xbad00002
+[sl-cb][warn] [00-24-33][streamline][warn][tid:436][0s:221ms:491us]dlss_gEntry.cpp:143[updateEmbeddedJSON] Failed to obtain DLSS-G min spec requirements from NGX, using SL defaults
+[sl-cb][warn] [00-24-33][streamline][warn][tid:436][0s:223ms:702us]dlss_gEntry.cpp:345[updateEmbeddedJSON] Disabling DLSS-G since it is not supported on current hardware
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:226ms:568us]pluginManager.cpp:907[mapPlugins] Loaded plugin 'sl.dlss_g' - version 2.14.1.98614dad6 PRODUCTION - id 1000 - priority 1000 - adapter mask 0x0 - interposer 'no'
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:230ms:330us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:233ms:317us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:235ms:517us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeScalingInputColor' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureNIS`
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:238ms:425us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeScalingOutputColor' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureNIS`
+[sl-cb][warn] [00-24-33][streamline][warn][tid:436][0s:241ms:179us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.nis' since it is was not requested by the host
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:244ms:331us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:247ms:948us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[sl-cb][warn] [00-24-33][streamline][warn][tid:436][0s:250ms:931us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.nvperf' since it is was not requested by the host
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:254ms:207us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:256ms:017us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:258ms:444us]pluginManager.cpp:907[mapPlugins] Loaded plugin 'sl.pcl' - version 2.14.1.98614dad6 PRODUCTION - id 4 - priority 2 - adapter mask 0x1 - interposer 'no'
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:261ms:479us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:263ms:401us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:264ms:906us]pluginManager.cpp:907[mapPlugins] Loaded plugin 'sl.reflex' - version 2.14.1.98614dad6 PRODUCTION - id 3 - priority 100 - adapter mask 0x1 - interposer 'no'
+[sl-cb][warn] [00-24-33][streamline][warn][tid:436][0s:267ms:695us]pluginManager.cpp:1090[loadPlugins] Ignoring plugin 'sl.dlss_d' since it is not supported on this platform
+[sl-cb][warn] [00-24-33][streamline][warn][tid:436][0s:269ms:878us]pluginManager.cpp:1090[loadPlugins] Ignoring plugin 'sl.dlss_g' since it is not supported on this platform
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:272ms:024us]pluginManager.cpp:1190[loadPlugins] Plugin execution order based on priority:
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:274ms:221us]pluginManager.cpp:1193[loadPlugins] P0 - sl.common
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:276ms:834us]pluginManager.cpp:1193[loadPlugins] P2 - sl.pcl
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:279ms:298us]pluginManager.cpp:1193[loadPlugins] P100 - sl.dlss
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:281ms:772us]pluginManager.cpp:1193[loadPlugins] P100 - sl.reflex
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:284ms:372us]pluginManager.cpp:1393[initializePlugins] Initializing plugins - api 0.0.1 - application ID 101640911
+SL slSetD3DDevice result=0 (eOk)
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:287ms:731us]d3d12.cpp:1339[createKernel] Creating DXBC kernel copy_to_buffer.cs:main hash 12564409127886710297
+SLDLSS slIsFeatureSupported(kFeatureDLSS) result=32 (eErrorFeatureNotSupported) adapter=@(default)
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:290ms:996us]generic.cpp:112[initNsightActivity] NSight SDK activity not detected (6)!
+SLDLSS slIsFeatureLoaded(kFeatureDLSS) result=31 (?) loaded=0
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:294ms:333us]commonEntry.cpp:1568[slOnPluginStartup] At least one plugin requires NGX, trying to initialize ...
+SLDLSS slGetFeatureRequirements(kFeatureDLSS) result=0 (eOk) flags=0x00000007 threads=0 viewports=4 tags=4 driverDetected=999.99.0 driverRequired=512.15.0 osDetected=10.0.19045 osRequired=10.0.0
+[sl-cb][warn] [00-24-33][streamline][warn][tid:436][0s:298ms:198us]commonEntry.cpp:1748[slOnPluginStartup] Failed to initialize NGX, any SL feature requiring NGX will be unloaded and disabled
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:303ms:978us]pluginManager.cpp:1499[mapPluginCallbacks] Callback sl.common:slSetData:0x0
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:306ms:895us]pluginManager.cpp:1500[mapPluginCallbacks] Callback sl.common:slGetData:0x0
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:309ms:587us]pluginManager.cpp:1501[mapPluginCallbacks] Callback sl.common:slAllocateResources:0x0
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:312ms:173us]pluginManager.cpp:1502[mapPluginCallbacks] Callback sl.common:slFreeResources:0x0
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:315ms:056us]pluginManager.cpp:1503[mapPluginCallbacks] Callback sl.common:slEvaluateFeature:0x6ffffae3a0c0
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:318ms:180us]pluginManager.cpp:1504[mapPluginCallbacks] Callback sl.common:slSetTag:0x6ffffae38ba0
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:320ms:281us]pluginManager.cpp:1505[mapPluginCallbacks] Callback sl.common:slSetTagForFrame:0x6ffffae38d10
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:322ms:071us]pluginManager.cpp:1506[mapPluginCallbacks] Callback sl.common:slSetConsts:0x6ffffae39ba0
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:323ms:943us]pluginManager.cpp:1266[processPluginHooks] Hook sl.common:slHookVkPresent:before - skipped
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:325ms:692us]pluginManager.cpp:1266[processPluginHooks] Hook sl.common:slHookVkAfterPresent:after - skipped
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:327ms:344us]pluginManager.cpp:1266[processPluginHooks] Hook sl.common:slHookVkCmdBindPipeline:after - skipped
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:328ms:915us]pluginManager.cpp:1266[processPluginHooks] Hook sl.common:slHookVkCmdBindDescriptorSets:after - skipped
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:330ms:533us]pluginManager.cpp:1266[processPluginHooks] Hook sl.common:slHookVkBeginCommandBuffer:after - skipped
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:332ms:243us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookCreateSwapChain:before - OK
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:333ms:766us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookCreateSwapChainForHwnd:before - OK
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:335ms:357us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookCreateSwapChainForCoreWindow:before - OK
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:337ms:448us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookResizeSwapChainPre:before - OK
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:341ms:239us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookPresent:before - OK
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:343ms:459us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookAfterPresent:after - OK
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:345ms:045us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookPresent1:before - OK
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:346ms:555us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookAfterPresent:after - OK
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:348ms:111us]pluginManager.cpp:1499[mapPluginCallbacks] Callback sl.pcl:slSetData:0x6ffffac1b850
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:349ms:620us]pluginManager.cpp:1500[mapPluginCallbacks] Callback sl.pcl:slGetData:0x6ffffac1b860
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:351ms:128us]pluginManager.cpp:1501[mapPluginCallbacks] Callback sl.pcl:slAllocateResources:0x0
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:353ms:359us]pluginManager.cpp:1502[mapPluginCallbacks] Callback sl.pcl:slFreeResources:0x0
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:355ms:747us]pluginManager.cpp:1503[mapPluginCallbacks] Callback sl.pcl:slEvaluateFeature:0x0
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:358ms:761us]pluginManager.cpp:1504[mapPluginCallbacks] Callback sl.pcl:slSetTag:0x0
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:361ms:434us]pluginManager.cpp:1505[mapPluginCallbacks] Callback sl.pcl:slSetTagForFrame:0x0
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:363ms:639us]pluginManager.cpp:1506[mapPluginCallbacks] Callback sl.pcl:slSetConsts:0x0
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:365ms:054us]pluginManager.cpp:1251[processPluginHooks] Plugin 'sl.pcl' has no registered hooks
+[sl-cb][error] [00-24-33][streamline][error][tid:436][0s:366ms:543us]dlssEntry.cpp:923[slOnPluginStartup] Missing NGX context - DLSSContext cannot run
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:368ms:604us]pluginManager.cpp:1499[mapPluginCallbacks] Callback sl.reflex:slSetData:0x6ffffababae0
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:370ms:916us]pluginManager.cpp:1500[mapPluginCallbacks] Callback sl.reflex:slGetData:0x6ffffabac450
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:373ms:911us]pluginManager.cpp:1501[mapPluginCallbacks] Callback sl.reflex:slAllocateResources:0x0
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:376ms:882us]pluginManager.cpp:1502[mapPluginCallbacks] Callback sl.reflex:slFreeResources:0x0
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:379ms:130us]pluginManager.cpp:1503[mapPluginCallbacks] Callback sl.reflex:slEvaluateFeature:0x0
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:380ms:823us]pluginManager.cpp:1504[mapPluginCallbacks] Callback sl.reflex:slSetTag:0x0
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:382ms:237us]pluginManager.cpp:1505[mapPluginCallbacks] Callback sl.reflex:slSetTagForFrame:0x0
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:383ms:762us]pluginManager.cpp:1506[mapPluginCallbacks] Callback sl.reflex:slSetConsts:0x0
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:386ms:004us]pluginManager.cpp:1266[processPluginHooks] Hook sl.reflex:slHookVkCreateSwapchainKHRBefore:before - skipped
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:388ms:405us]pluginManager.cpp:1266[processPluginHooks] Hook sl.reflex:slHookVkCreateSwapchainKHRAfter:after - skipped
+[sl-cb][info] [00-24-33][streamline][info][tid:436][0s:390ms:417us]pluginManager.cpp:1266[processPluginHooks] Hook sl.reflex:slHookVkDestroySwapchainKHRBefore:before - skipped
+[sl-cb][error] [00-24-33][streamline][error][tid:436][0s:392ms:172us]sl.cpp:179[slValidateFeatureContext] 'kFeatureDLSS' context is missing.
+[opti_client] CreateFeature = 0x00000001 handle=0000000001ac99b0
+EVAL_MS 0 15.4329
+GPU_EVAL_MS 0 3.8382
+OUT_NZ 0 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 1 4.7121
+GPU_EVAL_MS 1 3.7986
+OUT_NZ 1 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 2 7.8401
+GPU_EVAL_MS 2 3.8994
+OUT_NZ 2 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 3 5.5905
+GPU_EVAL_MS 3 3.8535
+OUT_NZ 3 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 4 8.2315
+GPU_EVAL_MS 4 3.7913
+OUT_NZ 4 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 5 5.9613
+GPU_EVAL_MS 5 3.8566
+OUT_NZ 5 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 6 6.5839
+GPU_EVAL_MS 6 3.8130
+OUT_NZ 6 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 7 6.7321
+GPU_EVAL_MS 7 3.8243
+OUT_NZ 7 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 8 8.3389
+GPU_EVAL_MS 8 3.8149
+OUT_NZ 8 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 9 5.8669
+GPU_EVAL_MS 9 3.9782
+OUT_NZ 9 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 10 5.8853
+GPU_EVAL_MS 10 3.9272
+OUT_NZ 10 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 11 7.2461
+GPU_EVAL_MS 11 3.7552
+OUT_NZ 11 nz=1.000000 min=0 max=1 eval_ok=1
+[sl-cb][info] [00-24-40][streamline][info][tid:436][6s:836ms:326us]pluginManager.cpp:1202[unloadPlugins] Unloading all plugins ...
+[sl-cb][info] [00-24-40][streamline][info][tid:436][6s:839ms:246us]plugin.cpp:344[onShutdown] Shutting down plugin sl.reflex
+[sl-cb][info] [00-24-40][streamline][info][tid:436][6s:841ms:610us]plugin.cpp:344[onShutdown] Shutting down plugin sl.pcl
+[sl-cb][info] [00-24-40][streamline][info][tid:436][6s:843ms:458us]plugin.cpp:344[onShutdown] Shutting down plugin sl.common
+[sl-cb][info] [00-24-40][streamline][info][tid:436][6s:845ms:583us]d3d12.cpp:1375[destroyKernel] Destroying kernel copy_to_buffer.cs
+[sl-cb][info] [00-24-40][streamline][info][tid:436][6s:847ms:882us]generic.cpp:360[shutdown] Delayed destroy resource list count 0
+SL slShutdown result=0 (eOk)
+HARNESS SUMMARY
+mode=opti
+frames=12
+render=1920x1080
+output=3840x2160
+mv=rg32
+dep=d32s8
+corpus=
+expect_fail=0
+EVAL_MS n=11 median=6.5839 p95=8.3389 min=4.7121 max=8.3389  (frames 1..)
+GPU_EVAL_MS n=11 median=3.8243 p95=3.9782 tags=d3d12-timestamp
+PORT_RECORD_MS present=1 n=12 median=0.0000  (dlss5-amd-ngx.log 'recorded in N ms')
+PORT_EVAL ok=12 fail=0
+OUT_NZ min=1.000000 max=1.000000 threshold=0.10  (frames 1..)
+GATE eval=PASS
+GATE nonblack=PASS
+GATE timing=PASS
+GATE port=PASS
+RESULT=PASS
+--- optiscaler echo ---
+[00:24:33.346050] [W] OptiScaler v0.9.4-final (7534ad0) loaded
+[00:24:33.346067] [W] ---------------------------------
+[00:24:33.346070] [W] OptiScaler is freely downloadable from
+[00:24:33.346072] [W] GitHub : https://github.com/optiscaler/OptiScaler/releases
+[00:24:33.346074] [W] Nexus  : https://www.nexusmods.com/site/mods/986
+[00:24:33.346075] [W] If you paid for these files, you've been scammed!
+[00:24:33.346077] [W] DO NOT USE IN MULTIPLAYER GAMES
+[00:24:33.346079] [I] 
+[00:24:33.346081] [I] LogLevel: 1
+[00:24:33.346082] [I] 
+[00:24:33.346087] [I] Windows version: Windows 10 (10.0.19045)
+[00:24:33.346089] [I] Config parameters:
+[00:24:33.346092] [I] Upscalers.Dx12Upscaler: dlss
+[00:24:33.346093] [I] DLSS.Enabled: true
+[00:24:33.346095] [I] Log.LogLevel: 1
+[00:24:33.346096] [I] Log.LogToFile: true
+[00:24:33.346098] [I] Sharpness.OverrideSharpness: false
+[00:24:33.346099] [I] Sharpness.Sharpness: 0
+[00:24:33.346101] [I] CAS.Enabled: false
+[00:24:33.346103] [I] CAS.MotionSharpnessEnabled: false
+[00:24:33.346104] [I] OutputScaling.Enabled: false
+[00:24:33.346106] [I] Hotfix.CheckForUpdate: false
+[00:24:33.346107] [I] Libraries.NvngxPath: _nvngx.dll
+[00:24:33.346109] [I] 
+[00:24:33.346112] [I] Setting DllPath to Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[00:24:33.346113] [I] 
+[00:24:33.346123] [I] 
+[00:24:33.346126] [I] IsRunningOnWine Running on Wine 10.0!
+[00:24:33.346128] [I] 
+[00:24:33.346129] [I] Check for DLSS files
+[00:24:33.346153] [I] Util::FindFilePath nvngx_dlss.dll found at Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[00:24:33.347451] [I] 
+[00:24:33.356187] [D] isNvidia Using dxvk-nvapi
+[00:24:33.359766] [D] isNvidia Detected: true
+[00:24:33.359780] [I] Running on Nvidia
+[00:24:33.359782] [I] Enabling DLSS
+[00:24:33.359784] [I] Disabling DxgiSpoofing
+[00:24:33.359785] [I] 
+[00:24:33.359807] [I] CheckQuirks Game's Exe: opti_client.exe
+[00:24:33.359809] [I] CheckQuirks Game Name: 
+[00:24:33.359810] [I] CheckQuirks Game Version: 
+[00:24:33.359812] [I] CheckQuirks Game Engine: Other
+[00:24:33.359955] [I] 
+[00:24:33.361215] [I] CheckWorkingMode OptiScaler working as dxgi.dll, system dll loaded
+[00:24:33.361229] [D] DxgiProxy::Init dxgi.dll loaded at 6FFFFB700000
+[00:24:33.361267] [I] Config::CheckUpscalerFiles nvngx.dll found in game folder
+[00:24:33.361285] [I] Util::FindFilePath nvngx_dlss.dll found at Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[00:24:33.361303] [W] Config::CheckUpscalerFiles libxess.dll not found!
+[00:24:33.361305] [D] CheckWorkingMode dxgi.dll already in memory
+[00:24:33.361307] [D] DxgiHooks::Hook 
+[00:24:33.361355] [D] KernelHooks::HookBase 
+[00:24:33.361385] [D] CheckWorkingMode Check for d3d12
+[00:24:33.361387] [D] CheckWorkingMode d3d12.dll already in memory
+[00:24:33.361390] [D] D3D12Hooks::Hook 
+[00:24:33.361571] [D] CheckWorkingMode Loading vulkan-1.dll for Linux, result: 6FFFFB6E0000
+[00:24:33.361574] [D] CheckWorkingMode Hooking vulkan-1.dll
+[00:24:33.361858] [I] Vulkan_wDx12::Hook Attaching Vulkan vkQueueSubmit hook
+[00:24:33.362000] [D] Vulkan_wDx12::InitializeStateTrackerFunctionTable State tracker function table initialized
+[00:24:33.362037] [D] LibraryLoadHooks::CheckModulesInMemory sl.interposer.dll already in memory
+[00:24:33.362052] [I] StreamlineHooks::hookInterposer Streamline version: 2.14.1
+[00:24:33.364322] [D] CheckWorkingMode sl.interposer.dll already in memory
+[00:24:33.364379] [D] KernelHooks::Hook 
+[00:24:33.364422] [I] 
+[00:24:33.364425] [D] FfxApiProxy::InitFfxDx12 Trying to load amd_fidelityfx_loader_dx12.dll
+[00:24:33.364902] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_loader_dx12.dll, returning nullptr!
+[00:24:33.364905] [D] FfxApiProxy::InitFfxDx12 Trying to load amd_fidelityfx_dx12.dll
+[00:24:33.365330] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_dx12.dll, returning nullptr!
+[00:24:33.365333] [I] 
+[00:24:33.365335] [D] FfxApiProxy::InitFfxDx12_SR Trying to load amd_fidelityfx_upscaler_dx12.dll
+[00:24:33.365963] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_upscaler_dx12.dll, returning nullptr!
+[00:24:33.365975] [I] FfxApiProxy::InitFfxDx12_SR LoadResult: false
+[00:24:33.365977] [I] 
+[00:24:33.365979] [D] FfxApiProxy::InitFfxDx12_FG Trying to load amd_fidelityfx_framegeneration_dx12.dll
+[00:24:33.366389] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_framegeneration_dx12.dll, returning nullptr!
+[00:24:33.366391] [I] FfxApiProxy::InitFfxDx12_FG LoadResult: false
+[00:24:33.366393] [I] 
+[00:24:33.366395] [D] FfxApiProxy::InitFfxDx12_Denoiser Trying to load amd_fidelityfx_denoiser_dx12.dll
+[00:24:33.366786] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_denoiser_dx12.dll, returning nullptr!
+[00:24:33.366788] [I] FfxApiProxy::InitFfxDx12_Denoiser LoadResult: false
+[00:24:33.366790] [I] 
+[00:24:33.366792] [D] FfxApiProxy::InitFfxDx12_Radiance Trying to load amd_fidelityfx_radiancecache_dx12.dll
+[00:24:33.367247] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_radiancecache_dx12.dll, returning nullptr!
+[00:24:33.367251] [I] FfxApiProxy::InitFfxDx12_Radiance LoadResult: false
+[00:24:33.367254] [I] FfxApiProxy::InitFfxDx12 LoadResult: false
+[00:24:33.367257] [I] 
+[00:24:33.367260] [D] FfxApiProxy::InitFfxDx12_SR Trying to load amd_fidelityfx_upscaler_dx12.dll
+[00:24:33.367688] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_upscaler_dx12.dll, returning nullptr!
+[00:24:33.367691] [I] FfxApiProxy::InitFfxDx12_SR LoadResult: false
+[00:24:33.367693] [I] 
+[00:24:33.367695] [D] FfxApiProxy::InitFfxDx12_FG Trying to load amd_fidelityfx_framegeneration_dx12.dll
+[00:24:33.368116] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_framegeneration_dx12.dll, returning nullptr!
+[00:24:33.368118] [I] FfxApiProxy::InitFfxDx12_FG LoadResult: false
+[00:24:33.368120] [I] 
+[00:24:33.368122] [D] FfxApiProxy::InitFfxDx12_Denoiser Trying to load amd_fidelityfx_denoiser_dx12.dll
+[00:24:33.368628] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_denoiser_dx12.dll, returning nullptr!
+[00:24:33.368633] [I] FfxApiProxy::InitFfxDx12_Denoiser LoadResult: false
+[00:24:33.368635] [I] 
+[00:24:33.368638] [D] FfxApiProxy::InitFfxDx12_Radiance Trying to load amd_fidelityfx_radiancecache_dx12.dll
+[00:24:33.369241] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_radiancecache_dx12.dll, returning nullptr!
+[00:24:33.369250] [I] FfxApiProxy::InitFfxDx12_Radiance LoadResult: false
+[00:24:33.369254] [D] XeSSProxy::InitXeSS Trying to load libxess.dll
+[00:24:33.370009] [W] Util::LoadProxyLibrary Can't find libxess.dll, returning nullptr!
+[00:24:33.370021] [I] XeSSProxy::InitXeSS LoadResult: false
+[00:24:33.370025] [D] XeSSProxy::InitXeSSDx11 Trying to load libxess_dx11.dll
+[00:24:33.370442] [W] Util::LoadProxyLibrary Can't find libxess_dx11.dll, returning nullptr!
+[00:24:33.370445] [I] XeSSProxy::InitXeSSDx11 LoadResult: false
+[00:24:33.370447] [D] XeFGProxy::InitXeFG Trying to load libxess_fg.dll
+[00:24:33.370861] [W] Util::LoadProxyLibrary Can't find libxess_fg.dll, returning nullptr!
+[00:24:33.370864] [D] XeLLProxy::InitXeLL Trying to load libxell.dll
+[00:24:33.371369] [W] Util::LoadProxyLibrary Can't find libxell.dll, returning nullptr!
+[00:24:33.371372] [I] NVNGXProxy::InitNVNGX 
+[00:24:33.371374] [D] NVNGXProxy::InitNVNGX Trying to load _nvngx.dll
+[00:24:33.371895] [I] Util::LoadProxyLibrary _nvngx.dll loaded from override path: _nvngx.dll
+[00:24:33.371901] [I] NVNGXProxy::InitNVNGX Loaded from Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\_nvngx.dll
+[00:24:33.371902] [I] NVNGXProxy::InitNVNGX Getting nvngx method addresses
+[00:24:33.371904] [D] HookNgxApi Trying to hook NgxApi
+[00:24:33.371907] [I] HookNgxApi NVSDK_NGX_XXXXXX_GetFeatureRequirements found, hooking!
+[00:24:33.371932] [I] 
+[00:24:33.371934] [D] InitFSR4Update 
+[00:24:33.372145] [I] InitFSR4Update amdxc64.dll loaded
+[00:24:33.372148] [D] InitFSR4Update Hooking AmdExtD3DCreateInterface
+[00:24:33.372159] [I] OverrideNvapiDll not set, setting it to: false
+[00:24:33.372161] [I] 
+[00:24:33.372171] [I] HookFSR2ExeInputs Trying to hook FSR2 methods
+[00:24:33.372185] [D] HookFSR2ExeInputs ffxFsr2ContextCreate_Dx12: 0
+[00:24:33.372187] [D] HookFSR2ExeInputs ffxFsr2ContextDispatch_Dx12: 0
+[00:24:33.372189] [D] HookFSR2ExeInputs ffxFsr20ContextDispatch_Dx12: 0
+[00:24:33.372191] [D] HookFSR2ExeInputs ffxFsr2TinyContextDispatch_Dx12: 0
+[00:24:33.372192] [D] HookFSR2ExeInputs ffxFsr2ContextDestroy_Dx12: 0
+[00:24:33.372194] [D] HookFSR2ExeInputs ffxFsr2GetUpscaleRatioFromQualityMode_Dx12: 0
+[00:24:33.372196] [D] HookFSR2ExeInputs ffxFsr2GetRenderResolutionFromQualityMode_Dx12: 0
+[00:24:33.372207] [I] HookFSR3ExeInputs Trying to hook FSR3 methods
+[00:24:33.372211] [D] HookFSR3ExeInputs ffxFsr3UpscalerContextCreate_Dx12: 0
+[00:24:33.372212] [D] HookFSR3ExeInputs ffxFsr3UpscalerContextDispatch_Dx12: 0
+[00:24:33.372214] [D] HookFSR3ExeInputs ffxFsr3UpscalerContextDestroy_Dx12: 0
+[00:24:33.372216] [D] HookFSR3ExeInputs ffxFsr3UpscalerGetUpscaleRatioFromQualityMode_Dx12: 0
+[00:24:33.372218] [D] HookFSR3ExeInputs ffxFsr3UpscalerGetRenderResolutionFromQualityMode_Dx12: 0
+[00:24:33.372239] [I] 
+[00:24:33.372240] [I] Init done
+[00:24:33.372242] [I] ---------------------------------------------
+[00:24:33.372243] [I] 
+[00:24:33.373584] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:039ms:476us]pluginManager.cpp:430[setHostSDKVersion] Streamline v2.14.1.98614dad6 - built on Fri Aug 28 13:38:13 2026 - host SDK v2.14.1
+[00:24:33.374438] [I] LibraryLoadHooks::LoadLibraryCheckW nvapi64.dll call!
+[00:24:33.375677] [D] NvApiHooks::Hook Trying to hook NvApi
+[00:24:33.375691] [D] NvApiHooks::Hook OriginalNvAPI_QueryInterface = 6FFFFB499890
+[00:24:33.375693] [I] NvApiHooks::Hook NvAPI_QueryInterface found, hooking!
+[00:24:33.375695] [D] fakenvapi::Init Trying to get fakenvapi-specific functions
+[00:24:33.376268] [W] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][warn][tid:436][0s:042ms:175us]ota.cpp:743[readServerManifest] Failed to open manifest file at: C:\ProgramData\NVIDIA/NGX/models/nvngx_config.txt
+[00:24:33.382990] [I] fakenvapi::Init Failed to initialize fakenvapi
+[00:24:33.383126] [D] ReflexHooks::hookReflex Inited Reflex hooks
+[00:24:33.383160] [D] hkCreateDXGIFactory1 Caller: nvapi64.dll
+[00:24:33.385760] [D] hkvkGetInstanceProcAddr vkCreateInstance
+[00:24:33.390292] [I] VulkanSpoofing::hkvkCreateInstance vkInstanceExtensions is empty, enumerating instance extensions
+[00:24:33.390988] [D] VulkanSpoofing::hkvkCreateInstance   VK_KHR_device_group_creation
+[00:24:33.390992] [D] VulkanSpoofing::hkvkCreateInstance   VK_KHR_external_fence_capabilities
+[00:24:33.390994] [D] VulkanSpoofing::hkvkCreateInstance   VK_KHR_external_memory_capabilities
+[00:24:33.390996] [D] VulkanSpoofing::hkvkCreateInstance   VK_KHR_external_semaphore_capabilities
+[00:24:33.390998] [D] VulkanSpoofing::hkvkCreateInstance   VK_KHR_get_physical_device_properties2
+[00:24:33.391000] [D] VulkanSpoofing::hkvkCreateInstance   VK_KHR_get_surface_capabilities2
+[00:24:33.391005] [D] VulkanSpoofing::hkvkCreateInstance   VK_KHR_surface
+[00:24:33.391006] [D] VulkanSpoofing::hkvkCreateInstance   VK_KHR_win32_surface
+[00:24:33.391008] [D] VulkanSpoofing::hkvkCreateInstance   VK_EXT_debug_report
+[00:24:33.391010] [D] VulkanSpoofing::hkvkCreateInstance   VK_EXT_debug_utils
+[00:24:33.391012] [D] VulkanSpoofing::hkvkCreateInstance   VK_EXT_surface_maintenance1
+[00:24:33.391014] [D] VulkanSpoofing::hkvkCreateInstance   VK_EXT_swapchain_colorspace
+[00:24:33.391016] [D] VulkanSpoofing::hkvkCreateInstance   VK_KHR_portability_enumeration
+[00:24:33.391017] [D] VulkanSpoofing::hkvkCreateInstance   VK_EXT_layer_settings
+[00:24:33.391019] [D] VulkanSpoofing::hkvkCreateInstance ApplicationName: opti_client.exe
+[00:24:33.391022] [D] VulkanSpoofing::hkvkCreateInstance Extensions (4):
+[00:24:33.391023] [D] VulkanSpoofing::hkvkCreateInstance   VK_EXT_surface_maintenance1
+[00:24:33.391025] [D] VulkanSpoofing::hkvkCreateInstance   VK_KHR_get_surface_capabilities2
+[00:24:33.391027] [D] VulkanSpoofing::hkvkCreateInstance   VK_KHR_surface
+[00:24:33.391032] [D] VulkanSpoofing::hkvkCreateInstance   VK_KHR_win32_surface
+[00:24:33.391034] [I] VulkanSpoofing::hkvkCreateInstance Adding NVNGX Vulkan extensions
+[00:24:33.391036] [D] VulkanSpoofing::hkvkCreateInstance   Adding VK_KHR_get_physical_device_properties2
+[00:24:33.391038] [D] VulkanSpoofing::hkvkCreateInstance   Adding VK_KHR_external_memory_capabilities
+[00:24:33.391040] [D] VulkanSpoofing::hkvkCreateInstance   Adding VK_KHR_external_semaphore_capabilities
+[00:24:33.391041] [I] VulkanSpoofing::hkvkCreateInstance Adding FFX Vulkan extensions
+[00:24:33.391043] [D] VulkanSpoofing::hkvkCreateInstance   Adding VK_EXT_debug_utils
+[00:24:33.391045] [I] VulkanSpoofing::hkvkCreateInstance Adding Vulkan w/Dx12 extensions
+[00:24:33.391046] [D] VulkanSpoofing::hkvkCreateInstance   Adding VK_KHR_external_memory_capabilities
+[00:24:33.391048] [D] VulkanSpoofing::hkvkCreateInstance   Adding VK_KHR_external_semaphore_capabilities
+[00:24:33.391050] [D] VulkanSpoofing::hkvkCreateInstance Layer count: 0
+[00:24:33.393633] [D] hkvkCreateInstance State::Instance().VulkanInstance captured: CBA590
+[00:24:33.393650] [D] hkvkGetInstanceProcAddr vkCreateDevice
+[00:24:33.395354] [W] DxgiSpoofing::AttachToAdapter DxgiSpoofing and DxgiVRAM is disabled, skipping hooking
+[00:24:33.396101] [D] NvApiHooks::hkNvAPI_GPU_GetArchInfo Original arch: 130 impl: 2 rev: FFFFFFFF!
+[00:24:33.396139] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:062ms:037us]ota.cpp:832[getNVDAArchitecture] Found NVIDIA GPUs, [000000000021DFA0]: 1
+[00:24:33.398810] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:064ms:706us]ota.cpp:838[getNVDAArchitecture] Found GPU 0, arch=0x130
+[00:24:33.401102] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:067ms:002us]ota.cpp:908[checkForOTA] Requesting optional updates!
+[00:24:33.403591] [E] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][error][tid:436][0s:069ms:496us]ota.cpp:236[invokeNGXUpdater] NGX Updater not available. OTA downloads are disabled.
+[00:24:33.406193] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:072ms:103us]pluginManager.cpp:545[findPlugins] Looking for plugins in Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\ ...
+[00:24:33.408857] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:074ms:766us]pluginManager.cpp:1048[loadPlugins] eLoadDownloadedPlugins flag not passed to preferences, OTA'd plugins will not be loaded!
+[00:24:33.429952] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:095ms:853us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[00:24:33.431804] [D] hkCreateDXGIFactory Caller: sl.common.dll
+[00:24:33.432547] [I] LibraryLoadHooks::LoadLibraryCheckW nvapi64.dll call!
+[00:24:33.432626] [D] NvApiHooks::hkNvAPI_GPU_GetArchInfo Original arch: 130 impl: 2 rev: FFFFFFFF!
+[00:24:33.433137] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:099ms:037us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[00:24:33.436104] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:102ms:003us]commonInterface.cpp:165[getSystemCaps] Enumerating up to 8 adapters but only one of them can be used to create a device - no mGPU support in this SDK
+[00:24:33.440002] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:105ms:907us]commonInterface.cpp:287[getSystemCaps] >-----------------------------------------
+[00:24:33.442898] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:108ms:806us]commonInterface.cpp:290[getSystemCaps] NVIDIA driver 999.99
+[00:24:33.444970] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:110ms:879us]commonInterface.cpp:315[getSystemCaps] Adapter 0 architecture 0x130 implementation 0x2 revision 0xffffffff - bit 0x1 - LUID 0.1010
+[00:24:33.447470] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:113ms:374us]commonInterface.cpp:321[getSystemCaps] -----------------------------------------<
+[00:24:33.448278] [D] StreamlineHooks::hkdlss_slGetPluginFunction slOnPluginLoad
+[00:24:33.448291] [D] StreamlineHooks::hkdlss_slGetPluginFunction slIsSupported
+[00:24:33.450603] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:116ms:499us]commonEntry.cpp:2039[getOSVersionAndUpdateTimerResolution] Preferred high resolution timer resolution (5000) is unsupported, trying 10000 [100 ns units] instead.
+[00:24:33.470608] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:136ms:509us]commonEntry.cpp:2045[getOSVersionAndUpdateTimerResolution] Changed high resolution timer resolution to 10000 [100 ns units].
+[00:24:33.473974] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:139ms:880us]commonEntry.cpp:2124[updateEmbeddedJSON] Detected Windows OS version 10.0.19045
+[00:24:33.476032] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:141ms:942us]pluginManager.cpp:907[mapPlugins] Loaded plugin 'sl.common' - version 2.14.1.98614dad6 PRODUCTION - id 4294967295 - priority 0 - adapter mask 0x1 - interposer 'no'
+[00:24:33.480523] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:146ms:423us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[00:24:33.483244] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:149ms:143us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[00:24:33.485580] [W] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][warn][tid:436][0s:151ms:481us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.deepdvc' since it is was not requested by the host
+[00:24:33.488050] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:153ms:954us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[00:24:33.490477] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:156ms:383us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[00:24:33.492072] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:157ms:982us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeDepth' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDirectSR`
+[00:24:33.495740] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:161ms:641us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeMotionVectors' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDirectSR`
+[00:24:33.499587] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:165ms:484us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeScalingInputColor' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDirectSR`
+[00:24:33.503215] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:169ms:116us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeScalingOutputColor' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDirectSR`
+[00:24:33.507219] [W] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][warn][tid:436][0s:173ms:123us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.directsr' since it is was not requested by the host
+[00:24:33.508306] [D] hkD3D12CreateDevice Adapter: 0, Level: C000, Caller: opti_client.exe
+[00:24:33.508762] [D] D3D12Hooks::HookAgility Hooking D3D12GetInterface from D3D12 Agility SDK
+[00:24:33.508813] [D] hkD3D12GetInterface D3D12GetInterface called: 6FFFFD48CDF0, 6FFFFD48EC20, Caller: d3d12.dll
+[00:24:33.508823] [D] hkD3D12GetInterface D3D12GetInterface called: 6FFFFD48CE00, 6FFFFD48EC30, Caller: d3d12.dll
+[00:24:33.508828] [D] hkCreateDXGIFactory1 Caller: d3d12core.dll
+[00:24:33.509384] [D] hkvkGetInstanceProcAddr vkCreateInstance
+[00:24:33.510424] [I] VulkanSpoofing::hkvkCreateInstance Skipping because DXVK/VKD3D is creating a D3D device
+[00:24:33.511004] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:176ms:907us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[00:24:33.511807] [D] hkvkCreateInstance State::Instance().VulkanInstance captured: D6B4A0
+[00:24:33.511850] [D] hkvkGetInstanceProcAddr vkCreateDevice
+[00:24:33.513548] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:179ms:450us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[00:24:33.515905] [E] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][error][tid:436][0s:181ms:804us]commonEntry.cpp:1093[getNGXFeatureRequirements] ngxResult failed 0xbad00002
+[00:24:33.517437] [W] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][warn][tid:436][0s:183ms:347us]dlssEntry.cpp:208[updateEmbeddedJSON] Failed to obtain DLSS min spec requirements from NGX, using SL defaults
+[00:24:33.519187] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:185ms:096us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeDepth' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDLSS`
+[00:24:33.521673] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:187ms:582us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeMotionVectors' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDLSS`
+[00:24:33.524163] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:190ms:073us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeScalingInputColor' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDLSS`
+[00:24:33.527180] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:193ms:076us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeScalingOutputColor' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDLSS`
+[00:24:33.529632] [I] VulkanSpoofing::hkvkCreateDevice Skipping because DXVK/VKD3D is creating a D3D device
+[00:24:33.530992] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:196ms:887us]pluginManager.cpp:907[mapPlugins] Loaded plugin 'sl.dlss' - version 2.14.1.98614dad6 PRODUCTION - id 0 - priority 100 - adapter mask 0x1 - interposer 'no'
+[00:24:33.532744] [D] hkvkCreateDevice _PD captured: D6B4B8
+[00:24:33.532758] [D] hkvkCreateDevice _device captured: CE1CF0
+[00:24:33.532826] [D] HookDevice Hooking VkDevice
+[00:24:33.534720] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool D8F8D0 created for queue family 1
+[00:24:33.535387] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:201ms:287us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[00:24:33.538073] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:203ms:978us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[00:24:33.540255] [E] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][error][tid:436][0s:206ms:164us]commonEntry.cpp:1093[getNGXFeatureRequirements] ngxResult failed 0xbad00002
+[00:24:33.542445] [W] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][warn][tid:436][0s:208ms:345us]dlss_dEntry.cpp:210[updateEmbeddedJSON] DLSSD feature is not supported. Please check if you have a valid nvngx_dlssd.dll or your driver is supporting DLSSD.
+[00:24:33.546737] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:212ms:628us]pluginManager.cpp:907[mapPlugins] Loaded plugin 'sl.dlss_d' - version 2.14.1.98614dad6 PRODUCTION - id 1001 - priority 100 - adapter mask 0x0 - interposer 'no'
+[00:24:33.549963] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:215ms:863us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[00:24:33.552035] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:217ms:945us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[00:24:33.553819] [E] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][error][tid:436][0s:219ms:729us]commonEntry.cpp:1093[getNGXFeatureRequirements] ngxResult failed 0xbad00002
+[00:24:33.555581] [W] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][warn][tid:436][0s:221ms:491us]dlss_gEntry.cpp:143[updateEmbeddedJSON] Failed to obtain DLSS-G min spec requirements from NGX, using SL defaults
+[00:24:33.557798] [W] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][warn][tid:436][0s:223ms:702us]dlss_gEntry.cpp:345[updateEmbeddedJSON] Disabling DLSS-G since it is not supported on current hardware
+[00:24:33.560670] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:226ms:568us]pluginManager.cpp:907[mapPlugins] Loaded plugin 'sl.dlss_g' - version 2.14.1.98614dad6 PRODUCTION - id 1000 - priority 1000 - adapter mask 0x0 - interposer 'no'
+[00:24:33.564431] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:230ms:330us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[00:24:33.567416] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:233ms:317us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[00:24:33.569615] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:235ms:517us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeScalingInputColor' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureNIS`
+[00:24:33.572519] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:238ms:425us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeScalingOutputColor' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureNIS`
+[00:24:33.575284] [W] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][warn][tid:436][0s:241ms:179us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.nis' since it is was not requested by the host
+[00:24:33.578438] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:244ms:331us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[00:24:33.582051] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:247ms:948us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[00:24:33.585026] [W] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][warn][tid:436][0s:250ms:931us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.nvperf' since it is was not requested by the host
+[00:24:33.588306] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:254ms:207us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[00:24:33.590109] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:256ms:017us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[00:24:33.592552] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:258ms:444us]pluginManager.cpp:907[mapPlugins] Loaded plugin 'sl.pcl' - version 2.14.1.98614dad6 PRODUCTION - id 4 - priority 2 - adapter mask 0x1 - interposer 'no'
+[00:24:33.595583] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:261ms:479us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[00:24:33.597499] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:263ms:401us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[00:24:33.598999] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:264ms:906us]pluginManager.cpp:907[mapPlugins] Loaded plugin 'sl.reflex' - version 2.14.1.98614dad6 PRODUCTION - id 3 - priority 100 - adapter mask 0x1 - interposer 'no'
+[00:24:33.601789] [W] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][warn][tid:436][0s:267ms:695us]pluginManager.cpp:1090[loadPlugins] Ignoring plugin 'sl.dlss_d' since it is not supported on this platform
+[00:24:33.603975] [W] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][warn][tid:436][0s:269ms:878us]pluginManager.cpp:1090[loadPlugins] Ignoring plugin 'sl.dlss_g' since it is not supported on this platform
+[00:24:33.606116] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:272ms:024us]pluginManager.cpp:1190[loadPlugins] Plugin execution order based on priority:
+[00:24:33.608331] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:274ms:221us]pluginManager.cpp:1193[loadPlugins] P0 - sl.common
+[00:24:33.610934] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:276ms:834us]pluginManager.cpp:1193[loadPlugins] P2 - sl.pcl
+[00:24:33.613399] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:279ms:298us]pluginManager.cpp:1193[loadPlugins] P100 - sl.dlss
+[00:24:33.615870] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:281ms:772us]pluginManager.cpp:1193[loadPlugins] P100 - sl.reflex
+[00:24:33.617209] [D] hkD3D12CreateDevice o_D3D12CreateDevice result: 0
+[00:24:33.617225] [D] hkD3D12CreateDevice Device captured: 2A30080
+[00:24:33.617228] [D] HookToDevice Dx12
+[00:24:33.617296] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool 1A6ADF0 created for queue family 0
+[00:24:33.617442] [D] HookToCommandList Hooked RootSignature functions
+[00:24:33.617493] [D] hkD3D12CreateDevice final result: 0
+[00:24:33.618471] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:284ms:372us]pluginManager.cpp:1393[initializePlugins] Initializing plugins - api 0.0.1 - application ID 101640911
+[00:24:33.618642] [D] StreamlineHooks::hkdlss_slGetPluginFunction slOnPluginStartup
+[00:24:33.618650] [D] StreamlineHooks::hkdlss_slGetPluginFunction slOnPluginShutdown
+[00:24:33.618652] [D] StreamlineHooks::hkdlss_slGetPluginFunction slOnPluginsInitialized
+[00:24:33.621829] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:287ms:731us]d3d12.cpp:1339[createKernel] Creating DXBC kernel copy_to_buffer.cs:main hash 12564409127886710297
+[00:24:33.625101] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:290ms:996us]generic.cpp:112[initNsightActivity] NSight SDK activity not detected (6)!
+[00:24:33.628439] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:294ms:333us]commonEntry.cpp:1568[slOnPluginStartup] At least one plugin requires NGX, trying to initialize ...
+[00:24:33.632298] [W] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][warn][tid:436][0s:298ms:198us]commonEntry.cpp:1748[slOnPluginStartup] Failed to initialize NGX, any SL feature requiring NGX will be unloaded and disabled
+[00:24:33.635490] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool 1AC97A0 created for queue family 0
+[00:24:33.635995] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool 1ACD6A0 created for queue family 0
+[00:24:33.638079] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:303ms:978us]pluginManager.cpp:1499[mapPluginCallbacks] Callback sl.common:slSetData:0x0
+[00:24:33.641001] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:306ms:895us]pluginManager.cpp:1500[mapPluginCallbacks] Callback sl.common:slGetData:0x0
+[00:24:33.642055] [D] UpdateInitPaths Feature Path [0]: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[00:24:33.642067] [D] UpdateInitPaths Feature Path [1]: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[00:24:33.642069] [D] UpdateInitPaths Feature Path [2]: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[00:24:33.642071] [I] NVSDK_NGX_D3D12_Init calling NVNGXProxy::D3D12_Init
+[00:24:33.642075] [I] NVSDK_NGX_D3D12_Init calling NVNGXProxy::D3D12_Init result: 1
+[00:24:33.642077] [I] NVSDK_NGX_D3D12_Init_Ext AppId: 322376503
+[00:24:33.642079] [I] NVSDK_NGX_D3D12_Init_Ext SDK: 15
+[00:24:33.642081] [I] NVSDK_NGX_D3D12_Init_Ext InApplicationDataPath .
+[00:24:33.642134] [D] NVSDK_NGX_D3D12_Init was called NVSDK_NGX_D3D12_Init_Ext
+[00:24:33.642136] [I] NVSDK_NGX_D3D12_AllocateParameters calling NVNGXProxy::D3D12_AllocateParameters
+[00:24:33.642140] [I] NVSDK_NGX_D3D12_AllocateParameters calling NVNGXProxy::D3D12_AllocateParameters result: 1, ptr: 8CE470
+[00:24:33.642150] [I] NVSDK_NGX_D3D12_CreateFeature HandleId: 1000000
+[00:24:33.642152] [I] NVSDK_NGX_D3D12_CreateFeature Creating new dlss upscaler
+[00:24:33.642156] [I] IFeature::SetHandle Handle: 1000000
+[00:24:33.642159] [I] IFeature::SetInitParameters SharpenEnabled flag overrided by user: false
+[00:24:33.642161] [I] IFeature::SetInitParameters Init Flag AutoExposure: false
+[00:24:33.642163] [I] IFeature::SetInitParameters Init Flag DepthInverted: false
+[00:24:33.642165] [I] IFeature::SetInitParameters Init Flag IsHdr: true
+[00:24:33.642166] [I] IFeature::SetInitParameters Init Flag JitteredMV: false
+[00:24:33.642168] [I] IFeature::SetInitParameters Init Flag LowResMV: true
+[00:24:33.642171] [I] IFeature::SetInitParameters Init Flag SharpenEnabled: false
+[00:24:33.642175] [I] IFeature::SetInitParameters Render Resolution: 1920x1080, Display Resolution 3840x2160, Quality: 0
+[00:24:33.642177] [D] HookNgxApi Trying to hook NgxApi
+[00:24:33.642181] [I] HookNgxApi NVSDK_NGX_XXXXXX_GetFeatureRequirements found, hooking!
+[00:24:33.642215] [I] DLSSFeatureDx12::DLSSFeatureDx12 binding complete!
+[00:24:33.643693] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:309ms:587us]pluginManager.cpp:1501[mapPluginCallbacks] Callback sl.common:slAllocateResources:0x0
+[00:24:33.646268] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:312ms:173us]pluginManager.cpp:1502[mapPluginCallbacks] Callback sl.common:slFreeResources:0x0
+[00:24:33.649157] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:315ms:056us]pluginManager.cpp:1503[mapPluginCallbacks] Callback sl.common:slEvaluateFeature:0x6ffffae3a0c0
+[00:24:33.652276] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:318ms:180us]pluginManager.cpp:1504[mapPluginCallbacks] Callback sl.common:slSetTag:0x6ffffae38ba0
+[00:24:33.654379] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:320ms:281us]pluginManager.cpp:1505[mapPluginCallbacks] Callback sl.common:slSetTagForFrame:0x6ffffae38d10
+[00:24:33.656170] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:322ms:071us]pluginManager.cpp:1506[mapPluginCallbacks] Callback sl.common:slSetConsts:0x6ffffae39ba0
+[00:24:33.658042] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:323ms:943us]pluginManager.cpp:1266[processPluginHooks] Hook sl.common:slHookVkPresent:before - skipped
+[00:24:33.659786] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:325ms:692us]pluginManager.cpp:1266[processPluginHooks] Hook sl.common:slHookVkAfterPresent:after - skipped
+[00:24:33.661439] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:327ms:344us]pluginManager.cpp:1266[processPluginHooks] Hook sl.common:slHookVkCmdBindPipeline:after - skipped
+[00:24:33.663007] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:328ms:915us]pluginManager.cpp:1266[processPluginHooks] Hook sl.common:slHookVkCmdBindDescriptorSets:after - skipped
+[00:24:33.664624] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:330ms:533us]pluginManager.cpp:1266[processPluginHooks] Hook sl.common:slHookVkBeginCommandBuffer:after - skipped
+[00:24:33.666338] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:332ms:243us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookCreateSwapChain:before - OK
+[00:24:33.667857] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:333ms:766us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookCreateSwapChainForHwnd:before - OK
+[00:24:33.669448] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:335ms:357us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookCreateSwapChainForCoreWindow:before - OK
+[00:24:33.671548] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:337ms:448us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookResizeSwapChainPre:before - OK
+[00:24:33.675346] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:341ms:239us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookPresent:before - OK
+[00:24:33.677558] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:343ms:459us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookAfterPresent:after - OK
+[00:24:33.679137] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:345ms:045us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookPresent1:before - OK
+[00:24:33.680647] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:346ms:555us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookAfterPresent:after - OK
+[00:24:33.682202] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:348ms:111us]pluginManager.cpp:1499[mapPluginCallbacks] Callback sl.pcl:slSetData:0x6ffffac1b850
+[00:24:33.683711] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:349ms:620us]pluginManager.cpp:1500[mapPluginCallbacks] Callback sl.pcl:slGetData:0x6ffffac1b860
+[00:24:33.685219] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:351ms:128us]pluginManager.cpp:1501[mapPluginCallbacks] Callback sl.pcl:slAllocateResources:0x0
+[00:24:33.687460] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:353ms:359us]pluginManager.cpp:1502[mapPluginCallbacks] Callback sl.pcl:slFreeResources:0x0
+[00:24:33.689852] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:355ms:747us]pluginManager.cpp:1503[mapPluginCallbacks] Callback sl.pcl:slEvaluateFeature:0x0
+[00:24:33.692859] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:358ms:761us]pluginManager.cpp:1504[mapPluginCallbacks] Callback sl.pcl:slSetTag:0x0
+[00:24:33.695529] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:361ms:434us]pluginManager.cpp:1505[mapPluginCallbacks] Callback sl.pcl:slSetTagForFrame:0x0
+[00:24:33.697738] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:363ms:639us]pluginManager.cpp:1506[mapPluginCallbacks] Callback sl.pcl:slSetConsts:0x0
+[00:24:33.699146] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:365ms:054us]pluginManager.cpp:1251[processPluginHooks] Plugin 'sl.pcl' has no registered hooks
+[00:24:33.700635] [E] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][error][tid:436][0s:366ms:543us]dlssEntry.cpp:923[slOnPluginStartup] Missing NGX context - DLSSContext cannot run
+[00:24:33.702706] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:368ms:604us]pluginManager.cpp:1499[mapPluginCallbacks] Callback sl.reflex:slSetData:0x6ffffababae0
+[00:24:33.705016] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:370ms:916us]pluginManager.cpp:1500[mapPluginCallbacks] Callback sl.reflex:slGetData:0x6ffffabac450
+[00:24:33.708016] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:373ms:911us]pluginManager.cpp:1501[mapPluginCallbacks] Callback sl.reflex:slAllocateResources:0x0
+[00:24:33.710979] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:376ms:882us]pluginManager.cpp:1502[mapPluginCallbacks] Callback sl.reflex:slFreeResources:0x0
+[00:24:33.713233] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:379ms:130us]pluginManager.cpp:1503[mapPluginCallbacks] Callback sl.reflex:slEvaluateFeature:0x0
+[00:24:33.714917] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:380ms:823us]pluginManager.cpp:1504[mapPluginCallbacks] Callback sl.reflex:slSetTag:0x0
+[00:24:33.716329] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:382ms:237us]pluginManager.cpp:1505[mapPluginCallbacks] Callback sl.reflex:slSetTagForFrame:0x0
+[00:24:33.717855] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:383ms:762us]pluginManager.cpp:1506[mapPluginCallbacks] Callback sl.reflex:slSetConsts:0x0
+[00:24:33.720109] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:386ms:004us]pluginManager.cpp:1266[processPluginHooks] Hook sl.reflex:slHookVkCreateSwapchainKHRBefore:before - skipped
+[00:24:33.722508] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:388ms:405us]pluginManager.cpp:1266[processPluginHooks] Hook sl.reflex:slHookVkCreateSwapchainKHRAfter:after - skipped
+[00:24:33.724515] [I] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][info][tid:436][0s:390ms:417us]pluginManager.cpp:1266[processPluginHooks] Hook sl.reflex:slHookVkDestroySwapchainKHRBefore:before - skipped
+[00:24:33.726265] [E] StreamlineHooks::streamlineLogCallback [00-24-33][streamline][error][tid:436][0s:392ms:172us]sl.cpp:179[slValidateFeatureContext] 'kFeatureDLSS' context is missing.
+[00:24:34.142748] [I] DLSSFeatureDx12::Init Creating DLSS feature
+[00:24:34.142814] [D] DLSSFeature::ProcessInitParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[00:24:34.142819] [D] DLSSFeature::ProcessInitParams Original Preset_DLAA 13
+[00:24:34.142821] [D] DLSSFeature::ProcessInitParams Original Preset_UltraQuality 13
+[00:24:34.142823] [D] DLSSFeature::ProcessInitParams Original Preset_Quality 13
+[00:24:34.142825] [D] DLSSFeature::ProcessInitParams Original Preset_Balanced 13
+[00:24:34.142826] [D] DLSSFeature::ProcessInitParams Original Preset_Performance 13
+[00:24:34.142828] [D] DLSSFeature::ProcessInitParams Original Preset_UltraPerformance 13
+[00:24:36.196824] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool 1AC99E0 created for queue family 0
+[00:24:38.165743] [I] DLSSFeatureDx12::Init _CreateFeature result: NVSDK_NGX_Result_Success
+[00:24:38.174515] [I] DLSSFeature::ReadVersion DLSS v310.9.1 loaded.
+[00:24:38.174543] [D] RCAS_Dx12::RCAS_Dx12 RCAS start!
+[00:24:38.174681] [D] D3D12Hooks::Hook 
+[00:24:38.200158] [D] OS_Dx12::OS_Dx12 OutputScaling start!
+[00:24:38.253331] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4EA0A80
+[00:24:38.253369] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[00:24:38.253373] [D] DLSSFeatureDx12::Evaluate Depth exist, 8CDEB0
+[00:24:38.253376] [D] DLSSFeatureDx12::Evaluate Velocity exist, 4EA65F0
+[00:24:38.253382] [D] DLSSFeatureDx12::Evaluate Output exist, 4EA6BB0
+[00:24:38.268735] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[00:24:38.432866] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4EA0A80
+[00:24:38.432908] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[00:24:38.432912] [D] DLSSFeatureDx12::Evaluate Depth exist, 8CDEB0
+[00:24:38.432914] [D] DLSSFeatureDx12::Evaluate Velocity exist, 4EA65F0
+[00:24:38.432916] [D] DLSSFeatureDx12::Evaluate Output exist, 4EA6BB0
+[00:24:38.437568] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[00:24:38.590641] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4EA0A80
+[00:24:38.590684] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[00:24:38.590689] [D] DLSSFeatureDx12::Evaluate Depth exist, 8CDEB0
+[00:24:38.590692] [D] DLSSFeatureDx12::Evaluate Velocity exist, 4EA65F0
+[00:24:38.590695] [D] DLSSFeatureDx12::Evaluate Output exist, 4EA6BB0
+[00:24:38.598463] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[00:24:38.753162] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4EA0A80
+[00:24:38.753191] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[00:24:38.753195] [D] DLSSFeatureDx12::Evaluate Depth exist, 8CDEB0
+[00:24:38.753197] [D] DLSSFeatureDx12::Evaluate Velocity exist, 4EA65F0
+[00:24:38.753199] [D] DLSSFeatureDx12::Evaluate Output exist, 4EA6BB0
+[00:24:38.758735] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[00:24:38.906022] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4EA0A80
+[00:24:38.906053] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[00:24:38.906058] [D] DLSSFeatureDx12::Evaluate Depth exist, 8CDEB0
+[00:24:38.906060] [D] DLSSFeatureDx12::Evaluate Velocity exist, 4EA65F0
+[00:24:38.906062] [D] DLSSFeatureDx12::Evaluate Output exist, 4EA6BB0
+[00:24:38.914235] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[00:24:39.067780] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4EA0A80
+[00:24:39.067817] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[00:24:39.067822] [D] DLSSFeatureDx12::Evaluate Depth exist, 8CDEB0
+[00:24:39.067824] [D] DLSSFeatureDx12::Evaluate Velocity exist, 4EA65F0
+[00:24:39.067826] [D] DLSSFeatureDx12::Evaluate Output exist, 4EA6BB0
+[00:24:39.073723] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[00:24:39.224178] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4EA0A80
+[00:24:39.224208] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[00:24:39.224212] [D] DLSSFeatureDx12::Evaluate Depth exist, 8CDEB0
+[00:24:39.224214] [D] DLSSFeatureDx12::Evaluate Velocity exist, 4EA65F0
+[00:24:39.224215] [D] DLSSFeatureDx12::Evaluate Output exist, 4EA6BB0
+[00:24:39.230742] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[00:24:39.375577] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4EA0A80
+[00:24:39.375605] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[00:24:39.375608] [D] DLSSFeatureDx12::Evaluate Depth exist, 8CDEB0
+[00:24:39.375611] [D] DLSSFeatureDx12::Evaluate Velocity exist, 4EA65F0
+[00:24:39.375613] [D] DLSSFeatureDx12::Evaluate Output exist, 4EA6BB0
+[00:24:39.382294] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[00:24:39.522263] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4EA0A80
+[00:24:39.522294] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[00:24:39.522297] [D] DLSSFeatureDx12::Evaluate Depth exist, 8CDEB0
+[00:24:39.522300] [D] DLSSFeatureDx12::Evaluate Velocity exist, 4EA65F0
+[00:24:39.522302] [D] DLSSFeatureDx12::Evaluate Output exist, 4EA6BB0
+[00:24:39.530586] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[00:24:39.678310] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4EA0A80
+[00:24:39.678343] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[00:24:39.678346] [D] DLSSFeatureDx12::Evaluate Depth exist, 8CDEB0
+[00:24:39.678348] [D] DLSSFeatureDx12::Evaluate Velocity exist, 4EA65F0
+[00:24:39.678350] [D] DLSSFeatureDx12::Evaluate Output exist, 4EA6BB0
+[00:24:39.684160] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[00:24:39.824657] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4EA0A80
+[00:24:39.824692] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[00:24:39.824696] [D] DLSSFeatureDx12::Evaluate Depth exist, 8CDEB0
+[00:24:39.824698] [D] DLSSFeatureDx12::Evaluate Velocity exist, 4EA65F0
+[00:24:39.824699] [D] DLSSFeatureDx12::Evaluate Output exist, 4EA6BB0
+[00:24:39.830525] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[00:24:39.995828] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4EA0A80
+[00:24:39.995870] [D] DLSSFeature::ProcessEvaluateParams Render Size: 1920x1080, Target Size: 3840x2160, Display Size: 3840x2160
+[00:24:39.995876] [D] DLSSFeatureDx12::Evaluate Depth exist, 8CDEB0
+[00:24:39.995879] [D] DLSSFeatureDx12::Evaluate Velocity exist, 4EA65F0
+[00:24:39.995882] [D] DLSSFeatureDx12::Evaluate Output exist, 4EA6BB0
+[00:24:40.003055] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[00:24:40.165909] [I] NVSDK_NGX_D3D12_ReleaseFeature releasing feature with id 1000000
+[00:24:40.170408] [I] NVSDK_NGX_D3D12_DestroyParameters calling NVNGXProxy::D3D12_DestroyParameters
+[00:24:40.170426] [I] NVSDK_NGX_D3D12_DestroyParameters calling NVNGXProxy::D3D12_DestroyParameters result: 1
+[00:24:40.170514] [I] StreamlineHooks::streamlineLogCallback [00-24-40][streamline][info][tid:436][6s:836ms:326us]pluginManager.cpp:1202[unloadPlugins] Unloading all plugins ...
+[00:24:40.173432] [I] StreamlineHooks::streamlineLogCallback [00-24-40][streamline][info][tid:436][6s:839ms:246us]plugin.cpp:344[onShutdown] Shutting down plugin sl.reflex
+[00:24:40.175794] [I] StreamlineHooks::streamlineLogCallback [00-24-40][streamline][info][tid:436][6s:841ms:610us]plugin.cpp:344[onShutdown] Shutting down plugin sl.pcl
+[00:24:40.177644] [I] StreamlineHooks::streamlineLogCallback [00-24-40][streamline][info][tid:436][6s:843ms:458us]plugin.cpp:344[onShutdown] Shutting down plugin sl.common
+[00:24:40.179776] [I] StreamlineHooks::streamlineLogCallback [00-24-40][streamline][info][tid:436][6s:845ms:583us]d3d12.cpp:1375[destroyKernel] Destroying kernel copy_to_buffer.cs
+[00:24:40.182065] [I] StreamlineHooks::streamlineLogCallback [00-24-40][streamline][info][tid:436][6s:847ms:882us]generic.cpp:360[shutdown] Delayed destroy resource list count 0
+[00:24:40.192536] [I] 
+[00:24:40.192551] [I] DLL_PROCESS_DETACH
+[00:24:40.192554] [I] Unloading OptiScaler

@@ -1,0 +1,34 @@
+cell_id,tier,backend,rr,quality,render_w,render_h,out_w,out_h,ratio,frames,reps,sl,status,blocked_by,notes
+A01,A,dlss,off,DLAA,3840,2160,3840,2160,1.000,60,3,no,READY,,"sentinel candidate; highest-gpu-load dlss cell"
+A02,A,dlss,off,UltraQuality,2954,1662,3840,2160,1.300,60,3,no,READY,,bin 1.3 per opti_client.cpp:734-738
+A03,A,dlss,off,Quality,2560,1440,3840,2160,1.500,60,3,no,READY,,"SENTINEL cell: run first; then every 5th cell; close-out"
+A04,A,dlss,off,Balanced,2228,1254,3840,2160,1.7235,60,3,no,READY,,nearest bin to 1.724 (opti_client.cpp:734)
+A05,A,dlss,off,Performance,1920,1080,3840,2160,2.000,60,3,no,READY,,"harness default res; baseline for README:274 numbers"
+A06,A,dlss,off,UltraPerformance,1280,720,3840,2160,3.000,60,3,no,READY,,
+B01,B,dlssd,on,DLAA,3840,2160,3840,2160,1.000,60,3,no,READY,,N2 LANDED 3795535: dlssd staged at run_harness.sh:117 + cell ini tools/scenario/inis/dlssd.ini via --ini
+B02,B,dlssd,on,UltraQuality,2954,1662,3840,2160,1.300,60,3,no,READY,,RR feature 13 create (DLSSDFeature_Dx12.cpp:52)
+B03,B,dlssd,on,Quality,2560,1440,3840,2160,1.500,60,3,no,READY,,primary RR-vs-SR comparison cell vs A03
+B04,B,dlssd,on,Balanced,2228,1254,3840,2160,1.7235,60,3,no,READY,,
+B05,B,dlssd,on,Performance,1920,1080,3840,2160,2.000,60,3,no,READY,,
+B06,B,dlssd,on,UltraPerformance,1280,720,3840,2160,3.000,60,3,no,READY,,
+C01,C,xess,off,Quality,2560,1440,3840,2160,1.500,60,3,no,READY,,upscaler-comparison probe at fixed quality
+C02,C,fsr22,off,Quality,2560,1440,3840,2160,1.500,60,3,no,READY,,
+C03,C,fsr31,off,Quality,2560,1440,3840,2160,1.500,60,3,no,READY,,
+D01,D,xess,off,DLAA,3840,2160,3840,2160,1.000,60,3,no,READY,,release only if tier C spread exceeds noise floor (D1-DESIGN step 8)
+D02,D,xess,off,UltraQuality,2954,1662,3840,2160,1.300,60,3,no,READY,,
+D03,D,xess,off,Balanced,2228,1254,3840,2160,1.7235,60,3,no,READY,,
+D04,D,xess,off,Performance,1920,1080,3840,2160,2.000,60,3,no,READY,,
+D05,D,xess,off,UltraPerformance,1280,720,3840,2160,3.000,60,3,no,READY,,
+D06,D,fsr22,off,DLAA,3840,2160,3840,2160,1.000,60,3,no,READY,,
+D07,D,fsr22,off,UltraQuality,2954,1662,3840,2160,1.300,60,3,no,READY,,
+D08,D,fsr22,off,Balanced,2228,1254,3840,2160,1.7235,60,3,no,READY,,
+D09,D,fsr22,off,Performance,1920,1080,3840,2160,2.000,60,3,no,READY,,
+D10,D,fsr22,off,UltraPerformance,1280,720,3840,2160,3.000,60,3,no,READY,,
+D11,D,fsr31,off,DLAA,3840,2160,3840,2160,1.000,60,3,no,READY,,
+D12,D,fsr31,off,UltraQuality,2954,1662,3840,2160,1.300,60,3,no,READY,,
+D13,D,fsr31,off,Balanced,2228,1254,3840,2160,1.7235,60,3,no,READY,,
+D14,D,fsr31,off,Performance,1920,1080,3840,2160,2.000,60,3,no,READY,,
+D15,D,fsr31,off,UltraPerformance,1280,720,3840,2160,3.000,60,3,no,READY,,
+E01,E,dlss,off,Quality,2560,1440,3840,2160,1.500,60,1,yes,READY,,"SL diagnostic: g5 five subchecks (README:73-83)"
+E02,E,dlssd,on,Quality,2560,1440,3840,2160,1.500,60,1,yes,READY,,"SL diagnostic: G-RR-ASSURE row 6 - sl.dlss_d loaded"
+E03,E,xess,off,Quality,2560,1440,3840,2160,1.500,60,1,yes,READY,,SL + non-DLSS control: isolates SL cost from DLSS path
