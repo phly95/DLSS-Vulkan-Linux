@@ -1324,32 +1324,145 @@ __declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_D3D12_Shutdown(void) 
     return NVSDK_NGX_D3D12_Shutdown1(nullptr);
 }
 
-__declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_D3D12_AllocateParameters(NVSDK_NGX_Parameter** out) {
-    if (!out) return NVSDK_NGX_Result_Fail;
-    auto* p = new ParametersImpl();
+// ---- D5/S2 (in-game S-standalone, 2026-10-31 17:51): the layer ABOVE the Available key.  With
+// `SuperSampling.Available` primed (17:08 fix) sl.dlss passes dlssEntry.cpp:937, but the very same
+// startup then fails four times at dlssEntry.cpp:819 (Launcher_2026_10_31_17_51_43_328.log:52-58):
+// "DLSSContext 'getOptimalSettings' callback is missing" - and no CreateFeature ever follows (port
+// log).  The callback is CORE-published, not game- or SL-published: OptiScaler's working surface
+// puts both function pointers into every parameter object (NVNGX_Parameter.cpp:726-728 inside
+// InitNGXParameters) and exports _PopulateParameters_Impl as the (re)population entry
+// (NVNGX_DLSS_Dx12.cpp:558) - the export our port lacked while the game's sl.dlss.dll resolves the
+// core's surface.  Same era evidence as above: this line too appears in ZERO of the 21 historic
+// Launcher_*.log files and zero runs/ archives - Opti was always the surface that supplied it.
+//
+// Contract mirrored from NVSDK_NGX_DLSS_GetOptimalSettingsCallback (NVNGX_Parameter.cpp:391-440):
+// Width, Height AND PerfQualityValue must be present, else Fail; scale table follows Opti's switch
+// (enum order per nvsdk_ngx_defs.h:209-218: MaxPerf=0, Balanced=1, MaxQuality=2, UltraPerformance=3,
+// UltraQuality=4, DLAA=5); DRS band mirrors Opti (max = display, min = max(render, half-display),
+// DLAA pinned to display).  Outputs are dual-written (string key + "#.." enum alias) exactly like
+// Opti - the alias table lives in nvsdk_ngx_defs.h:513+.  Stats callback mirrors Opti's
+// NVSDK_NGX_DLSS_GetStatsCallback (NVNGX_Parameter.cpp:688-703): SizeInBytes = W*H*31, always ok.
+static NVSDK_NGX_Result NGX_MSABI port_get_optimal_settings(NVSDK_NGX_Parameter* q) {
+    auto* p = reinterpret_cast<ParametersImpl*>(q);
+    unsigned int W = 0, H = 0;
+    int pq = -1;
+    if (!p || p->get_uint("Width", &W) != NVSDK_NGX_Result_Success ||
+        p->get_uint("Height", &H) != NVSDK_NGX_Result_Success ||
+        p->get_int("PerfQualityValue", &pq) != NVSDK_NGX_Result_Success ||
+        W == 0 || H == 0)
+        return NVSDK_NGX_Result_Fail;
+    float ratio;
+    switch (pq) {
+        case 0:  ratio = 2.0f;  break;   // MaxPerf
+        case 1:  ratio = 1.7f;  break;   // Balanced
+        case 2:  ratio = 1.5f;  break;   // MaxQuality
+        case 3:  ratio = 3.0f;  break;   // UltraPerformance
+        case 4:  ratio = 1.3f;  break;   // UltraQuality
+        case 5:  ratio = 1.0f;  break;   // DLAA
+        default: ratio = 1.7f;  break;   // Opti's default arm
+    }
+    const unsigned int OW = (unsigned int)((float)W / ratio);
+    const unsigned int OH = (unsigned int)((float)H / ratio);
+    const float scale = 1.0f / ratio;
+    const unsigned int minW = (pq == 5) ? W : (OW < W / 2 ? OW : W / 2);
+    const unsigned int minH = (pq == 5) ? H : (OH < H / 2 ? OH : H / 2);
+    p->set_float("Scale", scale);
+    p->set_float("#\x0f", scale);                         // NVSDK_NGX_EParameter_Scale
+    p->set_float("SuperSampling.ScaleFactor", scale);
+    p->set_uint("OutWidth", OW);
+    p->set_uint("OutHeight", OH);
+    p->set_uint("#\x12", OW);                             // NVSDK_NGX_EParameter_OutWidth
+    p->set_uint("#\x13", OH);                             // NVSDK_NGX_EParameter_OutHeight
+    p->set_uint("DLSS.Get.Dynamic.Max.Render.Width", W);
+    p->set_uint("DLSS.Get.Dynamic.Max.Render.Height", H);
+    p->set_uint("DLSS.Get.Dynamic.Min.Render.Width", minW);
+    p->set_uint("DLSS.Get.Dynamic.Min.Render.Height", minH);
+    p->set_uint("SizeInBytes", W * H * 31u);
+    p->set_uint("#\x30", W * H * 31u);                    // NVSDK_NGX_EParameter_SizeInBytes
+    p->set_uint("DLSSMode", 1u);                          // NVSDK_NGX_DLSS_Mode_DLSS_DLISP
+    p->set_uint("#\x41", 1u);                             // NVSDK_NGX_EParameter_DLSSMode
+    ngx_log("optimal settings cb (dlssEntry:819): %ux%u pq=%d -> %ux%u scale=%.4f [S2]",
+            W, H, pq, OW, OH, (double)scale);
+    return NVSDK_NGX_Result_Success;
+}
+
+static NVSDK_NGX_Result NGX_MSABI port_get_stats(NVSDK_NGX_Parameter* q) {
+    auto* p = reinterpret_cast<ParametersImpl*>(q);
+    if (!p) return NVSDK_NGX_Result_Success;
+    unsigned int W = 1920, H = 1080;
+    if (p->get_uint("Width", &W) != NVSDK_NGX_Result_Success) W = 1920;
+    if (p->get_uint("Height", &H) != NVSDK_NGX_Result_Success) H = 1080;
+    p->set_uint("SizeInBytes", W * H * 31u);
+    p->set_uint("#\x30", W * H * 31u);
+    return NVSDK_NGX_Result_Success;
+}
+
+// One capability surface for every parameter object the port hands out (AllocateParameters /
+// GetParameters / GetCapabilityParameters / PopulateParameters_Impl all land here).
+static void prime_params(ParametersImpl* p) {
     // D5/S-route (rr-pixel-diagnosis A1 + A4(i), 2026-10-31): sl.dlss_d's startup queries
     // params->Get("SuperSamplingDenoising.Available") (dlss_dEntry.cpp:1235-1247); an ABSENT key
     // returns the bare NVSDK_NGX_Result_Fail (0xBAD00000) and the plugin dies ("DLSSDContext
-    // cannot run" - the in-game RR-black chain).  Every parameter object the port hands out is a
-    // capability surface, so prime the key at creation: all three entry points below forward here
-    // (AllocateParameters / GetParameters / GetCapabilityParameters).  Truthful value 1: RR
-    // (preset F) runs on this port.  (OptiScaler's own writer covers only the non-NVIDIA branch
-    // and writes 0 there - the *other* failure, "DLSSDContext is not available".)
+    // cannot run" - the in-game RR-black chain).  Truthful value 1: RR (preset F) runs on this
+    // port.  (OptiScaler's own writer covers only the non-NVIDIA branch and writes 0 there - the
+    // *other* failure, "DLSSDContext is not available".)
     p->set_uint("SuperSamplingDenoising.Available", 1u);
     p->set_uint("SuperSamplingDenoising.FeatureInitResult", 1u);
     p->set_uint("NeedsUpdatedDriver", 0u);
     // D5/S-route, SR side (in-game S-standalone black-3D, 2026-10-31 17:08): sl.dlss's OWN
     // startup queries params->Get("SuperSampling.Available") (dlssEntry.cpp:937 - the key is
     // the neighbouring string in sl.dlss.dll, between "Missing NGX default parameters" and the
-    // failure text itself).  An ABSENT key returns the bare NVSDK_NGX_Result_Fail (0xBAD00000),
-    // mirroring the RR twin above: "DLSSContext cannot run" ->
-    // Launcher_2026_10_31_17_08_25_336.log:23 then 'kFeatureDLSS' context is missing x4
-    // (sl.cpp:179) -> the game reads an uninitialized SR output => black 3D with plain SR AND
-    // with RR (RR rides on the SR context).  The line appears in NO session before today (grep:
-    // all 21 Launcher_*.log + every bin64/runs archive = 0) because on 10-30 Opti's dxgi was the
-    // parameter surface SL queried; today's run is the first where THIS core answers alone.
+    // failure text itself).  An ABSENT key returns 0xBAD00000 => "DLSSContext cannot run" =>
+    // 'kFeatureDLSS' context is missing x4 (sl.cpp:179) => uninitialized SR output => black 3D
+    // in SR and RR alike.  Never seen before today: Opti's dxgi answered this surface on 10-30.
     p->set_uint("SuperSampling.Available", 1u);
+    p->set_uint("#\x01", 1u);                             // NVSDK_NGX_EParameter_SuperSampling_Available
+    // The rest of Opti's InitNGXParameters recipe (NVNGX_Parameter.cpp:715+) that SL's plugins
+    // read as defaults - SR capability/driver keys (UE floor 10.10 per the Opti UE branch), the
+    // two core callbacks (+ their enum-alias twins; Opti dual-registers at :726/:728), and neutral
+    // frame-param defaults.
+    p->set_uint("SuperSampling.FeatureInitResult", 1u);
+    p->set_uint("SuperSampling.NeedsUpdatedDriver", 0u);
+    p->set_uint("SuperSampling.MinDriverVersionMajor", 10u);
+    p->set_uint("SuperSampling.MinDriverVersionMinor", 10u);
+    p->set_uint("Snippet.OptLevel", 0u);
+    p->set_uint("Snippet.IsDevBranch", 0u);
+    p->set_ptr("DLSSOptimalSettingsCallback", reinterpret_cast<void*>(&port_get_optimal_settings));
+    p->set_ptr("#\x3e", reinterpret_cast<void*>(&port_get_optimal_settings));  // EParameter alias (:574)
+    p->set_ptr("DLSSDOptimalSettingsCallback", reinterpret_cast<void*>(&port_get_optimal_settings));
+    p->set_ptr("DLSSGetStatsCallback", reinterpret_cast<void*>(&port_get_stats));
+    p->set_float("Sharpness", 0.0f);
+    p->set_float("MV.Scale.X", 1.0f);
+    p->set_float("MV.Scale.Y", 1.0f);
+    p->set_float("MV.Offset.X", 0.0f);
+    p->set_float("MV.Offset.Y", 0.0f);
+    p->set_float("DLSS.Exposure.Scale", 1.0f);
+    p->set_uint("PerfQualityValue", 0u);
+    p->set_uint("SizeInBytes", 1920u * 1080u * 31u);
+    p->set_uint("FreeMemOnReleaseFeature", 0u);
+    for (const char* k : {"RayReconstruction.Hint.Render.Preset.DLAA",
+                          "RayReconstruction.Hint.Render.Preset.UltraQuality",
+                          "RayReconstruction.Hint.Render.Preset.Quality",
+                          "RayReconstruction.Hint.Render.Preset.Balanced",
+                          "RayReconstruction.Hint.Render.Preset.Performance",
+                          "RayReconstruction.Hint.Render.Preset.UltraPerformance"})
+        p->set_uint(k, 0u);
+}
+
+__declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_D3D12_AllocateParameters(NVSDK_NGX_Parameter** out) {
+    if (!out) return NVSDK_NGX_Result_Fail;
+    auto* p = new ParametersImpl();
+    prime_params(p);
     *out = p->as_param();
+    return NVSDK_NGX_Result_Success;
+}
+
+// The (re)population export Opti ships (NVNGX_DLSS_Dx12.cpp:558 - whole body = InitNGXParameters).
+// sl.dlss's "Missing NGX default parameters - DLSSContext cannot run" branch keys off its absence;
+// resolving it also gives consumers a way to re-run the priming on an object they already hold.
+__declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_D3D12_PopulateParameters_Impl(NVSDK_NGX_Parameter* p) {
+    if (!p) return NVSDK_NGX_Result_Fail;
+    prime_params(reinterpret_cast<ParametersImpl*>(p));
     return NVSDK_NGX_Result_Success;
 }
 
@@ -1624,6 +1737,10 @@ __declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_VULKAN_Shutdown1(VkDe
 
 __declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_VULKAN_AllocateParameters(NVSDK_NGX_Parameter** out) {
     return NVSDK_NGX_D3D12_AllocateParameters(out);
+}
+
+__declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_VULKAN_PopulateParameters_Impl(NVSDK_NGX_Parameter* p) {
+    return NVSDK_NGX_D3D12_PopulateParameters_Impl(p);
 }
 
 __declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_VULKAN_DestroyParameters(NVSDK_NGX_Parameter* p) {
