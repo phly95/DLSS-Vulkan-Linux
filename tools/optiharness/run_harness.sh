@@ -9,6 +9,12 @@
 #   bash tools/optiharness/run_harness.sh --sl                # ALSO boot the game's Streamline stack
 #                                                             # (gates g1-g4 + g5; SL_NVAPI_VER=<n>
 #                                                             #  adds DXVK_NVAPI_DRIVER_VERSION=<n>)
+#   bash tools/optiharness/run_harness.sh --sl-rr             # --sl PLUS the RR request: after
+#                                                             # slInit+slSetD3DDevice the client asks
+#                                                             # for kFeatureDLSS_RR (SL-RR-ENABLE
+#                                                             # marker) and g5 gains its OPTIONAL
+#                                                             # 6th subcheck c6_rr_enable (no flag
+#                                                             # -> g5 byte-identical to before)
 #   bash tools/optiharness/run_harness.sh \
 #       --ini "/path/to/cell_A03.ini"                         # stage THAT ini as OptiScaler.ini
 #                                                             # (default: OptiScaler.harness.ini)
@@ -60,12 +66,13 @@ FRAMES=12
 EXPECT=0
 MODE=opti
 SLMODE=0
+SLRR=0                    # --sl-rr (implies --sl): ask for kFeatureDLSS_RR + g5's optional c6
 EXTRA=()
 INI_OVERRIDE=           # empty = stage the default OptiScaler.harness.ini (byte-for-byte as before)
 
 usage() {
     echo "usage: tools/optiharness/run_harness.sh [--nvngx PATH] [--expect-fail] [--frames N]"
-    echo "      [--direct] [--sl] [--out DIR] [--ini PATH] [--mv-fmt rg32|rg16] [--dep-fmt d32s8|r32f]"
+    echo "      [--direct] [--sl] [--sl-rr] [--out DIR] [--ini PATH] [--mv-fmt rg32|rg16] [--dep-fmt d32s8|r32f]"
     echo "      [--corpus DIR] [--w W] [--h H] [--ow W] [--oh H]"
     echo "      env: SL_NVAPI_VER=<n>  also sets DXVK_NVAPI_DRIVER_VERSION=<n> for the run"
 }
@@ -78,6 +85,7 @@ while [[ $# -gt 0 ]]; do
         --frames) FRAMES=$2; shift 2;;
         --direct) MODE=direct; shift;;
         --sl) SLMODE=1; shift;;
+        --sl-rr) SLMODE=1; SLRR=1; shift;;
         --out) OUTD=$2; shift 2;;
         --ini) INI_OVERRIDE=$2; shift 2;;
         --help|-h) usage; exit 0;;
@@ -238,6 +246,9 @@ EXPECT_ARGS=()
 [[ $EXPECT -eq 1 ]] && EXPECT_ARGS=(--expect-fail)
 SL_ARGS=()
 [[ $SLMODE -eq 1 ]] && SL_ARGS=(--sl)
+# --sl-rr sets SLMODE above, so the exe always receives BOTH flags (it also implies --sl itself,
+# belt and braces a flag order that cannot matter); when the flag is absent this adds nothing.
+[[ $SLRR -eq 1 ]] && SL_ARGS+=(--sl-rr)
 # Optional one-line lever: SL_NVAPI_VER -> DXVK_NVAPI_DRIVER_VERSION (dxvk-nvapi wants a DECIMAL
 # number 100..99999, e.g. 57602 for "576.02" - dxvk-nvapi README), passed through verbatim.
 SL_ENV=()
@@ -424,6 +435,26 @@ if [[ $SLMODE -eq 1 ]]; then
     g5detail+="${sldrv:-n/a}; evidence: [sl-cb]=$(grep -c '^\[sl-cb\]' "$PARSE" 2>/dev/null) "
     g5detail+="SLDLSS=$(grep -c '^SLDLSS' "$PARSE" 2>/dev/null) slInit=$(grep -c '^SL slInit' "$PARSE" 2>/dev/null)"
     g5detail+=" isNvidia='${isnv:-n/a}' files=$G5EV"
+    # ---- OPTIONAL c6, ONLY when --sl-rr was requested: did the headless RR REQUEST reproduce the
+    # game's doom chain?  Three greps over the same evidence file, one per archived line
+    # (bin64/runs/live-capture-121208/OptiScaler.log): the 0xbad00000 boot plus the two lines every
+    # in-game RR enable printed after it.  Absence of ALL THREE = ok (the RR request produced no
+    # failure); any of them = bad(...) -> g5 FAIL -> exit 1, exactly the c2/c4 convention ("doom
+    # reproduced headlessly" = FAIL the gate).  With the flag absent THIS block is not entered, so
+    # g5 note/detail/verdict stay byte-identical - the 33-cell matrix never sees c6.
+    if [[ $SLRR -eq 1 ]]; then
+        n_rr_doom=$(grep -ci 'dlss_dEntry\.cpp:1237.*bad00000' "$G5EV" || true)   # (0xbad00000)
+        n_rr_notld=$(grep -cF "Feature 'kFeatureDLSS_RR' not loaded" "$G5EV" || true)
+        n_rr_noctx=$(grep -cF "'kFeatureDLSS_RR' context is missing" "$G5EV" || true)
+        n_rr_en=$(grep -cF 'SL-RR-ENABLE rc=' "$PARSE" || true)                    # the marker itself
+        c6=ok
+        (( n_rr_doom + n_rr_notld + n_rr_noctx == 0 )) || \
+            c6="bad(doom0xbad00000=$n_rr_doom not_loaded=$n_rr_notld ctx_missing=$n_rr_noctx)"
+        [[ $c6 == ok ]] || g5=FAIL
+        g5note+="  c6_rr_enable=$c6"
+        # marker count rides along so "the enable never ran" can never be misread as "no doom":
+        g5detail+=" SL-RR-ENABLE(x${n_rr_en:-0})"
+    fi
 fi
 
 # ---- HARNESS SUMMARY -----------------------------------------------------------------------------

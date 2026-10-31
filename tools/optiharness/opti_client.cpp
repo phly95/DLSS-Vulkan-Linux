@@ -4,7 +4,7 @@
 //
 //   opti_client.exe [--opti | --direct] [--nvngx NAME] [--frames N] [--out DIR] [--csv FILE]
 //                   [--w W] [--h H] [--ow W] [--oh H] [--mv-fmt rg32|rg16]
-//                   [--dep-fmt d32s8|r32f] [--corpus DIR] [--expect-fail]
+//                   [--dep-fmt d32s8|r32f] [--corpus DIR] [--expect-fail] [--sl] [--sl-rr]
 //
 // --opti (default) resolves the NGX exports from the OptiScaler proxy dxgi.dll; --direct skips
 // OptiScaler and GetProcAddress-es the same exports straight from _nvngx.dll.  Identical inputs
@@ -15,6 +15,8 @@
 //   GPU_EVAL_MS <i> <ms>         D3D12 timestamp queries bracketing that same call on our own
 //                                 command list (or GPU_EVAL_MS <i> n/a when unsupported)
 //   OUT_NZ <i> nz=<f> min= max=   per-frame non-black statistics of the read-back output
+//   SL-RR-ENABLE rc=0x<x> ctx=... (--sl-rr ONLY) the RR-enable marker run_harness.sh greps as its
+//                                 optional g5 subcheck c6 (implies --sl; no other line moves)
 //   HARNESS SUMMARY               medians/p95 over frames 1..N, PASS/FAIL per gate, RESULT line
 // This program does NOT print GPU_FRAME_MS: that name belongs to the port's runner (runner.cpp:340,
 // brackets chain->record() alone; consumer eval_verify.py:115 reads frames 0..N-1 from it), and
@@ -177,13 +179,18 @@ struct Opt {
     std::string mv_fmt = "rg32", dep_fmt = "d32s8";
     bool expect_fail = false;
     bool sl = false;                   // --sl: boot the game's Streamline stack before the Opti flow
+    bool sl_rr = false;                // --sl-rr (implies --sl): REQUEST kFeatureDLSS_RR after slInit +
+                                       // slSetD3DDevice - the in-game RR toggle --sl never made (the
+                                       // 0xbad00000 chain, dlss_dEntry.cpp:1237 -> "not loaded")
 };
 
 static int usage() {
     sayerr(
         "[opti_client] usage: opti_client.exe [--opti | --direct] [--nvngx NAME] [--frames N]\n"
         "    [--out DIR] [--csv FILE] [--w W] [--h H] [--ow W] [--oh H]\n"
-        "    [--mv-fmt rg32|rg16] [--dep-fmt d32s8|r32f] [--corpus DIR] [--expect-fail] [--sl]");
+        "    [--mv-fmt rg32|rg16] [--dep-fmt d32s8|r32f] [--corpus DIR] [--expect-fail]\n"
+        "    [--sl] [--sl-rr]  (--sl-rr implies --sl: request kFeatureDLSS_RR and print\n"
+        "                      [opti_client] SL-RR-ENABLE rc=0x<x> ctx=<state> for run_harness g5 c6)");
     return 1;
 }
 
@@ -240,6 +247,14 @@ struct SlApi {
     sl::Result (*getReqs)(sl::Feature, sl::FeatureRequirements&) = nullptr;
     sl::Result (*isSupported)(sl::Feature, const sl::AdapterInfo&) = nullptr;
     sl::Result (*isLoaded)(sl::Feature, bool&) = nullptr;
+    // --sl-rr ONLY, resolved lazily there so a plain --sl run still resolves exactly the six above
+    // (and prints the same "6 exports resolved" line).  Types are sl_core_api.h's own PFun_*
+    // aliases (:54/:55/:70) - the exact vendored signatures, so a swapped header cannot hand this
+    // file an unnoticed ABI drift; the names are also all present in the game's sl.interposer.dll
+    // export table (objdump -p: slSetFeatureLoaded/slGetNewFrameToken/slEvaluateFeature).
+    PFun_slSetFeatureLoaded* setLoaded = nullptr;
+    PFun_slEvaluateFeature* evalFeat = nullptr;
+    PFun_slGetNewFrameToken* newFrameTok = nullptr;
     bool ok() const { return mod && init && shutdown && setDevice && getReqs && isSupported && isLoaded; }
 };
 
@@ -530,6 +545,7 @@ int main(int argc, char** argv) {
         else if (a == "--corpus") o.corpus = next();
         else if (a == "--expect-fail") o.expect_fail = true;
         else if (a == "--sl") o.sl = true;
+        else if (a == "--sl-rr") { o.sl_rr = true; o.sl = true; }   // implies --sl either way
         else { usage(); return 1; }   // an unknown arg exits 1: Proton probes rely on exactly that
     }
     if (o.frames < 1 || o.frames > 256) FAIL("--frames 1..256");
@@ -546,6 +562,11 @@ int main(int argc, char** argv) {
     // pins: the game loads it at startup and it injects dxgi hooks; Opti's staged dxgi.dll has
     // already installed its LdrLoadDll hooks from process start if the loader pulled it in).
     SlApi slapi;
+    // (--sl-rr) the two upstream SL results, recorded so the RR-enable block below can honour
+    // sl_core_api.h's "requires ... device to be created before calling it" (:117/:133); both stay
+    // at eErrorNotInitialized when --sl is absent, and --sl-rr implies --sl by construction.
+    sl::Result sl_init_r = sl::Result::eErrorNotInitialized;
+    sl::Result sl_dev_r = sl::Result::eErrorNotInitialized;
     if (o.sl) {
         slapi.mod = LoadLibraryA("sl.interposer.dll");
         if (!slapi.mod) FAIL("cannot LoadLibrary sl.interposer.dll (run_harness.sh stages it next to the exe)");
@@ -562,6 +583,21 @@ int main(int argc, char** argv) {
             if (!*w.p) FAIL("sl.interposer.dll lacks export %s", w.n);
         }
         say("[opti_client] sl.interposer loaded at %p, 6 exports resolved", (void*)slapi.mod);
+        // --sl-rr: the three RR-request exports, resolved ONLY under that flag (the six-above
+        // line stays byte-identical for every existing cell); missing = refuse before slInit.
+        if (o.sl_rr) {
+            struct { const char* n; void** p; } extra[] = {
+                {"slSetFeatureLoaded", reinterpret_cast<void**>(&slapi.setLoaded)},
+                {"slGetNewFrameToken", reinterpret_cast<void**>(&slapi.newFrameTok)},
+                {"slEvaluateFeature", reinterpret_cast<void**>(&slapi.evalFeat)},
+            };
+            for (auto& w : extra) {
+                *w.p = reinterpret_cast<void*>(GetProcAddress(slapi.mod, w.n));
+                if (!*w.p) FAIL("sl.interposer.dll lacks export %s (needed by --sl-rr)", w.n);
+            }
+            say("[opti_client] sl.interposer RR surface: slSetFeatureLoaded + slGetNewFrameToken + "
+                "slEvaluateFeature resolved");
+        }
     }
 
     if (!o.corpus.empty()) {
@@ -665,9 +701,9 @@ int main(int argc, char** argv) {
         pref.applicationId = 101640911u;
         pref.engine = sl::EngineType::eCustom;    // preserved default (sl_appidentity.h: eCustom=0)
         pref.renderAPI = sl::RenderAPI::eD3D12;
-        const sl::Result r = slapi.init(pref, sl::kSDKVersion);
+        sl_init_r = slapi.init(pref, sl::kSDKVersion);
         say("SL slInit result=%d (%s) sdk=0x%llx (v2.14.1) appid=%u feats=%u paths=%u\n",
-            int(r), sl_res_name(r), (unsigned long long)sl::kSDKVersion, pref.applicationId,
+            int(sl_init_r), sl_res_name(sl_init_r), (unsigned long long)sl::kSDKVersion, pref.applicationId,
             pref.numFeaturesToLoad, pref.numPathsToPlugins);
     }
 
@@ -678,8 +714,8 @@ int main(int argc, char** argv) {
     // device is created", sl_core_api.h slSetD3DDevice doc), then the two probes that predicted
     // the game's doom, printed as SLDLSS lines for gate g5 / human eyes.
     if (o.sl) {
-        const sl::Result sr = slapi.setDevice(dev);
-        say("SL slSetD3DDevice result=%d (%s)\n", int(sr), sl_res_name(sr));
+        sl_dev_r = slapi.setDevice(dev);
+        say("SL slSetD3DDevice result=%d (%s)\n", int(sl_dev_r), sl_res_name(sl_dev_r));
         // AdapterInfo with no LUID on purpose: ID3D12Device exposes no adapter LUID without a
         // DXGI factory, and the sl_core_api.h doc for slIsFeatureSupported says adapter info is
         // OPTIONAL - with fields empty SL answers the OS/driver-level question, which is exactly
@@ -703,6 +739,58 @@ int main(int argc, char** argv) {
             fr.driverVersionRequired.minor, fr.driverVersionRequired.build,
             fr.osVersionDetected.major, fr.osVersionDetected.minor, fr.osVersionDetected.build,
             fr.osVersionRequired.major, fr.osVersionRequired.minor, fr.osVersionRequired.build);
+    }
+
+    // ---- --sl-rr: REQUEST Ray Reconstruction (the in-game RR toggle no harness run has ever
+    // made) -------------------------------------------------------
+    // --sl boots sl.dlss_d but nothing above asks SL for kFeatureDLSS_RR (1001), so the archived
+    // failure chain (bin64/runs/live-capture-121208/OptiScaler.log:491 + every RR toggle after it)
+    // could not fire headlessly:
+    //   dlss_dEntry.cpp:1237[slOnPluginStartup] NGX parameter indicating DLSSDContext support
+    //       cannot be found (0xbad00000) ...
+    //   sl.cpp:179[slValidateFeatureContext] 'kFeatureDLSS_RR' context is missing.
+    //   pluginManager.cpp:489[setFeatureEnabled] Feature 'kFeatureDLSS_RR' not loaded
+    // Whichever of them SL emits arrives through sl_log_cb as [sl-cb] -> client.log -> g5's
+    // evidence file, so run_harness.sh can gate them as its optional c6 subcheck.
+    // API note (vendored v2.14.1 ground truth): there is NO slSetFeatureEnabled in sl-include/
+    // nor in the game interposer's export table - the SDK's enable-with-`true` spelling is
+    // slSetFeatureLoaded(sl::Feature, bool) (sl_core_api.h:134, PFun alias :54, "All requested
+    // features are loaded by default and have to be unloaded explicitly if needed"), so this
+    // block uses it and the gate's greps (not the function name) carry the game's wording.
+    if (o.sl_rr) {
+        if (sl_init_r != sl::Result::eOk || sl_dev_r != sl::Result::eOk) {
+            // never poke SL's load/evaluate APIs on a half-booted stack: report the skip (printed
+            // is the whole point), leave the run's own gates to judge everything else.
+            say("[opti_client] SL-RR-ENABLE rc=0xSKIP ctx=skip(slInit=0x%08x slSetD3DDevice=0x%08x)",
+                unsigned(sl_init_r), unsigned(sl_dev_r));
+        } else {
+            const sl::Result en = slapi.setLoaded(sl::kFeatureDLSS_RR, true);
+            say("[opti_client] SL-RR: slSetFeatureLoaded(kFeatureDLSS_RR, true) -> 0x%08x (%s)",
+                unsigned(en), sl_res_name(en));
+            bool rr_loaded = false;
+            const sl::Result rr_lr = slapi.isLoaded(sl::kFeatureDLSS_RR, rr_loaded);
+            say("[opti_client] SL-RR: slIsFeatureLoaded(kFeatureDLSS_RR) -> 0x%08x (%s) loaded=%d",
+                unsigned(rr_lr), sl_res_name(rr_lr), rr_loaded ? 1 : 0);
+            // Deterministic marker for run_harness.sh (g5 c6 greps "SL-RR-ENABLE rc=").  ctx= is
+            // the closest public readout of the game's "context is missing": SL exposes no context
+            // handle at all, so loaded/not-loaded from slIsFeatureLoaded is the best that exists.
+            say("[opti_client] SL-RR-ENABLE rc=0x%08x ctx=%s", unsigned(en),
+                (en == sl::Result::eOk && rr_lr == sl::Result::eOk && rr_loaded) ? "loaded" : "missing");
+            // Evaluate smoke, guarded: a fresh frame token FIRST (sl_core_api.h:316 - a valid
+            // token is a documented precondition), and a non-OK or null token SKIPS the smoke
+            // instead of being dereferenced.  A failing evaluate against a missing context IS the
+            // desired evidence and is only ever logged - this block can never fail the run.
+            sl::FrameToken* tok = nullptr;
+            const sl::Result gt = slapi.newFrameTok(tok, nullptr);
+            if (gt != sl::Result::eOk || !tok) {
+                say("[opti_client] SL-RR: slEvaluateFeature SKIPPED (slGetNewFrameToken -> 0x%08x (%s) tok=%p)",
+                    unsigned(gt), sl_res_name(gt), (void*)tok);
+            } else {
+                const sl::Result ev = slapi.evalFeat(sl::kFeatureDLSS_RR, *tok, nullptr, 0, nullptr);
+                say("[opti_client] SL-RR: slEvaluateFeature(kFeatureDLSS_RR) -> 0x%08x (%s)",
+                    unsigned(ev), sl_res_name(ev));
+            }
+        }
     }
     D3D12_COMMAND_QUEUE_DESC qd{}; qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     ID3D12CommandQueue* q = nullptr; HR(dev->CreateCommandQueue(&qd, IID_PPV_ARGS(&q)));

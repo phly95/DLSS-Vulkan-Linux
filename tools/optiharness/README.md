@@ -124,6 +124,11 @@ game bootstrap (`bin64/runs/OptiScaler.slayer3-noeval.log-20261030`) the plugin 
     -> the unchanged Opti DLSS evaluate flow (g1-g4 keep running)
     -> slShutdown at exit.
 
+`--sl-rr` (implies `--sl`) is the missing REQUEST step of that list: right after `slInit` +
+`slSetD3DDevice` succeed it asks SL for `kFeatureDLSS_RR` and smokes `slEvaluateFeature` on it -
+detailed, with g5's optional sixth subcheck `c6_rr_enable`, in the dated `--sl-rr` section at the
+bottom of this file.
+
 Stage: all 11 game `sl.*.dlls` symlinked read-only next to the exe (so `findPlugins` looks in the
 exe dir - archive:309 does the game's `.../bin64`).
 
@@ -197,10 +202,10 @@ reads.  The two FAILING checks are the decisive doom lines anyway (`Failed to in
 
 | file | what |
 | --- | --- |
-| `opti_client.cpp` | the exe: host sequence `Init → AllocateParameters → CreateFeature → per-frame EvaluateFeature` (the NVSDK export surface verified by `objdump -p` on the shipped dxgi.dll: 53+ NVSDK entries), synthetic/corpus inputs, timing pairs, read-back + black detector, the `--sl` Streamline boot + `SLDLSS` probes |
+| `opti_client.cpp` | the exe: host sequence `Init → AllocateParameters → CreateFeature → per-frame EvaluateFeature` (the NVSDK export surface verified by `objdump -p` on the shipped dxgi.dll: 53+ NVSDK entries), synthetic/corpus inputs, timing pairs, read-back + black detector, the `--sl` Streamline boot + `SLDLSS` probes, the `--sl-rr` RR request + `SL-RR-ENABLE` marker (see the dated `--sl-rr` section) |
 | `OptiScaler.harness.ini` | the harness-local ini template (each key and every deliberately-unset key documented inline) |
 | `build.sh` | cross-compile to `build/optiharness/opti_client.exe`, FMT16=1 (Output RGBA16F = `DLSS5_AMD_OUT_F16=1` of the package), mirrors `tools/verify/ngx_client/build.sh` incl. the podman fallback; runs `sl_abi_check.cpp` on host g++ first |
-| `run_harness.sh` | staging (port DLL copy, OptiScaler + `nvngx_dlss.dll` + `nvngx_dlssd.dll` + 11 sl.* + shaders as symlinks, ini = `--ini` file or the template), prefix-busy detection + clone, Proton 10.0-pinned probe, env incl. `SL_NVAPI_VER`, run, gates g1-g5.  Since 2026-10-31 (N5) also N5's upscaler companions: the 9 of OptiScaler's 10 probed companion dlls that exist in the game's `bin64`, the absent one skipped with a note (see the dated N5 section) |
+| `run_harness.sh` | staging (port DLL copy, OptiScaler + `nvngx_dlss.dll` + `nvngx_dlssd.dll` + 11 sl.* + shaders as symlinks, ini = `--ini` file or the template), prefix-busy detection + clone, Proton 10.0-pinned probe, env incl. `SL_NVAPI_VER`, run, gates g1-g5.  Since 2026-10-31 (N5) also N5's upscaler companions: the 9 of OptiScaler's 10 probed companion dlls that exist in the game's `bin64`, the absent one skipped with a note (see the dated N5 section).  Since 2026-10-31 also `--sl-rr`: the RR request passthrough plus g5's OPTIONAL sixth subcheck c6_rr_enable (see the dated `--sl-rr` section) |
 | `sl-include/` | the nine NVIDIA Streamline v2.14.1 headers, verbatim from tag v2.14.1 (`VENDORED.txt` = url/commit/date/licence) |
 | `sl_abi_check.cpp` | hand-derived layout assertions, host-compiled by build.sh before every cross-build |
 
@@ -512,3 +517,103 @@ staged) changes any FG-related default (`State::activeFgOutput` defaults to `NoF
 and `[FrameGen]` is deliberately unset in this ini - reasoned, not measured); `stat`-size handling
 for the new links in `tools/scenario/run_cell.sh`'s manifest (that file is D1-owned and already
 flagged for `-L`); in-game verification (D3).
+
+## 2026-10-31 - `--sl-rr`: request kFeatureDLSS_RR headless (g5 subcheck c6)
+
+**The gap**: `--sl` boots the game's Streamline stack and even loads `sl.dlss_d` (g5 baseline
+`c5_sl.dlss_loaded=ok`), but nothing in the harness ever *asks* for Ray Reconstruction, so the
+archived in-game chain (`bin64/runs/live-capture-121208/OptiScaler.log:491`, then every RR toggle
+the user flipped after 12:08) can never fire here:
+
+    dlss_dEntry.cpp:1237[slOnPluginStartup] NGX parameter indicating DLSSDContext support cannot
+        be found (0xbad00000) - DLSSDContext cannot run          <- plugin startup / capability read
+    sl.cpp:179[slValidateFeatureContext] 'kFeatureDLSS_RR' context is missing.      <- on RR enable
+    pluginManager.cpp:489[setFeatureEnabled] Feature 'kFeatureDLSS_RR' not loaded   <- on RR enable
+
+**The flag** - `opti_client.exe --sl-rr` (implies `--sl`; the arg parser sets both, so flag order
+cannot matter) and `run_harness.sh --sl-rr` (sets `SLMODE=1 SLRR=1`, passes both flags down, stages
+exactly like `--sl`).  When `slInit` AND `slSetD3DDevice` both reported `eOk` (sl_core_api.h
+documents its load/evaluate APIs as "requires DX/VK device to be created before calling it"), the
+client resolves three *more* interposer exports - lazily, so a plain `--sl` run still resolves
+exactly today's six and prints the same `6 exports resolved` line - and issues:
+
+    [opti_client] sl.interposer RR surface: slSetFeatureLoaded + slGetNewFrameToken + slEvaluateFeature resolved
+    [opti_client] SL-RR: slSetFeatureLoaded(kFeatureDLSS_RR, true) -> 0x<result> (<name>)
+    [opti_client] SL-RR: slIsFeatureLoaded(kFeatureDLSS_RR) -> 0x<result> (<name>) loaded=0|1
+    [opti_client] SL-RR-ENABLE rc=0x<result> ctx=loaded|missing      <- THE marker (g5 c6 greps it)
+    [opti_client] SL-RR: slEvaluateFeature(kFeatureDLSS_RR) -> 0x<result> (<name>)
+        (or: slEvaluateFeature SKIPPED (slGetNewFrameToken -> 0x<result> (<name>) tok=nil),
+         which is the graceful path when no frame token can be minted - nothing is dereferenced)
+
+If either upstream call was not `eOk`, no SL call is made at all and the marker reports
+`SL-RR-ENABLE rc=0xSKIP ctx=skip(slInit=0x<..> slSetD3DDevice=0x<..>)`.  Whichever of its own doom
+lines SL emits on these calls reaches `client.log` through the `[sl-cb]` `logMessageCallback`
+`--sl` already installs (same route as c2/c4 today), plus Opti's `[streamline]` echo in
+`OptiScaler.log` - both are in `$OUTD/g5_evidence.txt`.
+
+**API note (deliberate deviation from the requested call's spelling, forced by ground truth)**: SL
+v2.14.1 has **no `slSetFeatureEnabled`** anywhere in `sl-include/`, and the game's own
+`sl.interposer.dll` exports only `slSetFeatureLoaded` (`objdump -p` on it - the full export list
+has no `*Enabled*`).  The SDK's enable-with-`true` surface is
+`slSetFeatureLoaded(sl::Feature, bool)` (`sl_core_api.h:134`, PFun alias `:54`, "All requested
+features are loaded by default and have to be unloaded explicitly if needed"), so that is the call
+made, using `sl::kFeatureDLSS_RR = 1001` from `sl_core_types.h:247` (already in `kGameFeatures`).
+The signature demands **no prefs/requirements struct** (feature + bool only), so nothing new fills a
+struct; ABI-safety comes from the member types being `sl_core_api.h`'s own `PFun_slSetFeatureLoaded`
+/ `PFun_slEvaluateFeature` / `PFun_slGetNewFrameToken` aliases rather than hand-written prototypes.
+The equivalence with the game's `setFeatureEnabled` wording lives in the gate's greps, not in the
+function name.
+
+**g5's OPTIONAL sixth subcheck - only when `--sl-rr` was requested.**  Without the flag not one byte
+of g5 changes (the c6 block is not entered: same note, same detail, same verdict - the 33-cell
+matrix is untouched).  With it, three greps over `$OUTD/g5_evidence.txt` (case-insensitive for the
+hex, fixed strings for the other two):
+
+| grep | meaning |
+|---|---|
+| `dlss_dEntry\.cpp:1237.*bad00000` | the `0xbad00000` boot line |
+| `'kFeatureDLSS_RR' context is missing` | enable-time reactor line 1 |
+| `Feature 'kFeatureDLSS_RR' not loaded` | enable-time reactor line 2 |
+
+absence of **all three** = `c6_rr_enable=ok`; any of them =
+`c6_rr_enable=bad(doom0xbad00000=<n> not_loaded=<n> ctx_missing=<n>)` -> `g5=FAIL` -> exit 1.  That
+is the same convention c2/c4 already use - *the doom reproduced headlessly is a FAILING gate* - so
+the RED/green split is: `bad(...)` = reproduction achieved in this topology, `ok` = the RR request
+came up clean.  The detail line also carries `SL-RR-ENABLE(x<n>)`, so "the enable never ran" can
+never be misread as "no doom" (c4's *non-RR* `dlssEntry.cpp:923` line is deliberately NOT a c6
+pattern: the pattern is `dlss_dEntry`).
+
+**Validation (2026-10-31 - PARSE/BUILD ONLY, ZERO harness executions: the run slot belongs to the
+D1/D5 runner, confirmed idle with `pgrep -af 'run_harness|opti_client'` before and after)**:
+- `bash -n tools/optiharness/run_harness.sh` and `bash -n tools/optiharness/build.sh` -> rc 0.
+- `bash tools/optiharness/build.sh` -> rc 0, `built build/optiharness/opti_client.exe`, warning set
+  unchanged (the same 5 pre-existing `-Winvalid-offsetof`s: 4 in the untouched `sl_abi_check.cpp`,
+  1 on the untouched `Preferences::logMessageCallback` assert; no new warning, no error).
+- usage/refusal paths only, all of them exiting before `# ---- stage ----` (stage dir mtime
+  unchanged, no log written): `--help` -> usage incl. `[--sl-rr]`, rc 0; `--bogus-arg` -> unknown
+  argument, rc 2; `--sl-rr --nvngx /nonexistent` -> accepted by the parser (failure line is the
+  preflight `no port DLL`, NOT `unknown argument`), rc 1.  The exe itself under Proton 10.0 with a
+  throwaway compatdata (the run_harness probe pattern; the prefix was deleted afterwards):
+  `--nonsense-arg` -> rc 1 and `--sl-rr` (no `--out`) -> rc 1, i.e. both refuse at `usage()` before
+  any LoadLibrary/D3D/SL call - since PE stdout never reaches the shell under `proton run`, the
+  usage text was verified instead with `strings opti_client.exe`: `--sl-rr`, the new usage tail and
+  all four `SL-RR`/`SL-RR-ENABLE` format strings are compiled in.
+- c6 logic exercised **in isolation** (its exact block `sed`-extracted, driven against 4 shell
+  fixtures - no harness run): `SLRR=0` + doom-evidence file -> no c6, note/detail byte-identical;
+  `SLRR=1` clean evidence -> `c6_rr_enable=ok`; `SLRR=1` with the three archived lines *plus* c4's
+  `dlssEntry.cpp:923` -> `c6_rr_enable=bad(doom0xbad00000=1 not_loaded=1 ctx_missing=1)` +
+  `g5=FAIL`; `SLRR=1` with ONLY the c4 line -> `ok`.
+
+**Not tested / out of scope here**: every actual `--sl-rr` RUN (nothing beyond argument parsing,
+refusal exit codes and the compile was executed - the D1/D5 runner owns the execution slot); which
+subset of the three doom lines a real run emits (each grepped independently, so a partial chain
+reports exact counts); whether `slSetFeatureLoaded` alone suffices in SL's internals versus needing
+the evaluate as well (both are issued, in that order, and the log decides); `slEvaluateFeature`
+with a NULL command buffer and zero inputs (a capability smoke for the validate path - no viewport,
+tags, constants or resources are ever set, so it is NOT a real RR evaluate and must not be read as
+one); RL frame pacing/ordering of the request versus the plugin's own startup; `--direct --sl-rr`
+(the standalone topology runs with the same flag, but nothing in c6 assumes Opti - unrun); a
+`--sl` regression run (g5's non-RR path is unchanged by construction and was fixture-verified, not
+re-run across the 33-cell matrix); `shellcheck` (not installed on the host this round - `bash -n`
+only); `tools/scenario/**` and everything under `tools/verify/**` (untouched); in-game
+verification (D5).
