@@ -113,6 +113,11 @@ arch/driver minimum (`MinHWArchitecture=0`).
 
 ## D4 — consolidated report + master handoff (MASTER-2, 2026-10-31 02:2x EDT)
 
+> **FINAL-REPORT SKELETON NOW LIVES IN [`D4-FINAL.md`](D4-FINAL.md)** (assembled ~11:0x; 33-cell
+> digest with superseded rows marked, lever provenance P1..WARN, h1prime §4 pointer, upstream-diff
+> verdict, RR-oracle scope line, and the open **D3 slot** awaiting the executor's in-game evidence).
+> This section below remains the original status log.
+
 **Takeover provenance.** The previous master session `ses_e6fd51294ffey5ZMwuIL2arg9H` died at
 02:05 on `provider.quota` (`/tmp/opencode/failover_runbook.md:5,7`). Replacement:
 `ses_e6f7044eeffeSSITmFI4a0g4Mb`, running on `opencode/mimo-v2.6-flash-free`. All of its on-disk
@@ -809,3 +814,4 @@ Consequences recorded against the levelling list above:
 (`bin64/nvngx.dll` <- copy of `bin64/nvngx_dlss.dll`, NEW file + provenance row) now UNBLOCKED per the
 "flip happens in harness first" condition - **awaiting top-level approval before touching bin64**.
 Registry chain reverted (L20 baseline proven); `Services\nvlddmkm` writes forbidden; port R1 `.rc` kept (commit 1fd8c6c).
+| G1 | 2026-10-31 11:0x EDT | `bin64/nvngx.dll` **NEW file** (find/ls proved no predecessor, no backup possible) = byte-copy of `bin64/nvngx_dlss.dll` (cmp OK, md5 source==copy `a0dac8ab01c00f56a1de1bc383f4147c`, 58,956,912 B, Authenticode Security Directory 0x3837400+0x2870 present) | APPROVED by top-level after E01-E03 GREEN (a349cfb first-class staging); harness-proven winner (L-C) applied game-side; levers G2 `DxgiFactoryWrapping=false` + Opti dxgi.dll IN + fakenvapi.dll present all left as-is |
