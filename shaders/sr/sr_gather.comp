@@ -42,6 +42,18 @@ layout(push_constant) uniform GatherArgs {
 uint b32(uint off) { return in_col[off >> 2]; }
 uint16_t b16(uint off) { return uint16_t((in_col[off >> 2] >> ((off & 2u) * 8u)) & 0xffffu); }
 uint b32_mv(uint off) { return in_mv[off >> 2]; }
+
+// S4 (in-game SR quality, 2026-10-31): Crimson Desert marks motion-vector-less pixels with a
+// non-finite sentinel - measured: bin64/dlss5-amd-dump_mv.bin holds 86.9% +-inf channel words
+// at the first frames (Depth in the same dump is a clean [0,1]).  The raw decode fed them into
+// g_mv verbatim; f16 keeps inf, history reprojection propagates it, and the visible result is
+// exactly the user's verdict: blocky patches + shimmer + no AA (D1's corpus fixtures never
+// carried non-finites, so headless PSNR could not see this).  Non-finite = no motion, and the
+// clamp keeps an FLT_MAX-style sentinel from overflowing into inf on the f16 cast.
+float san_mv(float v) {
+    if (isnan(v) || isinf(v)) return 0.0;
+    return clamp(v, -65504.0, 65504.0);
+}
 uint16_t b16_mv(uint off) { return uint16_t((in_mv[off >> 2] >> ((off & 2u) * 8u)) & 0xffffu); }
 
 void main() {
@@ -110,13 +122,16 @@ void main() {
     if (mvhi == 0) {
         if (fmt_mv == 0) {
             uint off = y * pitch_mv + x * 4;
-            g_mv[out_idx] = f16vec2(uint16BitsToFloat16(b16_mv(off)), uint16BitsToFloat16(b16_mv(off + 2)));
+            g_mv[out_idx] = f16vec2(float16_t(san_mv(uint16BitsToFloat16(b16_mv(off)))),
+                                    float16_t(san_mv(uint16BitsToFloat16(b16_mv(off + 2)))));
         } else if (fmt_mv == 1) {
             uint off = (y * pitch_mv + x * 8) >> 2;
-            g_mv[out_idx] = f16vec2(float16_t(uintBitsToFloat(in_mv[off])), float16_t(uintBitsToFloat(in_mv[off + 1])));
+            g_mv[out_idx] = f16vec2(float16_t(san_mv(uintBitsToFloat(in_mv[off]))),
+                                    float16_t(san_mv(uintBitsToFloat(in_mv[off + 1]))));
         } else {
             uint off = y * pitch_mv + x * 8;
-            g_mv[out_idx] = f16vec2(uint16BitsToFloat16(b16_mv(off)), uint16BitsToFloat16(b16_mv(off + 2)));
+            g_mv[out_idx] = f16vec2(float16_t(san_mv(uint16BitsToFloat16(b16_mv(off)))),
+                                    float16_t(san_mv(uint16BitsToFloat16(b16_mv(off + 2)))));
         }
     }
 

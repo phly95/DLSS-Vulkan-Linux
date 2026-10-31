@@ -854,6 +854,23 @@ static NVSDK_NGX_Result record_bridge(VkCommandBuffer cmd, FeatureState* s, cons
         ngx_log("dumped chain out/in of frame 0 (out %ux%u, in %dx%d) + mv/dep planes",
                 c->out_width(), c->out_height(), c->width(), c->height());
     }
+    // S4 (next link of the SR-quality hunt): the frame-2 snapshot above caught the MV plane at
+    // the menu (86.9% non-finite channel words; Depth clean).  Sample LATER frames - 10 and 60,
+    // well into gameplay - so "sentinel only in menu frames" vs "sentinel in gameplay too" is
+    // settled with two more files, and put the finite fraction straight into the port log so the
+    // answer is visible without the dump.  The staging still holds the PRE-shader (raw) bytes,
+    // so this measures the game's content, not our san_mv() guard.
+    if ((s->frame_idx == 10 || s->frame_idx == 60) && dump_probe_on()) {
+        const size_t nfl = size_t(c->width()) * c->height() * 2;   // 2 channels, float32
+        const float* mv = static_cast<const float*>(c->in_mv());
+        size_t fin = 0;
+        for (size_t i = 0; i < nfl; ++i) fin += std::isfinite(mv[i]) ? 1u : 0u;
+        char fn[64];
+        std::snprintf(fn, sizeof fn, "dlss5-amd-dump_mv_f%u.bin", s->frame_idx);
+        if (FILE* fm = std::fopen(fn, "wb")) { std::fwrite(mv, 4, nfl, fm); std::fclose(fm); }
+        ngx_log("S4 mv frame %u: %zu/%zu channel words finite (%.1f%%) -> %s [S4]",
+                s->frame_idx, fin, nfl, 100.0 * (double)fin / (double)nfl, fn);
+    }
     // Per-frame verdict: the slices recorded while recording frame N are readable from frame N+1.
     // Frame 0 reading full and later frames not would mean the image, not the copy, is the problem.
     if (dump_probe_on() && s->frame_idx >= 2 && s->frame_idx <= 6) {

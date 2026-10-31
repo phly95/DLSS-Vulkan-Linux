@@ -32,6 +32,13 @@ uint16_t read_u16_mv(uint off) {
     return uint16_t(b0 | (b1 << 8));
 }
 
+// S4 tick: identical to sr_gather.comp's guard - the game's non-finite MV sentinel (measured
+// 86.9% inf in the in-game dump) must not run through g_mvhi into history math either.
+float san_mv(float v) {
+    if (isnan(v) || isinf(v)) return 0.0;
+    return clamp(v, -65504.0, 65504.0);
+}
+
 void main() {
     int x = int(gl_GlobalInvocationID.x);
     int y = int(gl_GlobalInvocationID.y);
@@ -42,16 +49,19 @@ void main() {
         uint off = y * pitch_mv + x * 4;
         uint16_t mx = read_u16_mv(off);
         uint16_t my = read_u16_mv(off + 2);
-        g_mvhi[out_idx] = f16vec2(uint16BitsToFloat16(mx), uint16BitsToFloat16(my));
+        g_mvhi[out_idx] = f16vec2(float16_t(san_mv(uint16BitsToFloat16(mx))),
+                                  float16_t(san_mv(uint16BitsToFloat16(my))));
     } else if (fmt_mv == 1) {
         uint off = y * pitch_mv + x * 8;
         uint mx = read_u32_mv(off);
         uint my = read_u32_mv(off + 4);
-        g_mvhi[out_idx] = f16vec2(float16_t(uintBitsToFloat(mx)), float16_t(uintBitsToFloat(my)));
+        g_mvhi[out_idx] = f16vec2(float16_t(san_mv(uintBitsToFloat(mx))),
+                                  float16_t(san_mv(uintBitsToFloat(my))));
     } else {
         uint off = y * pitch_mv + x * 8;
         uint16_t mx = read_u16_mv(off);
         uint16_t my = read_u16_mv(off + 2);
-        g_mvhi[out_idx] = f16vec2(uint16BitsToFloat16(mx), uint16BitsToFloat16(my));
+        g_mvhi[out_idx] = f16vec2(float16_t(san_mv(uint16BitsToFloat16(mx))),
+                                  float16_t(san_mv(uint16BitsToFloat16(my))));
     }
 }
