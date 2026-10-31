@@ -32,6 +32,7 @@
 #include <dxgi.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdarg>
 #include <cmath>
 #include <cstdio>
@@ -106,6 +107,11 @@ static_assert(DXGI_FORMAT_R32G32_FLOAT == 16, "the in-game MotionVectors DXGI fo
 static_assert(DXGI_FORMAT_R32G8X24_TYPELESS == 19, "the in-game Depth DXGI format (issue 1)");
 static_assert(DXGI_FORMAT_R16G16_FLOAT == 34, "the harness/ngx_client MotionVectors format");
 static_assert(DXGI_FORMAT_R32_FLOAT == 41, "the harness/ngx_client Depth format");
+// N4 (2026-10-31): the port's RR-only slots: GBuffer.Normals / DLSS.Input.DiffuseAlbedo /
+// DLSS.Input.SpecularAlbedo are RGBA16F, GBuffer.Roughness is R32F - the DXGI enums the port
+// decodes into VK_FORMAT_R16G16B16A16_SFLOAT / VK_FORMAT_R32_SFLOAT (src/pe/nvngx.cpp:1132-1136,
+// want_format at :1074; the frozen referee lists the same DXGI pair, ngx_client/main.cpp:95-98).
+static_assert(DXGI_FORMAT_R16G16B16A16_FLOAT == 10, "the RR GBuffer/albedo DXGI format (N4)");
 
 // ------------------------------------------------------------------------------------------------
 // small helpers
@@ -363,6 +369,113 @@ static void synth_depth(void* dst, UINT pitch, unsigned w, unsigned h) {
         const float d = float(y) / float(h ? h : 1);
         for (unsigned x = 0; x < w; ++x) row[x] = d;
     }
+}
+
+// ---- N4 (2026-10-31): the RR (feature 13) inputs ------------------------------------------------
+// OptiScaler's dlssd backend makes the port gather FOUR extra textures per evaluate: collect_frame
+// fetches ALL of extra[] for a RayReconstruction feature (src/pe/nvngx.cpp:1154-1161) - the two the
+// need names plus DLSS.Input.DiffuseAlbedo / DLSS.Input.SpecularAlbedo (nvngx.cpp:1132-1136).  Bind
+// only the two and every eval just moves its refusal down the list, so the harness owns all four.
+// Formats are what want_format pins (nvngx.cpp:1133-1136) and what the frozen referee feeds
+// (ngx_client/main.cpp:91-98): Normals/Albedo/Specular RGBA16F (8 B/px), Roughness R32F (4 B/px) -
+// exactly the chain's default gather codes fmt_nrm/fmt_alb/fmt_spa = 0, fmt_rgh = 3
+// (src/vk/pipeline.h:36-39, kRrBpp sizes at pipeline.cpp:2250, rr_gather.comp:16).
+// Content is synthetic and FRAME-INDEPENDENT (like synth_mv/synth_depth: no rand, zero run-to-run
+// input variance; run_harness/staging never sets DLSS5_AMD_SKIP_INPUTS so nothing here is skipped):
+static void synth_normals(void* dst, UINT pitch, unsigned w, unsigned h) {
+    // GBuffer.Normals (RGBA16F): a benign hemisphere sweep of unit normals
+    // n = normalize(2*uv - 1, 1) - centre faces +z, corners lean outward (|n| = 1 everywhere),
+    // w = 0 (roughness-in-normals.w mode is off: roughness travels in GBuffer.Roughness).
+    for (unsigned y = 0; y < h; ++y) {
+        uint16_t* px = reinterpret_cast<uint16_t*>(static_cast<uint8_t*>(dst) + size_t(y) * pitch);
+        const float gy = (h > 1) ? (2.0f * float(y) / float(h - 1) - 1.0f) : 0.0f;
+        for (unsigned x = 0; x < w; ++x) {
+            const float gx = (w > 1) ? (2.0f * float(x) / float(w - 1) - 1.0f) : 0.0f;
+            const float inv = 1.0f / std::sqrt(gx * gx + gy * gy + 1.0f);
+            px[x * 4 + 0] = f2h_(gx * inv); px[x * 4 + 1] = f2h_(gy * inv);
+            px[x * 4 + 2] = f2h_(inv);       px[x * 4 + 3] = f2h_(0.0f);
+        }
+    }
+}
+// DiffuseAlbedo (RGBA16F): constant mid-grey g, a = 1 - used for BOTH albedo slots, only the grey
+// differs: diffuse = 0.5, specular = 0.04 (the usual dielectric F0), both plain [0,1] reflectances.
+static void synth_albedo(void* dst, UINT pitch, unsigned w, unsigned h, float g) {
+    for (unsigned y = 0; y < h; ++y) {
+        uint16_t* px = reinterpret_cast<uint16_t*>(static_cast<uint8_t*>(dst) + size_t(y) * pitch);
+        for (unsigned x = 0; x < w; ++x) {
+            px[x * 4 + 0] = f2h_(g); px[x * 4 + 1] = f2h_(g);
+            px[x * 4 + 2] = f2h_(g); px[x * 4 + 3] = f2h_(1.0f);
+        }
+    }
+}
+// GBuffer.Roughness (R32F): constant mid-grey 0.5, one float per texel.
+static void synth_rough(void* dst, UINT pitch, unsigned w, unsigned h) {
+    for (unsigned y = 0; y < h; ++y) {
+        float* row = reinterpret_cast<float*>(static_cast<uint8_t*>(dst) + size_t(y) * pitch);
+        for (unsigned x = 0; x < w; ++x) row[x] = 0.5f;
+    }
+}
+// UpSlot.kind -> filler: 3 normals, 4 diffuse albedo, 5 specular albedo, 6 roughness.
+static void synth_rr(unsigned kind, void* dst, UINT pitch, unsigned w, unsigned h) {
+    if (kind == 3) synth_normals(dst, pitch, w, h);
+    else if (kind == 4) synth_albedo(dst, pitch, w, h, 0.5f);
+    else if (kind == 5) synth_albedo(dst, pitch, w, h, 0.04f);
+    else synth_rough(dst, pitch, w, h);
+}
+// Small label for the per-eval RR slot dump (the DXGI enum the port's GetDesc sees).
+static const char* rr_slot_fmt(unsigned kind) {
+    return kind == 6 ? "R32_SFLOAT(DXGI 41)" : "R16G16B16A16_SFLOAT(DXGI 10)";
+}
+
+// Is this run an RR run?  The client's CreateFeature always says NVSDK_NGX_Feature_SuperSampling;
+// OptiScaler maps that onto the backend named by the staged [Upscalers] Dx12Upscaler - it reads the
+// ini NEXT TO its own dxgi.dll (Config.cpp:45) = our exe dir - and, for dlssd, rewrites the
+// port-side call to NVSDK_NGX_Feature_RayReconstruction = 13 (DLSSDFeature_Dx12.cpp:52), which is
+// also why the port-side companion check wants nvngx_dlssd.dll (nvngx.cpp:187-189).  There is no
+// query for that rewrite on the export surface this client resolves, and OptiScaler's `auto` never
+// picks dlssd (Config.cpp:1561-1562), so the ini value the run actually loads IS the pre-evaluate
+// RR signal.  Anything else (no file / --direct / --corpus input) = old behaviour, unchanged line
+// for line.
+static bool ini_declares_dlssd(const std::string& ini_path) {
+    std::FILE* f = std::fopen(ini_path.c_str(), "rb");
+    if (!f) return false;
+    auto ci_eq = [](const char* a, const char* b) {          // case-insensitive, end-anchored
+        while (*a && *b) {
+            if (std::tolower((unsigned char)*a) != std::tolower((unsigned char)*b)) return false;
+            ++a; ++b;
+        }
+        return !*a && !*b;
+    };
+    auto trim = [](char* s) {                                // trim trailing space/CR/LF in place
+        char* e = s + std::strlen(s);
+        while (e > s && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r' || e[-1] == '\n')) *--e = 0;
+        return s;
+    };
+    char line[512], section[128] = "";
+    bool rr = false;
+    while (std::fgets(line, sizeof line, f)) {
+        char* s = line;
+        while (*s == ' ' || *s == '\t') ++s;
+        if (*s == ';' || *s == '#' || *s == '\r' || *s == '\n' || *s == '\0') continue;
+        if (*s == '[') {
+            char* e = std::strchr(s, ']');
+            if (!e) continue;
+            *e = 0;
+            std::snprintf(section, sizeof section, "%s", trim(s + 1));
+            continue;
+        }
+        char* eq = std::strchr(s, '=');
+        if (!eq) continue;
+        *eq = 0;
+        if (ci_eq(trim(s), "Dx12Upscaler") && ci_eq(section, "Upscalers")) {
+            char* v = eq + 1;
+            while (*v == ' ' || *v == '\t') ++v;
+            rr = ci_eq(trim(v), "dlssd");
+            break;
+        }
+    }
+    std::fclose(f);
+    return rr;
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -641,11 +754,30 @@ int main(int argc, char** argv) {
     const unsigned mv_bpp = mv_rg32 ? 8u : 4u;
 
     struct UpSlot { const char* key; DXGI_FORMAT fmt; unsigned bpp; int kind;   // kind: 0 col 1 mv 2 dep
-                    ID3D12Resource *tex = nullptr, *up = nullptr; };
+                    ID3D12Resource *tex = nullptr, *up = nullptr; };             // 3 nrm 4 alb 5 spa 6 rgh
     std::vector<UpSlot> ups;
     ups.push_back({"Color", DXGI_FORMAT_R16G16B16A16_FLOAT, 8u, 0, nullptr, nullptr});
     ups.push_back({"MotionVectors", mv_dxgi, mv_bpp, 1, nullptr, nullptr});
     if (!dep_ds8) ups.push_back({"Depth", DXGI_FORMAT_R32_FLOAT, 4u, 2, nullptr, nullptr});
+
+    // N4: a dlssd cell (the staged OptiScaler.ini says [Upscalers] Dx12Upscaler=dlssd) runs Opti's
+    // DLSSDFeatureDx12, i.e. port feature 13, whose evaluate gathers four extra slots (nvngx.cpp
+    // 1154-1161 fetch ALL of extra[]) - bind them alongside the three SR inputs, same
+    // CommittedResource/upload/barrier/`p->Set(key, res)` pattern as Color/MotionVectors/Depth.
+    // --direct never (the client asks the port for feature 1 itself) and --corpus never (the V9
+    // corpus contract is col/mv/dep only; an RR corpus would need nrm/alb/spa/rgh files too).
+    const bool rr_run = !o.direct && o.corpus.empty() &&
+                        ini_declares_dlssd(exe_dir + "OptiScaler.ini");
+    if (rr_run) {
+        ups.push_back({"GBuffer.Normals", DXGI_FORMAT_R16G16B16A16_FLOAT, 8u, 3, nullptr, nullptr});
+        ups.push_back({"DLSS.Input.DiffuseAlbedo", DXGI_FORMAT_R16G16B16A16_FLOAT, 8u, 4, nullptr, nullptr});
+        ups.push_back({"DLSS.Input.SpecularAlbedo", DXGI_FORMAT_R16G16B16A16_FLOAT, 8u, 5, nullptr, nullptr});
+        ups.push_back({"GBuffer.Roughness", DXGI_FORMAT_R32_FLOAT, 4u, 6, nullptr, nullptr});
+        say("[opti_client] RR=1: staged OptiScaler.ini [Upscalers] Dx12Upscaler=dlssd -> OptiScaler "
+            "creates NVSDK_NGX_Feature_RayReconstruction (13); binding the port's four mandatory RR "
+            "slots (GBuffer.Normals, DLSS.Input.DiffuseAlbedo, DLSS.Input.SpecularAlbedo, "
+            "GBuffer.Roughness) every eval\n");
+    }
 
     ID3D12Resource* depth = nullptr;
     ID3D12DescriptorHeap* dsv_heap = nullptr;
@@ -790,7 +922,8 @@ int main(int argc, char** argv) {
                                 b.data() + size_t(y) * o.w * s.bpp, size_t(o.w) * s.bpp);
             } else if (s.kind == 0) synth_color(m, pt, o.w, o.h, i);
             else if (s.kind == 1) synth_mv(m, pt, o.w, o.h, mv_rg32);
-            else synth_depth(m, pt, o.w, o.h);
+            else if (s.kind == 2) synth_depth(m, pt, o.w, o.h);
+            else synth_rr(unsigned(s.kind), m, pt, o.w, o.h);   // kind 3..6, the RR slots (rr_run only)
             s.up->Unmap(0, nullptr);
             if (i > 0) d3d_barrier(cl, s.tex, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                                    D3D12_RESOURCE_STATE_COPY_DEST);
@@ -849,6 +982,17 @@ int main(int argc, char** argv) {
         fr.eval_ok = ngx_ok(er);
         if (ts_ok) ts_end(cl, qh, UINT(2 * i + 1));
         say("EVAL_MS %d %.4f\n", i, fr.eval_ms);
+        if (rr_run) {
+            // One line per evaluate listing every RR slot THIS client bound for that eval - the
+            // key, the exact DXGI format and the resource pointer - in `slot=` wording mirroring
+            // the port's refusal line (`eval #N FAIL: ... slot=X why=...`, nvngx.cpp:1230), so a
+            // refusal in dlss5-amd-ngx.log stays self-explaining against the bound state.
+            char slots[4 * 128] = "";
+            for (auto& s : ups) if (s.kind >= 3)
+                std::snprintf(slots + std::strlen(slots), sizeof slots - std::strlen(slots),
+                              " slot=%s res=%p fmt=%s", s.key, (void*)s.tex, rr_slot_fmt(unsigned(s.kind)));
+            say("RR_SLOTS i=%d eval_ok=%d feat=13%s\n", i, fr.eval_ok ? 1 : 0, slots);
+        }
 
         // ---- output readback ----
         d3d_barrier(cl, out, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);

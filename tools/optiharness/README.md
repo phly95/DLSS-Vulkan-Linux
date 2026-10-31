@@ -302,3 +302,104 @@ before they load anything; `PROTON=<path>` skips the probe.
   not 58956912).  `gate_cell.sh` G-STAGE / G-PORT-RR compare target byte sizes, so they need
   `stat -Lc %s` (one character) in `run_cell.sh` before any manifest size gate can go green.
 - Both flags parse-validated (bash -n + usage paths); not exercised end-to-end — execution slots release later.
+
+## 2026-10-31 - RR inputs (N4): the `GBuffer.Normals` / `GBuffer.Roughness` slots
+
+**The gap (measured by D1, `D1-DESIGN.md` §6 N4, `REPORT.md` `Tier B` 248-263)**: with
+`--ini .../inis/dlssd.ini` (`Dx12Upscaler=dlssd`) the RR *create* worked end to end — `RR ... creating
+the frame chain from .../ngx-weights/rr`, `D3D12 CreateFeature: id=1 feature=13 preset=F`, 28
+pipelines — but every evaluate refused `slot=GBuffer.Normals why=GetD3D12Resource returned null for
+this key`: the client only ever created/bound Color, MotionVectors, Depth.
+
+**What was added (`opti_client.cpp`)**
+
+- **Four** slots are created and bound for an RR run, not two — the port fetches ALL of `extra[]` for
+  a RayReconstruction feature (`nvngx.cpp:1154-1161` loops the whole array; `nvngx.cpp:1132-1136`
+  lists four), so binding only Normals + Roughness would just move the refusal to
+  `slot=DiffuseAlbedo`:
+
+  | key | resource | DXGI format (= port contract) | `UpSlot.kind` |
+  | --- | --- | --- | --- |
+  | `GBuffer.Normals` | committed TEXTURE2D, DEFAULT heap, COPY_DEST → NON_PIXEL_SHADER_RESOURCE | `DXGI_FORMAT_R16G16B16A16_FLOAT` (10) = `VK_FORMAT_R16G16B16A16_SFLOAT` | 3 |
+  | `DLSS.Input.DiffuseAlbedo` | same | `DXGI_FORMAT_R16G16B16A16_FLOAT` (10) | 4 |
+  | `DLSS.Input.SpecularAlbedo` | same | `DXGI_FORMAT_R16G16B16A16_FLOAT` (10) | 5 |
+  | `GBuffer.Roughness` | same | `DXGI_FORMAT_R32_FLOAT` (41) = `VK_FORMAT_R32_SFLOAT` | 6 |
+
+  Same creation style, upload buffer (`pitch256`-aligned), per-frame `CopyTextureRegion` +
+  barrier pattern, and `p->Set(key, ID3D12Resource*)` binding as Color/MV/Depth (the Depth-slot
+  precedent, README issue 1).  The formats match the chain's default gather codes
+  `fmt_nrm/fmt_alb/fmt_spa = 0` (8 B/px), `fmt_rgh = 3` (4 B/px) (`src/vk/pipeline.h:36-39`,
+  `rr_gather.comp:16`), built into `static_assert`s against the DXGI enum numbers.
+
+- **Exact data fed** (synthetic, *frame-independent* like `synth_mv`/`synth_depth` — no `rand`
+  anywhere, run-to-run input variance 0; `run_harness.sh` never sets `DLSS5_AMD_SKIP_INPUTS`):
+  - `GBuffer.Normals`: unit-length normal sweep `n = normalize(2·x/(W−1)−1, 2·y/(H−1)−1, 1)` stored
+    as f16 xyzw with `w = 0` (centre faces +z, corners lean outward; roughness-in-`normals.w` mode is
+    off, roughness travels in its own texture).
+  - `DLSS.Input.DiffuseAlbedo`: constant `(0.5, 0.5, 0.5, 1.0)` f16 (mid-grey), `a = 1`.
+  - `DLSS.Input.SpecularAlbedo`: constant `(0.04, 0.04, 0.04, 1.0)` f16 (dielectric F0), `a = 1`.
+  - `GBuffer.Roughness`: constant `0.5` (mid-grey), one R32F float per texel.
+
+  Nothing else changed in the byte stream: Colour (gradient+checker, per-frame), MotionVectors
+  (+2 px, +0.25 px pan) and Depth (y-plane / 0.5 clear) generators are untouched.
+
+- **When they are bound — and when not**: an RR flag is derived from the *staged* ini the run will
+  actually load — `exe_dir + "OptiScaler.ini"`'s `[Upscalers] Dx12Upscaler=dlssd` (OptiScaler reads
+  the ini next to its own dxgi.dll, `Config.cpp:45`; `auto` never picks dlssd, `Config.cpp:1561-1562`,
+  and the dlssd→feature-13 rewrite happens inside `DLSSDFeature_Dx12.cpp:52` where the client's
+  resolved exports cannot observe it).  Guarded `!o.direct && o.corpus.empty()`:
+  - **default dlss / SR runs: not created, not uploaded, not bound, no new log lines** — byte-for-byte
+    previous behaviour (validated by the regression run below).
+  - `--direct`: the client asks the port for feature 1 itself, ini irrelevant → off.
+  - `--corpus`: the V9 corpus contract is col/mv/dep only → off (a corpus × dlssd combo is NOT
+    supported and remains untested).
+
+- **Per-eval slot diagnostics** (`slot=` grammar kept self-explaining): in RR runs only, after each
+  `EVAL_MS` the client prints one line per evaluate with every bound RR slot — key, resource pointer
+  and format — so the port's `eval #N FAIL: ... slot=X why=...` can be read straight against what was
+  bound:
+
+  ```
+  RR_SLOTS i=0 eval_ok=1 feat=13 slot=GBuffer.Normals res=... fmt=R16G16B16A16_SFLOAT(DXGI 10)
+           slot=DLSS.Input.DiffuseAlbedo ... slot=DLSS.Input.SpecularAlbedo ...
+           slot=GBuffer.Roughness res=... fmt=R32_SFLOAT(DXGI 41)
+  ```
+
+**What changed in `run_harness.sh`** (both changes are inert for SR runs — identical counts/strings):
+
+- g1's create line also accepts `Creating new dlssd upscaler` (`grep -cE "Creating new dlssd? upscaler"`
+  — same `FeatureProvider_Dx12.cpp:177` site, `newBackend` = `dlssd`).
+- g2's expected fmt triplet is `mv=10` for a dlssd run: feature 13 re-derives the same in-game RG32F
+  MotionVectors to code **10**, not 1 (`nvngx.cpp:1177 fp.fmt_mv = rr ? 10 : 1`), so an RR eval-OK
+  line can only ever read `fmt col=0 mv=10 dep=0`.  Detection = the same `Dx12Upscaler=dlssd` grep on
+  the ini being staged; `--mv-fmt rg16`/`--corpus` keep code 0 as before.
+  **Note for `tools/scenario` (not edited here)**: `gate_cell.sh:130` hardcodes `fmt col=0 mv=1 dep=0`
+  for *all* backends — a fixed dlssd cell will read `mv=10`, so its `n_fmt` needs the same treatment
+  before G-PORT can go green.
+
+**Validation (2026-10-31, RX 9070 XT / Proton 10.0)**
+
+- **RR smoke** `run_harness.sh --sl --frames 12 --w 2560 --h 1440 --ow 3840 --oh 2160 --ini
+  tools/scenario/inis/dlssd.ini --out /tmp/opencode/n4_rr_smoke` → **the N4 gap is closed**:
+  - port log: `RR ... chain ready in 13304 ms, 28 pipelines` (weights `.../ngx-weights/rr`),
+    `D3D12 CreateFeature: id=1 feature=13 preset=F`, **12/12 `eval #N OK: ... feature=13 n=7`** with
+    `[3 GBuffer.Normals vk=97 dxgi=10] [4 DiffuseAlbedo vk=97 dxgi=10] [5 SpecularAlbedo vk=97
+    dxgi=10] [6 Roughness vk=100 dxgi=41]` on every eval, `GetD3D12Resource returned null` **x0**,
+    `FAIL:` x0, `fmt col=0 mv=10 dep=0` x12;
+  - client: `RR=1 ...` header + **12 `RR_SLOTS` lines, all `eval_ok=1`**;
+  - script gates `g1 PASS / g2 PASS (ok=12/12) / g3 PASS (min nz=1.000000) / g4 PASS
+    (EVAL 7.12 ms, GPU 24.12 ms median)`; exe `RESULT=PASS`, `PORT_EVAL ok=12 fail=0`.
+  - `g5 FAIL` is the game's Streamline doom reproduced headlessly by design on every `--sl` run
+    (README baseline) — it joins the verdict under `--sl` only; all N4-specific criteria are green
+    with or without it.
+- **Regression** (same command without `--ini`, dlss template, `--out /tmp/opencode/n4_dlss_regress`)
+  → `g1-g4 PASS`, `g2 ... 'fmt col=0 mv=1 dep=0'x12` **unchanged**, `ok=12/12 fail=0`,
+  `PORT_EVAL ok=12`, exe `RESULT=PASS`; the SR run contains **zero** RR traces (`RR=1` x0,
+  `RR_SLOTS` x0, `GBuffer` x0, `feature=13` x0, every eval `n=3`), i.e. the previous behaviour is
+  byte-for-byte preserved wherever the old code looked.  Timings sit on the documented baseline
+  (EVAL median 4.42 ms vs ~4.4, GPU 10.23 ms vs ~10.2-10.6 sentinel).
+
+**Not tested / out of scope here**: `--corpus` × dlssd, `--direct` × dlssd (both structurally
+cannot bind RR), a non-default `--mv-fmt` RR combination, 60-frame D1 B-cells re-runs (D1 re-runs
+them after `N4 LANDED`), in-game verification (D3), and `gate_cell.sh`'s `fmt mv=1` expectation
+(D1-owned file, flagged above).

@@ -239,6 +239,13 @@ PARSE=$OUTD/client.log
 # which fmt triplet the port must print (it re-derives only the MV code from the resource):
 MV_CODE=1                                       # rg32 (default) == in-game R32G32_FLOAT -> code 1
 if [[ " ${EXTRA[*]-} " == *" --mv-fmt rg16 "* ]] || [[ " ${EXTRA[*]-} " == *" --corpus "* ]]; then MV_CODE=0; fi
+# N4 (2026-10-31) RR cells: a staged ini with [Upscalers] Dx12Upscaler=dlssd runs feature 13, whose
+# eval-OK line re-derives the SAME in-game RG32F MotionVectors to code 10, not 1 - the port prints
+# `fmt col=0 mv=10 dep=0` (nvngx.cpp:1177 `fp.fmt_mv = rr ? 10 : 1`, so an RR eval can never print
+# mv=1/MV stays 0 for rg16).  Non-RR runs read here, fail the grep and keep the old expectation.
+if [[ $MV_CODE -eq 1 ]] && grep -qiE '^[[:space:]]*Dx12Upscaler[[:space:]]*=[[:space:]]*dlssd([[:space:]]*;.*)?[[:space:]]*$' "$INI"; then
+    MV_CODE=10
+fi
 EXPECT_FMT="fmt col=0 mv=$MV_CODE dep=0"
 
 # --- g1: OptiScaler served OUR dlss provider from the staged _nvngx.dll ---
@@ -247,7 +254,9 @@ if [[ $MODE == direct ]]; then
     g1note="n/a (--direct: OptiScaler not loaded)"
 else
     if [[ -f "$OLOG" ]]; then
-        n_create=$(grep -cF "Creating new dlss upscaler" "$OLOG")
+        # `dlssd?`: an RR cell logs "Creating new dlssd upscaler" (FeatureProvider_Dx12.cpp:177 with
+        # newBackend = "dlssd"); the optional d leaves every SR count byte-identical to before.
+        n_create=$(grep -cE "Creating new dlssd? upscaler" "$OLOG")
         n_load=$(grep -cE "NVNGXProxy::InitNVNGX Loaded from .*_nvngx\.dll" "$OLOG")
         n_nvidia=$(grep -cF "Running on Nvidia" "$OLOG")
         n_gone=$(grep -cE "falling back to FSR|Upscaler can't created" "$OLOG")
