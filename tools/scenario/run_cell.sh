@@ -117,9 +117,14 @@ for k in $(seq "$START" $((START + REPS - 1))); do
 
     # ---- copy the stage out (the next run wipes it, run_harness.sh:111) -------------------------
     STAGE=$ROOT/build/optiharness/harness
+    # dlss5-amd-ngx.log is ONLY produced when the port DLL actually runs: xess/fsr* cells never load
+    # it (nothing calls NGCPROxy's port path), so its absence there is by design, not an error.
     for f in OptiScaler.log dlss5-amd-ngx.log; do
         [[ -f $STAGE/$f ]] && cp -f "$STAGE/$f" "$OUT/" 2>/dev/null
     done
+    # stage inventory: records WHICH upscaler companion libs were present (missing libxess.dll /
+    # amd_fidelityfx_*.dll is exactly what makes Opti swap backends - need N5).
+    ( cd "$STAGE" 2>/dev/null && ls -1 2>/dev/null ) > "$OUT/stage_listing.txt"
     # stage manifest: file names + byte sizes (G-PORT-RR reads nvngx_dlssd.dll from it)
     # NOTE -l (DEREFERENCE) is mandatory here, not cosmetic: every model/sl DLL in the stage is a
     # symlink into the game dir, and plain `stat -c %s` reports the LINK length (~82 B) - so

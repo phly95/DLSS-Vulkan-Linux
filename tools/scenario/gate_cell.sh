@@ -13,6 +13,9 @@ set -uo pipefail
 
 REP=${1:?repdir}; BACKEND=${2:?backend}; FRAMES=${3:?frames}; shift 3 || true
 SL=0; [[ "${1:-}" == "--sl" ]] && SL=1
+# Which backends actually drive our port DLL: xess/fsr* are pure OptiScaler internals - no port log
+# exists for them (nothing loads _nvngx.dll as the provider), so G-ART/G-PORT must not demand one.
+USES_PORT=0; case $BACKEND in dlss|dlssd) USES_PORT=1;; esac
 
 OLOG=$REP/OptiScaler.log
 PLOG=$REP/dlss5-amd-ngx.log
@@ -46,10 +49,12 @@ count() {
 
 # --- G-ART ------------------------------------------------------------------------------------
 missing=""
-for f in "$OLOG" "$PLOG" "$REP/eval_ms.csv" "$REP/summary.txt" "$MANI"; do
+need_art=("$OLOG" "$REP/eval_ms.csv" "$REP/summary.txt" "$MANI")
+[[ $USES_PORT -eq 1 ]] && need_art+=("$PLOG")
+for f in "${need_art[@]}"; do
     [[ -f $f ]] || missing="$missing $(basename "$f")"
 done
-if [[ -n $missing || ! -f $PARSE ]]; then
+if [[ -n $missing || ! -f $PARSE ]] || [[ $USES_PORT -eq 1 && ! -f $PLOG ]]; then
     gate G-ART FAIL "missing:$missing$([[ -f $PARSE ]] || echo ' client.log|run.stdout.log')"
     echo "CELL VERDICT: FAIL (repdir=$REP backend=$BACKEND frames=$FRAMES)"
     exit 1
@@ -90,14 +95,36 @@ ident_fail=""
 [[ $n_create -ge 1 ]] || ident_fail="$ident_fail no-create-line"
 [[ $n_fall -eq 0 ]]   || ident_fail="$ident_fail fsr_fallback=$n_fall"
 case $BACKEND in dlss|dlssd) [[ $n_nvngx -ge 1 ]] || ident_fail="$ident_fail no-_nvngx.dll-load";; esac
-if [[ -z $ident_fail ]]; then
-    gate G-IDENT PASS "'Creating new $BACKEND upscaler'x$n_create fsr_fallback=$n_fall nvngx_loaded=$n_nvngx (Running on Nvidia x$n_nvidia)"
-else
+
+# Backend SUBSTITUTION after an apparently-successful create - the trap the create-line check alone
+# cannot see. Measured 03:56 (C01) and 03:58 (C03): the requested backend IS announced, then
+#   [W] Config::CheckUpscalerFiles libxess.dll not found!
+#   [I] FeatureProvider_Dx12::ChangeFeature changing backend to fsr21
+#   [I] FeatureProvider_Dx12::ChangeFeature init successful for fsr21, upscaler changed
+# i.e. the cell went on to measure fsr21 instead of its own axis label. Cause = the harness stages
+# no upscaler companion libs (no libxess.dll / amd_fidelityfx_*.dll in $STAGE) -> NEED N5.
+missing_lib=$(grep -ohE "(CheckUpscalerFiles [A-Za-z0-9_.]+ not found|Can't find [A-Za-z0-9_.]+\.dll, returning nullptr)" "$OLOG" 2>/dev/null | sort -u | head -1)
+subst=0
+real_subst=$(grep -ohE 'ChangeFeature changing backend to [a-z0-9]+' "$OLOG" 2>/dev/null | awk '{print $NF}' | grep -vxF "$BACKEND" | sort -u | tr '\n' '/')
+[[ -n $real_subst ]] && subst=1
+
+if [[ -n $ident_fail ]]; then
     g=$(grep -m1 -F 'Creating new ' "$OLOG" | sed 's/.*\(Creating new [a-z0-9]* upscaler\).*/\1/')
     gate G-IDENT FAIL "want=$BACKEND got='${g:-none}'$ident_fail"
+elif [[ $subst -eq 1 ]]; then
+    gate G-IDENT BLOCKED "requested=$BACKEND but Opti SWITCHED BACKEND to ${real_subst%/} after create (missing companion lib: ${missing_lib:-see OptiScaler.log}) - need N5; measured backend is NOT '$BACKEND'"
+else
+    gate G-IDENT PASS "'Creating new $BACKEND upscaler'x$n_create fsr_fallback=$n_fall nvngx_loaded=$n_nvngx (Running on Nvidia x$n_nvidia)$( [[ -n ${missing_lib:-} && $BACKEND == fsr22 ]] && echo " [note: $missing_lib - fsr22 is Opti-internal, unaffected]" )"
 fi
 
 # --- G-PORT (+G-PORT-RR / G-PORT-SR) ----------------------------------------------------------
+# Only meaningful when the port actually runs. xess/fsr* are pure OptiScaler internals: no
+# dlss5-amd-ngx.log exists for them (nothing asks _nvngx.dll), so demanding port gates there would
+# either fabricate a PASS off an absent file or fail an otherwise sound cell - both wrong.
+if [[ $USES_PORT -eq 0 ]]; then
+    printf 'GATE %-14s %-8s %s\n' G-PORT n/a "backend=$BACKEND runs inside OptiScaler only - port not engaged (no port log by design)"
+    printf 'GATE %-14s %-8s %s\n' G-PORT-SR n/a "feature=13 check not applicable without a port log"
+else
 n_ok=$(count -E 'eval #[0-9]+ OK:' "$PLOG")
 n_fail=$(count -E 'eval #[0-9]+ FAIL:' "$PLOG")
 n_fmt=$(count -F 'fmt col=0 mv=1 dep=0' "$PLOG")
@@ -155,6 +182,7 @@ elif [[ $BACKEND == dlss || $BACKEND == xess || $BACKEND == fsr21 || $BACKEND ==
         gate G-PORT-SR FAIL "feature=13 leaked x$n_sr13 into an RR=off cell"
     fi
 fi
+fi
 
 # --- G-OUT ------------------------------------------------------------------------------------
 viol=$(awk '/^OUT_NZ /{ split($3,a,"="); if (a[2]+0 < 0.10) bad++ } END{ print bad+0 }' "$PARSE")
@@ -166,7 +194,21 @@ if [[ $viol -eq 0 ]]; then
 elif [[ ${rr_gap:-0} -eq 1 ]]; then
     gate G-OUT BLOCKED "black output is the expected consequence of the RR input gap (N4): the evaluate never ran"
 else
-    gate G-OUT FAIL "viol=$viol/$FRAMES min nz=$mn"
+    # Warmup allowance for OptiScaler-internal backends (measured 03:56-03:59, ALL 9 C-runs):
+    # xess/fsr21/fsr22/fsr31 write nothing for frames 0..3 (their feature swap/init window) and then
+    # sit at nz=1.000000 for every later frame. Rule: warmup <= 5 leading black frames AND zero black
+    # frames after the first non-black one. Anything else is a real failure.
+    if [[ $USES_PORT -eq 0 ]]; then
+        warm=$(awk '/^OUT_NZ /{split($3,a,"="); if(!st && a[2]+0>=0.1){st=1;f=$2}} END{print (st?f:-1)}' "$PARSE")
+        late=$(awk '/^OUT_NZ /{split($3,a,"="); nz=a[2]+0; if(seen && nz<0.1) b++; if(nz>=0.1) seen=1} END{print b+0}' "$PARSE")
+        if [[ $warm -ge 0 && $warm -le 5 && $late -eq 0 ]]; then
+            gate G-OUT PASS "warmup=${warm} leading black frame(s), then all nz>=0.10 to frame $((FRAMES-1)) (min nz=$mn)"
+        else
+            gate G-OUT FAIL "viol=$viol/$FRAMES warmup=$warm late_black=$late min nz=$mn (allowed: <=5 leading, 0 after)"
+        fi
+    else
+        gate G-OUT FAIL "viol=$viol/$FRAMES min nz=$mn"
+    fi
 fi
 
 # --- G-TIME -----------------------------------------------------------------------------------
@@ -182,7 +224,11 @@ gp=$(grep -E '^GPU_EVAL_MS [0-9]+ [0-9]+(\.[0-9]+)?$' "$PARSE" | awk '$2!="0"{pr
 read -r n_g med_g p95_g <<<"$gp"
 n_na=$(count -E '^GPU_EVAL_MS [0-9]+ n/a' "$PARSE")
 nan=$(count -E 'nan|inf|NaN|Inf' "$REP/eval_ms.csv")
-if [[ ${rr_gap:-0} -eq 1 ]]; then
+# ms from a cell whose backend was silently swapped are NOT the axis' ms (measured: Opti switched
+# xess->fsr21 at 03:56, so a 0.10 ms median would have been published as "xess"). Report, exclude.
+if [[ ${subst:-0} -eq 1 && ${rr_gap:-0} -ne 1 ]]; then
+    gate G-TIME BLOCKED "EVAL med=$med_e p95=$p95_e / GPU med=$med_g belong to BACKEND ${real_subst%/}, not $BACKEND (identity switched, N5) - excluded from any ms table"
+elif [[ ${rr_gap:-0} -eq 1 ]]; then
     # these brackets sit on a REFUSAL path (measured: EVAL ~2.5 ms = Opti entry only,
     # GPU ~0.002 ms = no GPU work submitted) - report them as observed but NOT reportable ms.
     gate G-TIME BLOCKED "$n_e samples over a REFUSED evaluate (EVAL med=$med_e p95=$p95_e, GPU med=$med_g) - N4 input gap, exclude from any ms table"

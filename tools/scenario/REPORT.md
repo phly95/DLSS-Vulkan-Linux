@@ -264,6 +264,78 @@ the only blocker is that the SR-shaped harness never binds `GBuffer.Normals`/`GB
 with precedence kept so a real FAIL still wins; refusal ms (EVAL ~2.49, GPU ~0.002) are excluded
 from all tables. E02 additionally fails G-RR-ASSURE exactly as E01 (same three subchecks).
 
+### Wave 2 — upscaler type axis (C/D), 03:53:36–04:11:22 EDT, + fsr22 sentinel 04:1x
+
+24 runs: C01/C02/C03 ×3, D06-D10 ×3, C02 rep4 (fsr22 sentinel). Honouring the single-runner rule
+required waiting out the N4 harness agent 3× (`REFUSE: another run_harness.sh is live`, 60 s back-off
+×3 before C01's first run) — the retry logic did exactly its job.
+
+**Rule fixes that these runs forced (each measured, not speculative):**
+
+1. **Port log is not universal.** `dlss5-amd-ngx.log` exists only when `_nvngx.dll` runs; for Opti
+   internal backends its absence is by design ⇒ G-ART no longer requires it (else every type-axis
+   cell would read "G-ART FAIL missing dlss5-amd-ngx.log", which is what C01-C03 first printed) and
+   G-PORT / G-PORT-SR print `n/a` instead of a vacuous PASS off an absent file.
+2. **Backend swap after a successful create (the identity trap).** `xess`/`fsr31` are announced
+   correctly, then Opti logs `[W] Config::CheckUpscalerFiles libxess.dll not found!` and
+   `FeatureProvider_Dx12::ChangeFeature changing backend to fsr21 … init successful for fsr21`
+   (`runs/C01/rep1/OptiScaler.log`, same in all 3+3 runs) — the companion libs live in the game's
+   `bin64` but not in `$STAGE` ⇒ **NEED N5**. G-IDENT now detects `changing backend to != cell
+   backend` ⇒ `BLOCKED(N5)`, G-TIME marks those ms as *not the axis* and excludes them. This is
+   exactly the substitution the old fsr-fallback grep could not see (it watches `falling back to FSR`,
+   which in Opti's `ChangeFeature` domain is never printed).
+3. **Warmup window for Opti-internal backends**: frames 0..3 black in **all 18** xess/fsr* runs,
+   then `nz=1.000000` through frame 59 ⇒ G-OUT allows *≤5 leading black frames and 0 afterwards* for
+   those backends, and reports `warmup=K`. DLSS cells keep the strict all-frames rule (they never
+   used it: `min nz=1.000000` from frame 0).
+
+**BUT the logged missing lib quoted by G-IDENT is cosmetic**: it is the *first* `Can't find…`
+(`amd_fidelityfx_denoiser_dx12.dll`), not the deciding one — the deciding evidence is the
+`changing backend to fsr21` line itself. Recorded here so nobody edits the message into a claim the
+log does not support.
+
+**fsr22 — valid measurements (Opti-internal, unaffected by N5). Median of 3 run-medians →**
+
+| cell | render -> 4K | EVAL med ms | GPU med ms | gates |
+|---|---|---|---|---|
+| D06 DLAA | 3840x2160 | 0.0941 | **2.5593** | PASS ×3 |
+| D07 UltraQ | 2954x1662 | 0.0949 | **2.1114** | PASS ×3 (rep2 EVAL p95=41.0394 outlier, logged) |
+| C02 Quality *(sentinel)* | 2560x1440 | **0.0946** | **1.7158** | PASS ×4 (rep4 0.0929 / 1.8829) |
+| D08 Balanced | 2228x1254 | 0.0864 | **1.7553** | PASS ×3 |
+| D09 Performance | 1920x1080 | 0.0869 | **1.6753** | PASS ×3 |
+| D10 UltraPerf | 1280x720 | 0.0872 | **1.5202** | PASS ×3 |
+
+fsr22 noise floor (C02 ×4): EVAL range 0.0023 (⇒ threshold 0.0046), GPU range 0.2344 (⇒ threshold
+**0.469 ms** — fsr22's own run-to-run spread is far wider than dlss's 0.065). Applying G-EFFECT:
+GPU **DLAA vs Quality 0.844 is resolvable**; UQ↔Q↔Balanced↔Perf↔UltraPerf adjacent gaps (0.04–0.40)
+are **below the floor → no ranking** for them. EVAL: 0.0946 (Q/UQ) vs 0.0864–0.0872 (Bal/Perf/UPerf)
+= 0.0074–0.0082 > 0.0046 ⇒ the CPU side does separate the two res-groups, by ~8 µs.
+
+**xess / fsr31 → BLOCKED(N5) ×6 runs — no number may be quoted for those cells.** What WOULD have
+been quoted (excluded now): EVAL med ~0.103 / GPU med ~1.67–1.93 — those are fsr21's, not the axis'.
+
+**Cross-backend observation (Quality res, 2560x1440 → 3840x2160):**
+
+| path | EVAL med (CPU) | GPU med |
+|---|---|---|
+| dlss → our port (A03) | 4.4711 ms | 10.6106 ms |
+| fsr22 (C02) | 0.0946 ms | 1.7158 ms |
+| ratio | **47 ×** | **6.2 ×** |
+
+vs the fsr22 noise floors (0.0046 / 0.469) these gaps are enormous ⇒ the *cost difference is real*.
+Two honest caveats, both recorded so the number is not overclaiming: (i) the paths are not like-for-
+like — our evaluate performs its own input copies + record + output copy around the chain, Opti's
+FSR path does neither; (ii) where the cost sits on OUR side is **not yet root-caused**: the existing
+`--direct` A/B (`README:275-277`) puts EVAL ≈ 4.3 ms with OptiScaler removed, i.e. the CPU number
+belongs to the port, not to Opti. Candidate mechanisms (per-frame copies / a sync inside
+`record_bridge`) are hypotheses for a later lever round — **not measured here**.
+
+**Wave-2 scoreboard:** fsr22 ×5 cells (15 runs) PASS + sentinel C02 rep4 PASS; xess/fsr31 cells
+C01/C03 (6 runs) → BLOCKED(N5); still unrun: D01-D05 (xess) + D11-D15 (fsr31) = N5-blocked,
+B01/B02/B04-B06 = N4-blocked, E03 (N1-ready, not scheduled).
+`out_*.f32`: purged automatically by `run_cell.sh` after gating (0 files on disk; `tools/scenario/runs`
+stays ≤ 6 MB).
+
 ### Environment side-effect to flag (executor/D3 relevant)
 
 Every wave-1 run used the game prefix un-cloned (game not running ⇒ `game prefix free`), and Proton
