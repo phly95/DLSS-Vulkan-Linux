@@ -1338,6 +1338,17 @@ __declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_D3D12_AllocateParamet
     p->set_uint("SuperSamplingDenoising.Available", 1u);
     p->set_uint("SuperSamplingDenoising.FeatureInitResult", 1u);
     p->set_uint("NeedsUpdatedDriver", 0u);
+    // D5/S-route, SR side (in-game S-standalone black-3D, 2026-10-31 17:08): sl.dlss's OWN
+    // startup queries params->Get("SuperSampling.Available") (dlssEntry.cpp:937 - the key is
+    // the neighbouring string in sl.dlss.dll, between "Missing NGX default parameters" and the
+    // failure text itself).  An ABSENT key returns the bare NVSDK_NGX_Result_Fail (0xBAD00000),
+    // mirroring the RR twin above: "DLSSContext cannot run" ->
+    // Launcher_2026_10_31_17_08_25_336.log:23 then 'kFeatureDLSS' context is missing x4
+    // (sl.cpp:179) -> the game reads an uninitialized SR output => black 3D with plain SR AND
+    // with RR (RR rides on the SR context).  The line appears in NO session before today (grep:
+    // all 21 Launcher_*.log + every bin64/runs archive = 0) because on 10-30 Opti's dxgi was the
+    // parameter surface SL queried; today's run is the first where THIS core answers alone.
+    p->set_uint("SuperSampling.Available", 1u);
     *out = p->as_param();
     return NVSDK_NGX_Result_Success;
 }

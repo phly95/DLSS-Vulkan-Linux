@@ -462,6 +462,19 @@ if [[ $SLMODE -eq 1 ]]; then
         # marker count rides along so "the enable never ran" can never be misread as "no doom":
         g5detail+=" SL-RR-ENABLE(x${n_rr_en:-0})"
     fi
+    # ---- c7: the SR-side twin of c6, checked on EVERY --sl run.  Added after the first
+    # in-game S-standalone run went black: sl.dlss's slOnPluginStartup reads
+    # "SuperSampling.Available" and, when the key is absent, the core answers 0xbad00000
+    # (dlssEntry.cpp:937) => 'kFeatureDLSS' context is missing => the game presents an
+    # uninitialized SR output (Launcher_2026_10_31_17_08_25_336.log:23,55-61).  g5 previously
+    # watched ONLY the RR doom line (c6), so this hole stayed green headless - scope note for
+    # REPORT: deviates from the frozen D1 c1-c5 note format by appending c7 when --sl is used.
+    n_sr_doom=$(grep -ci 'dlssEntry\.cpp:937.*bad00000' "$G5EV" || true)
+    n_sr_noctx=$(grep -cF "'kFeatureDLSS' context is missing" "$G5EV" || true)
+    c7=ok
+    (( n_sr_doom + n_sr_noctx == 0 )) || c7="bad(doom0xbad00000=$n_sr_doom ctx_missing=$n_sr_noctx)"
+    [[ $c7 == ok ]] || g5=FAIL
+    g5note+="  c7_sr_startup=$c7"
 fi
 
 # ---- HARNESS SUMMARY -----------------------------------------------------------------------------
