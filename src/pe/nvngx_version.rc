@@ -1,0 +1,53 @@
+// Version resource for the port DLL when it is presented as the Streamline/NGX CORE.
+//
+// Why this file exists (H-1' / R1 evidence, 2026-10-31):
+//   sl.common's NGXLoadCoreLibrary chain (`NGXCore not found next to the application`,
+//   `Loaded NGXCore from path (%ls)`, `error: failed to load nvngx`) probes the file beside the
+//   application and then - measured with strace + WINEDEBUG=+loaddll in tools/optiharness --sl
+//   cells L12-L14 - *reads it repeatedly but never LoadLibrary()s it* when the file carries no
+//   PE resource.  SL's demanded version keys (UTF-16 strings in bin64/sl.common.dll) are
+//   FileDescription, FileVersion, InternalName, OriginalFilename, ProductName.
+//
+// Every string below mirrors the genuine NVIDIA provider in the game dir
+// (`bin64/nvngx_dlss.dll`, VS_VERSION_INFO at 0x3835666, locale 040904E4) - including the four
+// NGX* custom keys that are almost certainly what the core query reads:
+//   NGXMinimumDriverVersion = 512.15        (== sl.dlss' compiled-in min driver)
+//   NGXAppId                = 241534723
+//   NGXGpuArchitecture      = NVSDK_NGX_GPU_Arch_Turing
+//   NGXApiVersion           = 0x0000013
+//   OriginalFilename        = nvngx.dll     (the core role, NOT the provider's 'CL 38868064')
+
+1 VERSIONINFO
+    FILEVERSION     310,9,1,0
+    PRODUCTVERSION  310,9,1,0
+    FILEFLAGSMASK   0x3fL                 // VS_FFI_FILEFLAGSMASK
+    FILEFLAGS       0x0L
+    FILEOS          0x40004L              // VOS_NT_WINDOWS32 (winver.h not included: numeric literals)
+    FILETYPE        0x2L                  // VFT_DLL
+    FILESUBTYPE     0x0L                  // VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904E4"
+        BEGIN
+            VALUE "CompanyName",            "NVIDIA"
+            VALUE "FileDescription",        "NVIDIA DLSS - DVS PRODUCTION"
+            VALUE "FileVersion",            "310,9,1,0"
+            VALUE "InternalName",           "DLSS"
+            VALUE "LegalCopyright",         "Copyright 2018 - 2024 NVIDIA CORP"
+            VALUE "LegalTrademarks1",       "All Rights Reserved"
+            VALUE "LegalTrademarks2",       "All Rights Reserved"
+            VALUE "OriginalFilename",       "nvngx.dll"
+            VALUE "ProductName",            "NVIDIA Deep Learning SuperSampling"
+            VALUE "ProductVersion",         "310,9,1,0"
+            VALUE "NGXMinimumDriverVersion", "512.15"
+            VALUE "NGXAppId",               "241534723"
+            VALUE "NGXGpuArchitecture",     "NVSDK_NGX_GPU_Arch_Turing"
+            VALUE "NGXApiVersion",          "0x0000013"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1252
+    END
+END
