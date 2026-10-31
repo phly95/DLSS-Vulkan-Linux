@@ -1,19 +1,45 @@
 # D4 — final consolidated report (skeleton: every input exists except D3)
 
 **Owner:** `ses_e6f7044eeffeSSITmFI4a0g4Mb` (master-2). **Assembled 2026-10-31 ~11:0x EDT, no runs.**
-**Status:** D1 DONE (33/33 PASS) · D2 closed to "SL gate cracked headlessly" · **D3 = LAUNCH-PATH-
+**Status:** D1 DONE (33/33 PASS) · D2 closed to "SL gate cracked headlessly" · **RE-SCOPED 2026-10-31
+(user decision): the OptiScaler path is ARCHIVED for in-game use; the new target is standalone
+(game direct + port) = D5 (§8 slot open, executor)** · D3 = LAUNCH-PATH-
 BLOCKED after 3 attempts; G1 kept game-side with provenance; two approved one-shot levers (N-B, then
-N-A) outstanding, hard stop after — see §5 for the verbatim closing sentence** · D4 = this document.
+N-A) outstanding, hard stop after — see §5; its boxed closing sentence is **superseded-pending-D5** · D4 = this document.
 The running log this document consolidates is
 [`REPORT.md`](REPORT.md); the machine-readable matrix is [`D1-MATRIX.csv`](D1-MATRIX.csv).
 
-> FILL RULE: the D3 section is the executor's (he fills it or hands rows to top-level). Every other
-> section is final unless a D3 result contradicts it — if it does, fix the contradiction here and in
-> `REPORT.md`, never by deleting a measured row.
+> FILL RULE: the D3 section (§5) and the D5 section (§8) are the executor's (he fills them or hands
+> rows to top-level). Every other section is final unless a D3/D5 result contradicts it — if it does,
+> fix the contradiction here and in `REPORT.md`, never by deleting a measured row.
+
+---
+
+## 0. RE-SCOPE (2026-10-31, user decision — read before citing anything below)
+
+The **OptiScaler path is abandoned for in-game use and is ARCHIVED as an experimental path.** What
+survives, stated precisely:
+
+- **Measured and still true (archived Opti-in-the-loop configuration):** the SL/NGX gate chain was
+  cracked via **L-C + G1** (signed `nvngx.dll` byte-copy; game-side provenance kept) together with
+  **R1** (port PE version resource); **D1's 33/33 methodology numbers stand** for exactly what they
+  measured — OptiScaler-in-the-loop ms and gates on this machine — and every gate/identity rule
+  (`G-IDENT` no-silent-backend-swap, warmup window, `mv=10` per feature 13, the four-RR-input
+  binding check, all five sentinel floors) transfers to any configuration that reuses them.
+- **Also measured, and the reason for the re-scope (executor/top-level brief, not independently
+  re-measured here):** in-game the port produced **~17 000 OK SR evaluates through Opti** while the
+  **user judged the image quality defective**, and **RR was black with `DLSSDContext 0xbad00000`**
+  ⇒ the Opti path's *assurance* did not translate into user-acceptable in-game behaviour.
+- **No longer describes the target:** the §2/§3 timings and gates describe the archived path. They
+  remain valid as a baseline for comparing the standalone configuration (§8) and as methodology —
+  not as a statement about what ships.
+- **New target:** standalone (game direct + port), §8.
 
 ---
 
 ## 1. Executive summary
+
+*(Findings 1–5 are **archived-path (OptiScaler-in-the-loop)** results unless stated; see §0.)*
 
 1. **The port is exonerated for both original failures.** In-harness g1–g4 PASS, 12/12 (+60-frame)
    OK evaluates per run, `fmt col=0 mv=1|10 dep=0`, and the two in-game issues (Depth-slot refusal;
@@ -32,7 +58,8 @@ The running log this document consolidates is
    *and* 60/60 RR evaluates in the same process (§ `REPORT.md` § P-RECTOR).
 5. **The SL path costs nothing measurable**: vs non-SL twins, all EVAL/GPU deltas sit below the
    sentinel floors (§3); L-C's 56.9 ms did not reproduce (max frame 8.8762 ms).
-6. **What remains:** the in-game shot (D3, §5) and the RR referee (§6).
+6. **What remains:** the standalone target (D5, §8 — now the thing that ships), the in-game shot
+   (D3, §5, launch-path-blocked), and the RR referee (§6).
 
 ### The D3-grade claim, stated precisely (one sentence)
 
@@ -43,11 +70,16 @@ serves 60/60 SR (dlss and xess hosts) and 60/60 RR evaluates through our port**,
 needs the in-game shot is that *Crimson Desert's own host* reaches that same state under the real
 launch line — its own `slInit` preferences and host callbacks, its menu options actually flipping
 `_enableRayReconstruction`, and the renderer's real resource bindings feeding the RR inputs — which
-only a game session can show.
+only a game session can show. *(This claim is scoped to the archived OptiScaler path, §0; the
+shipping configuration is standalone, §8 — the same sentence must be re-proved there.)*
 
 ---
 
 ## 2. D1 results — 33-cell digest (authoritative table lives in `REPORT.md`)
+
+**Archived-path scope:** everything in §2–§4 measures the *OptiScaler-in-the-loop* configuration
+(§0) — the numbers are final for that configuration and are the **baseline** against which §8's
+standalone measurements will be compared.
 
 *Authoritative 33-row table: `REPORT.md` § "D1 FINAL RESULTS DIGEST" — note its superseded-row
 markers: E01/E02/E03 rows there read "FAIL (G-RR-ASSURE only)" and are **superseded** by
@@ -120,12 +152,15 @@ are duplicated here so they survive.
 - **Two approved one-shot levers remain**, hard stop after: **N-B** (Proton 10.0 direct A/B, first)
   then **N-A** (xdotool `Play`, second). Their outcomes land as rows here.
 
-> **THE D3 SENTENCE, to be used verbatim wherever this is summarized (and to be D4's closing wording
-> if N-B and N-A fail):** *harness-side SR+RR-via-Streamline assurance is PROVEN (E01/E02/E03
+> **THE D3 SENTENCE — ⚑ SUPERSEDED-PENDING-D5 (kept verbatim):** it remains the closing wording for
+> **D3's own** launch-path story if N-B and N-A fail, but it **no longer closes D4** — the final
+> report's closing now follows the standalone outcome (§8). Original text, unmodified:
+>
+> *"harness-side SR+RR-via-Streamline assurance is PROVEN (E01/E02/E03
 > `G-RR-ASSURE` PASS, `g5 SL boot : PASS` c1–c5, `sl.dlss` + `sl.dlss_d` mask 0x1, zero
 > `Failed to initialize NGX` / `Missing NGX context` / `0xbad00002`, 60/60 SR and 60/60 RR
 > evaluates through the port); in-game confirmation is pending a working launch path, **not**
-> pending the fix.**
+> pending the fix."**
 
 Rows below are the required in-game evidence; each needs `file:line` or a log quote.
 
@@ -167,3 +202,29 @@ RR reps — catches nondeterminism, not wrongness.)
   version?!`, `runs/A03/rep1/run.stdout.log:1-2`) — flagged for the executor's next game launch.
 - Upstream OptiScaler: newer builds exist (nightly channel) but the 5-surface diff says **don't
   upgrade as a lever** — `REPORT.md` § reference package, verdict + obtain paths.
+- **Re-scope caveat:** the in-game Opti-path observations (`~17k` OK SR evals with user-judged
+  defective quality; RR black + `DLSSDContext 0xbad00000`) are recorded from the executor/top-level
+  brief in §0 — attributed, not independently re-measured by this session.
+
+## 8. ▓▓ D5 — STANDALONE SLOT (new target: game direct + port; EXECUTOR TO FILL) ▓▓
+
+**Status: PENDING (rows come later — this session runs nothing).** Re-scoped 2026-10-31: the
+OptiScaler path is archived (§0) and standalone is what ships. Validation surface per the brief:
+executor's `bin64/` standalone staging → `opti_client --direct --sl` harness validation →
+user-relaunch verification. The D1 gate suite is reusable as-is (identity/port/non-black/timing +
+`G-RR-ASSURE` under `--sl`), with the §2 archived numbers as the comparison baseline — a standalone
+cell is *expected* to differ from them (no Opti host layer), so differences must be read as
+configuration deltas, not regressions, unless they breach the same sentinel floors.
+
+| # | claim to establish for standalone | evidence required | status |
+|---|---|---|---|
+| 1 | standalone staging correct in `bin64/` | executor provenance row: files staged, `.bak-*` present, launch line byte-exact (`localconfig.vdf:2894`) | PENDING |
+| 2 | harness `--direct --sl` boots and gates | `HARNESS RESULT` with g1 (`--direct` ⇒ g1 n/a by construction) + g2/g3/g4 + `g5 SL boot : PASS` c1–c5 | PENDING |
+| 3 | SR present standalone | port `eval #K OK: … feature=1` counts, `fmt col=0 mv=1 dep=0`, non-black outputs | PENDING |
+| 4 | RR present standalone | `feature=13` OK lines with `n=7` (or the game's real slot set), RR chain from `ngx-weights/rr`, `G-RR-ASSURE` PASS under `--sl` | PENDING |
+| 5 | **user-relaunch verification (the acceptance that matters)** | user launches the game, **judges quality acceptable**, DLSS + RR selectable in menu, `_enableRayReconstruction` set, no black screen | PENDING |
+| 6 | timing vs archived baseline | standalone EVAL/GPU medians compared against §2 cells at the same resolution, floors applied, deltas labelled *configuration delta* | PENDING |
+
+*(Fill rule: same as §5 — rows carry `file:line` or log quotes; contradictions are fixed by editing,
+never by deleting a measured row. If D5 succeeds, D4's closing becomes "standalone SR+RR accepted by
+the user", superseding both the §5 boxed sentence and the §0 archived-path assurance.)*
