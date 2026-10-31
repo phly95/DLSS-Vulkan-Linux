@@ -22,6 +22,13 @@
 #   nvngx_dlssd.dll       SYMLINK (absolute, same waypoint) to the game's real NVIDIA DLSS-D
 #                          companion, 48 343 664 bytes - the RR cells need it next to _nvngx.dll
 #                          (nvngx.cpp:187-189); absent source dies in preflight like nvngx_dlss.dll
+#   upscaler companions    SYMLINKS (absolute, same waypoint, N5) to the upscaler libs OptiScaler
+#                          probes next to its own dxgi.dll: amd_fidelityfx_loader_dx12/dx12/
+#                          upscaler_dx12/framegeneration_dx12/denoiser_dx12/radiancecache_dx12,
+#                          libxess.dll, libxess_dx11.dll, libxess_fg.dll, libxell.dll - 9 of the
+#                          10 exist in the game's bin64, the absent one is skipped with a note
+#                          (OPTIONAL by design, never fatal: without them OptiScaler silently
+#                          reclassifies the xess/fsr31 cells to fsr21 - N5 detail in README)
 #   dlss5-amd/shaders     -> build/shaders when its .spv files exist, else the game's copy
 #   OptiScaler.ini        generated from tools/optiharness/OptiScaler.harness.ini, or from the
 #                          --ini <path> file when given (the GAME's ini is never read: Config.cpp:45
@@ -115,6 +122,27 @@ if [[ $MODE == opti ]]; then ln -s "$DXGI_SRC" "$STAGE/dxgi.dll"; fi
 ln -s "$GAME/nvngx_dlss.dll" "$STAGE/nvngx_dlss.dll"
 # same waypoint, same ABSOLUTE style as nvngx_dlss.dll: the real NVIDIA DLSS-D (RR) companion
 ln -s "$GAME/nvngx_dlssd.dll" "$STAGE/nvngx_dlssd.dll"
+# N5 (D1-DESIGN.md:179, REPORT.md:279-295): OptiScaler probes these upscaler companion dlls
+# beside its own dxgi.dll on EVERY start (Config::CheckUpscalerFiles, FfxApi_Proxy.h:211/368/539/
+# 677/819, XeSS_Proxy.h:247) and silently rewrites the backend when the one its chosen upscaler
+# needs is absent - measured in C01/C03: "Config::CheckUpscalerFiles libxess.dll not found!" ->
+# "FeatureProvider_Dx12::ChangeFeature changing backend to fsr21" -> "init successful for fsr21",
+# i.e. the xess/fsr31 cells measured fsr21, not their axis label (6 runs BLOCKED(N5)). Same
+# waypoint, same ABSOLUTE symlink style as nvngx_dlss.dll above - but NOT fatal: these are optional
+# backends and an absent variant is normal (OptiScaler logs "Can't find ..." and continues), so a
+# missing source prints one note line and staging continues. nvngx_dlss.dll/nvngx_dlssd.dll stay
+# fatal: without them the experiment itself is broken, which is a different kind of missing.
+UPSCALER_DLLS=(amd_fidelityfx_loader_dx12.dll amd_fidelityfx_dx12.dll amd_fidelityfx_upscaler_dx12.dll
+               amd_fidelityfx_framegeneration_dx12.dll amd_fidelityfx_denoiser_dx12.dll
+               amd_fidelityfx_radiancecache_dx12.dll
+               libxess.dll libxess_dx11.dll libxess_fg.dll libxell.dll)
+for s in "${UPSCALER_DLLS[@]}"; do
+    if [[ -f "$GAME/$s" ]]; then
+        ln -s "$GAME/$s" "$STAGE/$s"
+    else
+        echo "  note: optional upscaler companion absent in game dir, not staged: $s"
+    fi
+done
 # Streamline: all 11 of the game's sl.*.dlls (read-only symlinks), so sl.interposer finds its
 # plugins in the exe dir exactly like the game's findPlugins in bin64 (archive:545/309).
 SL_DLLS=(sl.interposer.dll sl.common.dll sl.dlss.dll sl.dlss_d.dll sl.dlss_g.dll sl.reflex.dll

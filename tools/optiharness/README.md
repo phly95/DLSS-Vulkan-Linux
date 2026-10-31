@@ -200,7 +200,7 @@ reads.  The two FAILING checks are the decisive doom lines anyway (`Failed to in
 | `opti_client.cpp` | the exe: host sequence `Init → AllocateParameters → CreateFeature → per-frame EvaluateFeature` (the NVSDK export surface verified by `objdump -p` on the shipped dxgi.dll: 53+ NVSDK entries), synthetic/corpus inputs, timing pairs, read-back + black detector, the `--sl` Streamline boot + `SLDLSS` probes |
 | `OptiScaler.harness.ini` | the harness-local ini template (each key and every deliberately-unset key documented inline) |
 | `build.sh` | cross-compile to `build/optiharness/opti_client.exe`, FMT16=1 (Output RGBA16F = `DLSS5_AMD_OUT_F16=1` of the package), mirrors `tools/verify/ngx_client/build.sh` incl. the podman fallback; runs `sl_abi_check.cpp` on host g++ first |
-| `run_harness.sh` | staging (port DLL copy, OptiScaler + `nvngx_dlss.dll` + `nvngx_dlssd.dll` + 11 sl.* + shaders as symlinks, ini = `--ini` file or the template), prefix-busy detection + clone, Proton 10.0-pinned probe, env incl. `SL_NVAPI_VER`, run, gates g1-g5 |
+| `run_harness.sh` | staging (port DLL copy, OptiScaler + `nvngx_dlss.dll` + `nvngx_dlssd.dll` + 11 sl.* + shaders as symlinks, ini = `--ini` file or the template), prefix-busy detection + clone, Proton 10.0-pinned probe, env incl. `SL_NVAPI_VER`, run, gates g1-g5.  Since 2026-10-31 (N5) also N5's upscaler companions: the 9 of OptiScaler's 10 probed companion dlls that exist in the game's `bin64`, the absent one skipped with a note (see the dated N5 section) |
 | `sl-include/` | the nine NVIDIA Streamline v2.14.1 headers, verbatim from tag v2.14.1 (`VENDORED.txt` = url/commit/date/licence) |
 | `sl_abi_check.cpp` | hand-derived layout assertions, host-compiled by build.sh before every cross-build |
 
@@ -403,3 +403,112 @@ this key`: the client only ever created/bound Color, MotionVectors, Depth.
 cannot bind RR), a non-default `--mv-fmt` RR combination, 60-frame D1 B-cells re-runs (D1 re-runs
 them after `N4 LANDED`), in-game verification (D3), and `gate_cell.sh`'s `fmt mv=1` expectation
 (D1-owned file, flagged above).
+
+## 2026-10-31 - upscaler companion libraries staged (N5)
+
+**The gap (measured by D1, `D1-DESIGN.md` §6 N5, `REPORT.md` 279-295)**: OptiScaler resolves its
+upscaler backends' companion dlls *at runtime, from its own directory*, and rewrites the backend
+when they are absent. `$STAGE` had OptiScaler's `dxgi.dll`, our port and the Streamline stack, but
+none of the companions - so the measured sequence in `runs/C01/rep1/OptiScaler.log` (identical in
+all 6 affected runs) was:
+
+    Config::CheckUpscalerFiles libxess.dll not found!
+    FeatureProvider_Dx12::ChangeFeature changing backend to fsr21
+    init successful for fsr21
+
+i.e. `Dx12Upscaler=xess` (C01) and `Dx12Upscaler=fsr31` (C03) announced their backend,
+then fell through `GetFeature`'s `!ModuleLoaded()` / `ChangeFeature` retries to **fsr21**
+(`FeatureProvider_Dx12.cpp:69-73`, `:193-216`) - the xess and fsr31 D1 cells measured fsr21, not
+their axis label (G-IDENT `BLOCKED(N5)`, 6 runs with their ms excluded). The companions were never
+absent from *the game* - `bin64` ships them; only the harness failed to stage them.
+
+**What is staged now** (`run_harness.sh`, immediately after the `nvngx_dlssd.dll` line, same
+waypoint and same **absolute** symlink style, `$GAME/$name -> $STAGE/$name`): every companion
+OptiScaler v0.9.4 actually probes, in probe order as the C01 log prints it.  Enumeration
+(`Config::CheckUpscalerFiles` Config.cpp:1536, `FfxApi_Proxy.h` 211/368/539/677/819,
+`XeSS_Proxy.h` 247 + `InitXeSSDx11`/`InitXeFG`/`InitXeLL`, against a read-only `ls` of the game's
+`bin64`):
+
+| dll | probed by (v0.9.4 source) | axis it serves | in game `bin64` | staged |
+| --- | --- | --- | --- | --- |
+| `amd_fidelityfx_loader_dx12.dll` | `FfxApi_Proxy.h:211` (tried first) | fsr31 main (`IsSRReady`) | yes (26 376 B) | yes |
+| `amd_fidelityfx_dx12.dll` | `FfxApi_Proxy.h:211` (2nd try) | fsr31 non-loader main | yes (26 376 B) | yes |
+| `amd_fidelityfx_upscaler_dx12.dll` | `FfxApi_Proxy.h:368` | fsr31 SR (the deciding lib) | yes (28 761 864 B) | yes |
+| `amd_fidelityfx_framegeneration_dx12.dll` | `FfxApi_Proxy.h:539` | FSR frame-gen (cfg off here) | yes (40 085 776 B) | yes |
+| `amd_fidelityfx_denoiser_dx12.dll` | `FfxApi_Proxy.h:677` | RR denoiser (the cosmetic `Can't find` REPORT names) | yes (13 782 280 B) | yes |
+| `amd_fidelityfx_radiancecache_dx12.dll` | `FfxApi_Proxy.h:819` | radiance cache | **no** | **no - note printed, staging continues** |
+| `libxess.dll` | `XeSS_Proxy.h:247` + `Config.cpp:1536` | xess (the deciding lib) | yes (77 795 704 B) | yes |
+| `libxess_dx11.dll` | `XeSS_Proxy.h:632` | xess on D3D11 (harness is D3D12-only) | yes (156 016 B) | yes |
+| `libxess_fg.dll` | `XeFG_Proxy.h:154` | XeSS frame-gen (cfg off here) | yes (22 957 432 B) | yes |
+| `libxell.dll` | `XeLL_Proxy.h:179` | XeLL (xess low-level helper) | yes (411 504 B) | yes |
+
+9 of 10 staged, 1 skipped. **Deliberate deviation from the `nvngx_dlss.dll` shape**: those two die
+in preflight because without the port's DLSS companions the *experiment* is broken; these are
+*optional backends* - OptiScaler itself treats an absent one as normal (`Can't find ...,
+returning nullptr!` and carry on, `Util.cpp:808`), and a `bin64` without, say, the radiance-cache
+dll is also normal. So a missing source prints one
+`note: optional upscaler companion absent in game dir, not staged: <name>` line and the stage
+completes. A present source is simply staged; nothing preflight-dies on this list.
+
+**Why the non-opti path is unchanged too**: the loop is unconditional (like `nvngx_dlss.dll`'s, and
+like the 11 `sl.*` links that already staged in `--direct` mode), so `--direct` runs gain the same
+links while loading OptiScaler is still what `--direct` removes - nothing new is loaded there.
+
+**What this means for past run comparisons**: every archived run (wave 1 + wave 2) staged **none**
+of these 10 names. Consequences, stated so nobody diffs across the line blindly:
+- the **xess/fsr31** numbers in flight were fsr21's and were already excluded from every table
+  (`REPORT.md:314-315`) - their first post-N5 run is a *new* baseline, not a continuation;
+- **fsr22 / dlss / dlssd** gates and inputs are untouched (fsr22 + fsr21 are compiled *into*
+  OptiScaler, `upscalers/fsr2*` never touch `FfxApi_Proxy`; the dlss path goes through `_nvngx.dll`),
+  so their archived numbers stay valid on their own terms - but the new runs will load ~163 MB of
+  extra, *idle* dlls into the process at startup (Opti's `InitFfxDx12*`/`InitXeSS*` probes run on
+  every start). Optimisation paths are not touched by loading them; timing drift attributable to the
+  load-set difference has not been measured either way (see not-tested).
+
+**Validation run (2026-10-31 08:5x, no harness executions - the D1 slot belongs to another
+session, so `run_harness.sh` was never invoked past preflight by this change)**:
+- `bash -n tools/optiharness/run_harness.sh` → clean (rc 0).
+- `shellcheck 0.11.0` (not on the host; run in the local `docker.io/library/alpine` image under
+  podman with the repo mounted `:ro`, repo never written): `-S warning` → **rc 0, no findings**;
+  default severity → only the **same 2 pre-existing SC2012 info** diagnostics the HEAD version has
+  (`RADV_ICD=$(ls ...)` / `ls -d .../proton`, both copied from `run_all.sh` long before N5) - a
+  `diff <(shellcheck before) <(shellcheck after)` shows nothing but the line numbers moving from
+  `137/162` to `165/190`, i.e. the new block contributes zero findings.
+- usage / refusal paths (they all exit before the stage section, so nothing was staged or built):
+  `--help` → usage, rc 0; `--bogus` → `unknown argument`, rc 2; `--ini /nonexistent/x.ini` →
+  `HARNESS FAIL: --ini: no such file`, rc 1; `--nvngx /nonexistent` → `HARNESS FAIL: no port DLL`,
+  rc 1 (confirming the preflight order still puts every `die` before `# ---- stage ----`).
+- `bash -x` on those two safe paths only, showing `+ exit 0` straight out of the arg loop and the
+  `die` firing on `[[ -f /nonexistent ]]` - both stop *before* `# ---- stage ----`, so `-x` proved
+  parse/preflight, not staging (staging is covered by the extraction test next).
+- extraction test for the new loop: the `UPSCALER_DLLS` array + `for` body were `sed`-copied
+  **verbatim** out of `run_harness.sh` into `/tmp/opencode/n5_stage_test.sh`, run with
+  `STAGE=/tmp/opencode/n5_stage_test` and a *fake* `GAME=/tmp/opencode/n5_stage_test_game`
+  (touch-file substitutes, `amd_fidelityfx_radiancecache_dx12.dll` deliberately omitted): rc 0,
+  **9 absolute links** (`<fake>/ -> <fake-game>/`, each read back successfully through the link)
+  plus exactly one
+  `note: optional upscaler companion absent in game dir, not staged: amd_fidelityfx_radiancecache_dx12.dll`.
+  Test dir, fake dir and extracted script were then deleted (`ls /tmp/opencode/n5_stage_test*` →
+  no such file). The real `$STAGE` and the game folder were **never written** by any of this; the
+  game folder was only ever `ls`/`stat`/`objdump -p`-read.
+- **observed, not run by me** (read-only, so it is evidence rather than my validation): a concurrent
+  session's `run_harness.sh --ini .../inis/dlssd.ini` at 04:39 - i.e. *after* this script's edit -
+  staged exactly the 9 links above and its `OptiScaler.log` now reads
+  `Config::CheckUpscalerFiles libxess.dll found in game folder` (verbatim site of the N5
+  `... not found!` warning) and `amd_fidelityfx_{loader_dx12,upscaler_dx12,framegeneration_dx12,
+  denoiser_dx12}.dll loaded from Opti dll path: Z:...\harness\...` + `libxess{,_dx11,_fg}.dll` and
+  `libxell.dll` likewise; the only remaining `Can't find` is `amd_fidelityfx_radiancecache_dx12.dll`
+  (the name that does not exist in `bin64`), and that run's log contains **zero**
+  `changing backend to` lines.
+
+**Not tested / out of scope here**: any harness run **executed by this change** (no regression run
+of the default dlss/fsr22 cells, no xess/fsr31 cell - the whole point of N5, still unrun: C01/C03
+re-runs and D01-D05/D11-D15 belong to D1 once `N5 LANDED` is announced - no `--sl`, no `--direct`,
+no `--expect-fail`); whether the newly-loaded ffx/xess dlls resolve
+`MSVCP140.dll`/`VCRUNTIME140.dll`/`dxgi.dll` under the harness's Proton (they are not in `bin64`
+either, so they come from the prefix/system layer exactly as they do for the live game - untested
+headlessly); whether OptiScaler's `IsFGReady()` flip (it becomes true once the frame-gen dll is
+staged) changes any FG-related default (`State::activeFgOutput` defaults to `NoFG`, `State.h:132`,
+and `[FrameGen]` is deliberately unset in this ini - reasoned, not measured); `stat`-size handling
+for the new links in `tools/scenario/run_cell.sh`'s manifest (that file is D1-owned and already
+flagged for `-L`); in-game verification (D3).
