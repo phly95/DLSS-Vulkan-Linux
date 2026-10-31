@@ -5,7 +5,9 @@
 (user decision): the OptiScaler path is ARCHIVED for in-game use; the new target is standalone
 (game direct + port) = D5 (§8 slot open, executor)** · **D3 CLOSED as "harness-proven, in-game
 launch-path-blocked"** (N-B reproduced the stall runtime-independently; N-A had no UI window; both
-shots spent, hard stop honored — REPORT § "N-B + N-A", h1prime §10) · D4 = this document.
+shots spent, hard stop honored — REPORT § "N-B + N-A", h1prime §10) · **D4 OPEN, held for
+`D resolved: green|red` (§8.1 contingency: signing ladder A ✗ / N3-B ✗ measured-dead / D in flight)** ·
+D4 = this document.
 The running log this document consolidates is
 [`REPORT.md`](REPORT.md); the machine-readable matrix is [`D1-MATRIX.csv`](D1-MATRIX.csv).
 
@@ -127,6 +129,10 @@ E01 vs A03, E02 vs B03, E03 vs C01: Δ EVAL/GPU = −0.0305/−0.0225, −0.0307
 | N4 | four RR input slots in `opti_client.cpp` (`9fc35a5`) | landed ⇒ RR cells unblocked |
 | N5 | stage upscaler companions (`b685fcf`) | landed ⇒ xess/fsr31 cells became real |
 | **WARN** | E03/rep2 stage-race: post-run listing lacked `nvngx.dll` while Opti's log proves it present at runtime | benign race on shared `$STAGE`; `run_cell.sh` now WARNs (evidence: Opti log line + rep3 confirmation) |
+| A-route | obtain `osslsigncode` to sign the port core | **unavailable**: `pacman -Ss osslsigncode` empty on this box (executor) |
+| **N3 / P-N3** | authorized 2-byte gate NOP in `bin64/sl.common.dll` (0x8c15e `74 2f`→`90 90`), backup `.bak-n3`, `cmp -l` 2 bytes only | implemented per the verbatim authorization (REPORT § P-N3) |
+| **P-N3-OUTCOME** | N3 **measured FAILED + REVERTED** (md5-verified == `.bak-n3`): `pluginManager.cpp:917 Failed to load plugin '…sl.common.dll - last error Invalid handle'` → `slInit result=24`; control with stock sl.common = `slInit 0 (eOk)`; **`NOT correctly signed` never fired (0 hits)** | **⇒ N3 is dead because SL validates its own host library itself, not via Authenticode** — any `sl.common` edit is blocked by the library's load-critical role; provenance `P-N3`/`P-N3-OUTCOME` in `REPORT.md` |
+| **D (in flight)** | build `osslsigncode` from source **or** python-Authenticode → sign the port core → **install cert into the prefix root store** → proof cell | pending; D4 stays **OPEN** until top-level sends `D resolved: green\|red` (§8.1) |
 
 ### 4b. H-1′ appendix pointer (source kept by the executor)
 
@@ -235,3 +241,39 @@ configuration deltas, not regressions, unless they breach the same sentinel floo
 *(Fill rule: same as §5 — rows carry `file:line` or log quotes; contradictions are fixed by editing,
 never by deleting a measured row. If D5 succeeds, D4's closing becomes "standalone SR+RR accepted by
 the user", superseding both the §5 boxed sentence and the §0 archived-path assurance.)*
+
+### 8.1 D4 CONTINGENCY — sequence D in flight; wording branches, **AWAITING `D resolved: green|red`**
+
+The executor's signing/N3 ladder for making the **standalone port core** acceptable to Streamline's
+core-load gate: **A** = `osslsigncode` package — *unavailable* (`pacman -Ss` empty); **B** = N3
+2-byte gate NOP in `sl.common.dll` — *implemented per authorization, then measured FAILED and
+reverted md5-verified* (REPORT `P-N3` / `P-N3-OUTCOME`); **C-rule** = stop, as authorized;
+**D** (final, authorized, running now) = build `osslsigncode` from source *or* python-Authenticode →
+**sign the port core** → **install the cert into the prefix root store** → proof cell.
+
+**Why B died — folded in as required:** N3 is *measured-dead because Streamline validates its own
+host library itself, not via Authenticode* — the patched carrier failed SL's integrity check with
+`Failed to load plugin '…sl.common.dll - last error Invalid handle'` and `slInit result=24`, while
+the string `NOT correctly signed` had **0 hits** in the whole cell (stock sl.common in the same
+cell: `slInit 0 (eOk)`). So the NOP route and Authenticode are orthogonal: fixing a signature would
+not have saved B, and B's failure says nothing against a correctly signed core (what D tests).
+
+**Branch wording — CONTINGENT (do not publish either branch until `D resolved:` is sent):**
+
+- **`D resolved: green`** ⇒ RR-via-Streamline headless is proven with *our* signed core; the §8 D5
+  table rewrites as full green (rows 2–6 cite the proof cell), the §5 boxed sentence and §0
+  archived-path assurance fold into it, and D4's closing becomes "standalone SR+RR accepted by the
+  user".
+- **`D resolved: red`** ⇒ this is the **FINAL** paragraph, verbatim:
+  > *Standalone SR is delivered by the port directly and is proven. RR via Streamline remains
+  > unproven on this stack, and the ladder that would have proven it is exhausted with measurements:
+  > no signing tool was available (A), and the authorized `sl.common.dll` gate bypass (N3) is
+  > **measured-dead because Streamline validates its own host library itself, not via Authenticode**
+  > (`Failed to load plugin 'sl.common.dll - Invalid handle'`, `slInit=24`, zero occurrences of any
+  > signature error) — reverted md5-verified. The remaining route, a correctly signed port core in
+  > the prefix root store (D), is what this result red-flags; RR is therefore reported as gated at
+  > Streamline's core/vehicle integrity checks, not at our renderer, and is explicitly not claimed
+  > for the shipped configuration.*
+
+**D4 STATUS: OPEN — held for `D resolved: green|red`.** Nothing above is to be summarized away in
+the final wrap without that verdict.
