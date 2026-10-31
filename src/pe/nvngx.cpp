@@ -661,6 +661,22 @@ static unsigned copy_row_texels(const ngxd::FrameChain* c, bool rr, const ngxd::
     return W;
 }
 
+// DLSS5_AMD_DUMP, by environment OR by a marker file next to this DLL.  A game launch cannot gain
+// a new environment variable without editing the Steam launch options, but dropping a
+// "dlss5-amd-dump.enable" file into the game's bin64 arms exactly the same probe (delete the file
+// to disarm; environment wins if both are present).  The probe itself stays bounded: frames 0..6
+// of one feature, two 40-px slices of the app's output image per frame plus one chain self-dump.
+static bool dump_probe_on() {
+    static const bool on = [] {
+        if (std::getenv("DLSS5_AMD_DUMP")) return true;
+        char p[MAX_PATH] = {0};
+        if (!module_path_tail("dlss5-amd-dump.enable", p, sizeof p)) return false;
+        if (FILE* f = std::fopen(p, "rb")) { std::fclose(f); return true; }
+        return false;
+    }();
+    return on;
+}
+
 // Record one frame: move the caller's images into the chain's staging buffers, run the chain, move the
 // result back.  A copy has to happen in TRANSFER_*_OPTIMAL or GENERAL, so every image is transitioned
 // there and back to whatever layout the caller left it in -- the ngx_client contract is GENERAL in,
@@ -759,7 +775,7 @@ static NVSDK_NGX_Result record_bridge(VkCommandBuffer cmd, FeatureState* s, cons
     // recording frame 1.  The chain's out buffer is already known to be complete and bit-exact (the
     // frame-0 dump proves that), so anything missing in these slices is missing between
     // vkCmdCopyBufferToImage and the app, with no further suspects in between.
-    if (std::getenv("DLSS5_AMD_DUMP") && s->frame_idx <= 5 && ensure_diag_slice_buffer()) {
+    if (dump_probe_on() && s->frame_idx <= 5 && ensure_diag_slice_buffer()) {
         image_barrier(cmd, out.image, out.layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readable,
                       VK_ACCESS_TRANSFER_READ_BIT);
         VkBufferImageCopy sl[3]{};
@@ -794,7 +810,7 @@ static NVSDK_NGX_Result record_bridge(VkCommandBuffer cmd, FeatureState* s, cons
     // The increment above means this block runs at the *end* of recording frame N; frame 0's
     // command buffer has only been submitted and executed by the time frame 1 is being recorded,
     // so the dump waits for frame_idx == 2 (record of frame 1 = frame 0 in the buffer).
-    if (s->frame_idx == 2 && std::getenv("DLSS5_AMD_DUMP")) {
+    if (s->frame_idx == 2 && dump_probe_on()) {
         if (FILE* fo = std::fopen("dlss5-amd-dump_out.f32", "wb")) {
             const uint16_t* h16 = static_cast<const uint16_t*>(c->out_color());
             const size_t npx = size_t(c->out_width()) * c->out_height();
@@ -814,7 +830,7 @@ static NVSDK_NGX_Result record_bridge(VkCommandBuffer cmd, FeatureState* s, cons
     }
     // Per-frame verdict: the slices recorded while recording frame N are readable from frame N+1.
     // Frame 0 reading full and later frames not would mean the image, not the copy, is the problem.
-    if (std::getenv("DLSS5_AMD_DUMP") && s->frame_idx >= 2 && s->frame_idx <= 6) {
+    if (dump_probe_on() && s->frame_idx >= 2 && s->frame_idx <= 6) {
         report_diag_slices(out, s->frame_idx - 2);
     }
     // One-time geometry of what the caller actually handed over: a quarter-wide input image would
