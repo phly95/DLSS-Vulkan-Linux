@@ -68,6 +68,10 @@ Key context Gemini did not have (from the in-game log, `bin64/dlss5-amd-ngx.log`
 
 ## What was fixed (host lane), commit + build + gate status
 
+Commits on `game-integration` (pushed): **`ef32de5`** (this verdict + the raw analysis),
+**`d24803e`** (claims 1-4 host fixes), **`7888d29`** (harness `--scene disoc`, claim 9d),
+**`317a7d4`** (mvhi log one-shot).
+
 | Fix | File:line | Build | Gate |
 |---|---|---|---|
 | Float quality-ratio division (claim 1) | `src/ffx/ffx_front.cpp:293-301` | `bash src/ffx/build.sh` ✓ | bit-identical at 2.0x/3.0x (integer ratios) |
@@ -81,6 +85,17 @@ managed by the main session only.  The new builds are in `build/package/` — th
 change is behaviour-visible in-game (it is the point of the fix), so **the game needs the main
 session to restage the FFX dll** before the next in-game comparison.  Nothing in the game dir was
 touched by this pass.
+
+### Gate results measured for this pass (2026-11-01 evening, all green)
+
+| Gate | Command | Result |
+|---|---|---|
+| FFX dll + runner builds | `bash src/ffx/build.sh`, `bash src/vk/build.sh` | both exit 0 (`dlss5-amd-ffx.dll`, `_nvngx.dll`, 64 shaders) |
+| quality_guard (no shader/runner regression) | `build/venv/bin/python -I tools/report/quality_guard.py` | **PASS**, exit 0 — sr_M_seq 41.91 / sr_M_static 57.13 / sr_L_seq 42.12 / sr_L_static 55.42, G1/G2/T1/B1 all ok (digit-identical to the docstring's fresh run ⇒ nothing moved) |
+| psnr3x matrix (scored, no regeneration) | `build/venv/bin/python -I tools/report/psnr3x_gate.py --suffix 2` | A 1.5x-M PASS; C 3.0x-M PASS; B/D/E fail ONLY the 0.1 dB GT-delta (0.175/0.180) — pre-existing property of the current tree, untouched by bridge-only edits |
+| ffx1 harness cell (1920x1080→3840x2160, 2.0x) | `run_harness.sh --ini tools/scenario/inis/ffx1.ini` | **PASS** g1 create=1 sr_slot=1, g2 12/12, g3 nz=1.0, g3b CONTENT PASS, g4 median 4.46 ms — log shows `(ratio 2x2) preset M`, i.e. ≤2.0x behaviour byte-equivalent to the old hardcode |
+| **ffx30 harness cell (NEW**: 1280x720→3840x2160 through `dlss5-amd-ffx.dll`) | `run_harness.sh --ini ffx1.ini --w 1280 --h 720 --ow 3840 --oh 2160 --out build/optiharness/harness_ffx30` | **PASS** all gates — log: `dispatch: creating the chain 1280x720 -> 3840x2160 (ratio 3x3) preset L from .../ngx-weights/L` + `chain ready ... 36 pipelines` (the exact chain the in-game NGX/L surface built) — the fixed preset path proven end-to-end at the game's geometry, never run before this pass |
+| harness build | `bash tools/optiharness/build.sh` | exit 0 (`opti_client.exe` with `--scene disoc`) |
 
 ---
 
