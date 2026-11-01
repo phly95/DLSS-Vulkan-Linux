@@ -86,5 +86,12 @@ extern "C++" VkDevice ngxd_vk_device();
 // copy the result back out (nvngx.cpp: record_bridge, renamed forwarder ngxd_record_bridge).
 NVSDK_NGX_Result ngxd_record_bridge(VkCommandBuffer cmd, FeatureState_* s, const ngxd::FrameParams& fp,
                                     const BridgeImage_* ins, size_t n, const BridgeImage_* out);
+// The per-frame OK line (diag-v1): the SAME emitter the NGX export uses (nvngx.cpp: log_eval_ok),
+// so both surfaces write the one grammar the harness g2 gate greps - `eval #N OK: ... fmt col=..
+// mv=.. dep=..`.  Takes the next id off the shared eval sequence; returns it for the caller's own
+// [ffx]-prefixed 1 Hz line.
+unsigned long long ngxd_log_eval_ok(FeatureState_* s, size_t n, const BridgeImage_* ins,
+                                    const BridgeImage_* out, const ngxd::FrameChain* c,
+                                    const ngxd::FrameParams& fp);
 
 }  // extern "C++"

@@ -45,265 +45,40 @@
 #include <d3d12.h>
 
 // ---------------------------------------------------------------------------
-// FidelityFX SDK API subset (MIT, AMD FidelityFX SDK; see the provenance note above).
+// FidelityFX SDK API subset -> VENDORED HEADERS (step 4 of the plan): the ABI I hand-wrote
+// from memory was close but not bit-exact - OptiScaler's proxy passes FfxApiResource with the
+// description EMBEDDED by value, so every field after `color` landed shifted and dispatch
+// refused (measured: 'missing color/output/commandList' xN with the SR slot live).  The four
+// MIT headers under src/ffx/ffx-api/ are the single source of ABI truth now:
+//   ffx_api.h        (ffxApiHeader/types/return codes/global debug)
+//   ffx_api_types.h  (FfxApiResource + FfxApiResourceDescription, embedded by value)
+//   ffx_upscale.h    (create/dispatch/query upscale descs + flags + quality enums)
+//   ffx_api_dx12.h   (backend desc + the ffxApiGetResourceDX12 helper our dispatch mirrors)
 // ---------------------------------------------------------------------------
-typedef void* ffxContext;
-typedef uint32_t ffxReturnCode_t;
-typedef uint64_t ffxStructType_t;
+#include "ffx-api/ffx_api.h"
+#include "ffx-api/ffx_api_types.h"
+#include "ffx-api/ffx_upscale.h"
+#include "ffx-api/ffx_api_dx12.h"
 
-enum FfxApiReturnCodes {
-    FFX_API_RETURN_OK                             = 0,
-    FFX_API_RETURN_ERROR                          = 1,
-    FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE         = 2,
-    FFX_API_RETURN_ERROR_RUNTIME_ERROR            = 3,
-    FFX_API_RETURN_NO_PROVIDER                    = 4,
-    FFX_API_RETURN_ERROR_MEMORY                   = 5,
-    FFX_API_RETURN_ERROR_PARAMETER                = 6,
-    FFX_API_RETURN_PROVIDER_NO_SUPPORT_NEW_DESCTYPE = 7,
-};
-
-#define FFX_API_EFFECT_MASK 0xffff0000u
-#define FFX_API_EFFECT_ID_GENERAL 0x00000000u
-
-struct ffxApiHeader {
-    ffxStructType_t      type;
-    struct ffxApiHeader* pNext;
-};
-typedef ffxApiHeader ffxCreateContextDescHeader;
-typedef ffxApiHeader ffxConfigureDescHeader;
-typedef ffxApiHeader ffxQueryDescHeader;
-typedef ffxApiHeader ffxDispatchDescHeader;
-
-typedef void (*ffxApiMessage)(uint32_t type, const wchar_t* message);
-
-#define FFX_API_CONFIGURE_DESC_TYPE_GLOBALDEBUG1 0x0000001u
-struct ffxConfigureDescGlobalDebug1 {
-    ffxConfigureDescHeader header;
-    ffxApiMessage          fpMessage;
-    uint32_t               debugLevel;
-};
-
-#define FFX_API_QUERY_DESC_TYPE_GET_VERSIONS 4u
-struct ffxQueryDescGetVersions {
-    ffxQueryDescHeader header;
-    uint64_t           createDescType;
-    void*              device;
-    uint64_t*          outputCount;
-    uint64_t*          versionIds;
-    const char**       versionNames;
-};
-
-#define FFX_API_QUERY_DESC_TYPE_GET_PROVIDER_VERSION 6u
-struct ffxQueryGetProviderVersion {
-    ffxQueryDescHeader header;
-    uint64_t           versionId;
-    const char*        versionName;
-};
-
-#define FFX_API_DESC_TYPE_OVERRIDE_VERSION 5u
-struct ffxOverrideVersion {
-    ffxApiHeader header;
-    uint64_t     versionId;
-};
-
-#define FFX_API_EFFECT_ID_UPSCALE 0x00010000u
-#define FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE 0x00010000u
-struct FfxApiDimensions2D { uint32_t width, height; };
-struct FfxApiFloatCoords2D { float x, y; };
-
-struct ffxCreateContextDescUpscale {
-    ffxCreateContextDescHeader header;
-    uint32_t                   flags;
-    struct FfxApiDimensions2D  maxRenderSize;
-    struct FfxApiDimensions2D  maxUpscaleSize;
-    ffxApiMessage              fpMessage;
-};
-
-// enum FfxApiCreateContextUpscaleFlags (ffx_upscale.h)
-enum {
-    FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE                 = (1 << 0),
-    FFX_UPSCALE_ENABLE_DISPLAY_RESOLUTION_MOTION_VECTORS  = (1 << 1),
-    FFX_UPSCALE_ENABLE_MOTION_VECTORS_JITTER_CANCELLATION = (1 << 2),
-    FFX_UPSCALE_ENABLE_DEPTH_INVERTED                     = (1 << 3),
-    FFX_UPSCALE_ENABLE_DEPTH_INFINITE                     = (1 << 4),
-    FFX_UPSCALE_ENABLE_AUTO_EXPOSURE                      = (1 << 5),
-    FFX_UPSCALE_ENABLE_DYNAMIC_RESOLUTION                 = (1 << 6),
-    FFX_UPSCALE_ENABLE_DEBUG_CHECKING                     = (1 << 7),
-    FFX_UPSCALE_ENABLE_NON_LINEAR_COLORSPACE              = (1 << 8),
-    FFX_UPSCALE_ENABLE_DEBUG_VISUALIZATION                = (1 << 9),
-};
-
-#define FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12 0x0000002u
-struct ffxCreateBackendDX12Desc {
-    ffxCreateContextDescHeader header;
-    void*                      device;  // ID3D12Device* (kept void* so the skeleton needs no d3d12.h)
-};
-
-#define FFX_API_DISPATCH_DESC_TYPE_UPSCALE 0x00010001u
-struct FfxApiResource {
-    void* resource;
-    struct FfxApiResourceDescription* description;  // simplified for the skeleton; see below
-    uint32_t state;
-};
-// NOTE: the real FfxApiResource embeds FfxApiResourceDescription by value (ffx_api_types.h);
-// the skeleton does not touch resources yet, so this translation unit keeps a pointer only.
-// The real struct lands with step 3 (ffx_d3d12.cpp) and this file switches to the vendored
-// headers wholesale.
-
-struct ffxDispatchDescUpscale {
-    ffxDispatchDescHeader      header;
-    void*                      commandList;
-    struct FfxApiResource      color;
-    struct FfxApiResource      depth;
-    struct FfxApiResource      motionVectors;
-    struct FfxApiResource      exposure;
-    struct FfxApiResource      reactive;
-    struct FfxApiResource      transparencyAndComposition;
-    struct FfxApiResource      output;
-    struct FfxApiFloatCoords2D jitterOffset;
-    struct FfxApiFloatCoords2D motionVectorScale;
-    struct FfxApiDimensions2D  renderSize;
-    struct FfxApiDimensions2D  upscaleSize;
-    bool                       enableSharpening;
-    float                      sharpness;
-    float                      frameTimeDelta;
-    float                      preExposure;
-    bool                       reset;
-    float                      cameraNear;
-    float                      cameraFar;
-    float                      cameraFovAngleVertical;
-    float                      viewSpaceToMetersFactor;
-    uint32_t                   flags;
-};
-
-#define FFX_API_DISPATCH_DESC_TYPE_UPSCALE_GENERATEREACTIVEMASK 0x00010006u
-struct ffxDispatchDescUpscaleGenerateReactiveMask {
-    ffxDispatchDescHeader     header;
-    void*                     commandList;
-    struct FfxApiResource     colorOpaqueOnly;
-    struct FfxApiResource     colorPreUpscale;
-    struct FfxApiResource     outReactive;
-    struct FfxApiDimensions2D renderSize;
-    float                     scale;
-    float                     cutoffThreshold;
-    float                     binaryValue;
-    uint32_t                  flags;
-};
-
-#define FFX_API_CONFIGURE_DESC_TYPE_UPSCALE_KEYVALUE 0x00010007u
-struct ffxConfigureDescUpscaleKeyValue {
-    ffxConfigureDescHeader  header;
-    uint64_t                key;
-    uint64_t                u64;
-    void*                   ptr;
-};
-
-// enum FfxApiConfigureUpscaleKey (ffx_upscale.h)
-enum {
-    FFX_API_CONFIGURE_UPSCALE_KEY_FVELOCITYFACTOR           = 0,
-    FFX_API_CONFIGURE_UPSCALE_KEY_FREACTIVENESSSCALE        = 1,
-    FFX_API_CONFIGURE_UPSCALE_KEY_FSHADINGCHANGESCALE       = 2,
-    FFX_API_CONFIGURE_UPSCALE_KEY_FACCUMULATIONADDEDPERFRAME = 3,
-    FFX_API_CONFIGURE_UPSCALE_KEY_FMINDISOCCLUSIONACCUMULATION = 4,
-};
-
-#define FFX_API_QUERY_DESC_TYPE_UPSCALE_GETUPSCALERATIOFROMQUALITYMODE 0x00010002u
-struct ffxQueryDescUpscaleGetUpscaleRatioFromQualityMode {
-    ffxQueryDescHeader header;
-    uint32_t           qualityMode;
-    float*             pOutUpscaleRatio;
-};
-
-#define FFX_API_QUERY_DESC_TYPE_UPSCALE_GETRENDERRESOLUTIONFROMQUALITYMODE 0x00010003u
-struct ffxQueryDescUpscaleGetRenderResolutionFromQualityMode {
-    ffxQueryDescHeader header;
-    uint32_t           displayWidth;
-    uint32_t           displayHeight;
-    uint32_t           qualityMode;
-    uint32_t*          pOutRenderWidth;
-    uint32_t*          pOutRenderHeight;
-};
-
-#define FFX_API_QUERY_DESC_TYPE_UPSCALE_GETJITTERPHASECOUNT 0x00010004u
-struct ffxQueryDescUpscaleGetJitterPhaseCount {
-    ffxQueryDescHeader header;
-    uint32_t           renderWidth;
-    uint32_t           displayWidth;
-    int32_t*           pOutPhaseCount;
-};
-
-#define FFX_API_QUERY_DESC_TYPE_UPSCALE_GETJITTEROFFSET 0x00010005u
-struct ffxQueryDescUpscaleGetJitterOffset {
-    ffxQueryDescHeader header;
-    int32_t            index;
-    int32_t            phaseCount;
-    float*             pOutX;
-    float*             pOutY;
-};
-
-#define FFX_API_QUERY_DESC_TYPE_UPSCALE_GET_RESOURCE_REQUIREMENTS 0x0001000au
-struct ffxQueryDescUpscaleGetResourceRequirements {
-    ffxQueryDescHeader header;
-    uint64_t           required_resources;
-    uint64_t           optional_resources;
-};
-
-// enum FfxApiQueryResourceIdentifiers (ffx_upscale.h)
-enum {
-    FFX_API_QUERY_RESOURCE_INPUT_COLOR                   = (1 << 0),
-    FFX_API_QUERY_RESOURCE_INPUT_DEPTH                   = (1 << 1),
-    FFX_API_QUERY_RESOURCE_INPUT_MV                      = (1 << 2),
-    FFX_API_QUERY_RESOURCE_INPUT_EXPOSURE                = (1 << 3),
-    FFX_API_QUERY_RESOURCE_INPUT_REACTIVEMASK            = (1 << 4),
-    FFX_API_QUERY_RESOURCE_INPUT_TRANSPARENCYCOMPOSITION = (1 << 5),
-};
-
-#define FFX_API_QUERY_DESC_TYPE_UPSCALE_GPU_MEMORY_USAGE 0x00010008u
-struct FfxApiEffectMemoryUsage { uint64_t totalUsageInBytes, aliasableUsageInBytes; };
-struct ffxQueryDescUpscaleGetGPUMemoryUsage {
-    ffxQueryDescHeader header;
-    struct FfxApiEffectMemoryUsage* gpuMemoryUsageUpscaler;
-};
 
 // ---------------------------------------------------------------------------
-// Logging: the SHARED bridge log (ngx_log writes stderr + the CWD's dlss5-amd-ngx.log, the
-// one file the harness gates already grep).  Every line this surface writes is prefixed
-// "[ffx] " so one surface's lines are grep-able exactly (ngx_bridge_shared.h contract).
-// The skeleton's no-op local ffx_log is gone; ngx_log's varargs replace it.
-// ---------------------------------------------------------------------------
-static void ffx_log(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
-static void ffx_log(const char* fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    char buf[512];
-    std::vsnprintf(buf, sizeof buf, fmt, ap);
-    va_end(ap);
-    ngx_log("[ffx] %s", buf);
-}
-
-// ---------------------------------------------------------------------------
-// Version identity.  The name's leading triple must parse (OptiScaler calls
-// feature_version::parse_version on versionNames[0], FfxApi_Proxy.h:956/1017).  3.1.x keeps
-// the v0.9.4 host's 4.x-only quirk paths off us (docs/notes/ffx-seam-plan.md section 3).
+// Version identity + the quality/jitter tables (kept from the skeleton - honest both ways:
+// the name parses (Opti feature_version::parse_version on versionNames[0]) and 3.1.x keeps
+// the host's 4.x quirk paths off us; the ratios are the FSR enum order).
 // ---------------------------------------------------------------------------
 static const char kProviderName[] = "3.1.200 DLSS5-AMD (FFX)";
 static const char kProviderLabel[] = "DLSS5-AMD (FFX)";
 static const uint64_t kProviderVersionId = 200;
-
-// FSR quality-mode ratios (ffx_upscale.h enum order).
 static const float kQualityRatio[5] = { 1.0f, 1.5f, 1.7f, 2.0f, 3.0f };
 
-// Published FSR jitter-phase arithmetic (Halton(2,3) phases per axis; phase count from the
-// render/display ratio).  Kept local to the skeleton so ffxQuery is already honest.
 static int32_t jitter_phase_count(uint32_t renderWidth, uint32_t displayWidth) {
     if (renderWidth == 0 || displayWidth == 0) return -1;
     const double ratio = (double)displayWidth / (double)renderWidth;
     if (ratio <= 1.0) return 1;
-    return (int32_t)(2.0 * (int)(ratio + 0.5));  // 1.5x -> 8, 1.7x -> 8, 2.0x -> 10, 3.0x -> 14
+    return (int32_t)(2.0 * (int)(ratio + 0.5));
 }
 
 static void halton_jitter(int32_t index, int32_t phaseCount, float* outX, float* outY) {
-    // Halton sequence bases 2 and 3, centred (the standard FSR jitter sequence).
     auto halton = [](int32_t i, int32_t b) -> float {
         float f = 1.0f, r = 0.0f;
         while (i > 0) {
@@ -313,11 +88,25 @@ static void halton_jitter(int32_t index, int32_t phaseCount, float* outX, float*
         }
         return r;
     };
-    if (index < 0) index += phaseCount;
-    const float x = halton(index + 1, 2) - 0.5f;
-    const float y = halton(index + 1, 3) - 0.5f;
-    if (outX) *outX = x;
-    if (outY) *outY = y;
+    const int32_t maxPhase = 2 * 32;   // far beyond every reasonable phase count
+    int32_t pc = phaseCount > 0 ? phaseCount : 1;
+    if (pc > maxPhase) pc = maxPhase;
+    int32_t index2 = index;
+    if (index2 < 0) index2 += pc;
+    if (index2 >= pc) index2 %= pc;
+    if (outX) *outX = halton(index2 + 1, 2) - 0.5f;
+    if (outY) *outY = halton(index2 + 1, 3) - 0.5f;
+}
+// Shared bridge log with an [ffx] prefix (ngx_bridge_shared.h contract: one log file for both
+// surfaces, the harness gates grep one surface exactly).
+static void ffx_log(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+static void ffx_log(const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    char buf[512];
+    std::vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    ngx_log("[ffx] %s", buf);
 }
 
 // ---------------------------------------------------------------------------
@@ -355,7 +144,7 @@ static FfxUpscaleContext* as_ctx(ffxContext* c) { return c ? (FfxUpscaleContext*
 extern "C" {
 
 __declspec(dllexport) ffxReturnCode_t __stdcall
-ffxCreateContext(ffxContext* context, ffxCreateContextDescHeader* desc, const void* memCb) {
+ffxCreateContext(ffxContext* context, ffxCreateContextDescHeader* desc, const ffxAllocationCallbacks* memCb) {
     if (!context || !desc) {
         ffx_log("ffxCreateContext: null pointer");
         return FFX_API_RETURN_ERROR_PARAMETER;
@@ -422,7 +211,7 @@ ffxCreateContext(ffxContext* context, ffxCreateContextDescHeader* desc, const vo
 }
 
 __declspec(dllexport) ffxReturnCode_t __stdcall
-ffxDestroyContext(ffxContext* context, const void* memCb) {
+ffxDestroyContext(ffxContext* context, const ffxAllocationCallbacks* memCb) {
     (void)memCb;
     FfxUpscaleContext* c = as_ctx(context);
     if (!c) return FFX_API_RETURN_OK;  // NULL / foreign double-destroy tolerance (plan section 3)
@@ -614,7 +403,16 @@ ffxDispatch(ffxContext* context, const ffxDispatchDescHeader* desc) {
                     WideCharToMultiByte(CP_UTF8, 0, dir.c_str(), -1, shaders, sizeof shaders, nullptr, nullptr);
                 }
             }
-            if (!shaders[0]) ffx_log("dispatch: shaders dir unresolved (GetModuleFileName failed)");
+            if (!shaders[0])
+                ffx_log("dispatch: shaders dir unresolved (GetModuleFileName failed)");
+        }
+        // Empty fallback (dlss5-amd\\shaders beside this DLL): the package entry point the
+        // NGX surface documents.  If the dll runs from build/package (the harness case) the
+        // dll-dir tail has no .spv - DLSS5_AMD_SHADER_DIR wins there.
+        const char* env_shaders = std::getenv("DLSS5_AMD_SHADER_DIR");
+        if (env_shaders && *env_shaders) {
+            strncpy(shaders, env_shaders, MAX_PATH - 1);
+            shaders[MAX_PATH - 1] = 0;
         }
         const std::string root = ngxd_weights_root();
         if (root.empty()) {
@@ -718,6 +516,13 @@ ffxDispatch(ffxContext* context, const ffxDispatchDescHeader* desc) {
         ffx_log("[S6] mv scale=(%g,%g)", fp.mv_scale_x, fp.mv_scale_y);
     }
     c->prev_jx = fp.jx; c->prev_jy = fp.jy; c->have_prev_j = true;
+    // THE FORMAT CODE, settled from the fetched MV image exactly as the NGX surface settles it
+    // (nvngx.cpp:1320-1323): the harness feeds RG32F MotionVectors, which the chain decodes as
+    // code 1 AND reads as 8 B/texel rows (pipeline.cpp:1849/1851).  read_frame_params' default
+    // 0 would have the chain read 4 B/texel - the "input pitch ... MotionVectors ... MISMATCH"
+    // line the first wired run printed.  The FFX surface is never RR, so 1 is the only non-zero
+    // answer, mirroring `fp.fmt_mv = rr ? 10 : 1`.
+    if (bi_mv.format == VK_FORMAT_R32G32_SFLOAT) fp.fmt_mv = 1;
     // --- record --------------------------------------------------------------------------
     BridgeImage_ ins[3] = {bi_color, bi_mv, bi_dep};
     const NVSDK_NGX_Result rr = ngxd_record_bridge(vkcmd, &c->fs, fp, ins, d->depth.resource ? 3 : 2, &bi_out);
@@ -726,13 +531,17 @@ ffxDispatch(ffxContext* context, const ffxDispatchDescHeader* desc) {
         ffx_log("dispatch: record refused (0x%x)", unsigned(rr));
         return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
     }
+    // The SHARED OK line (g2-ffx's grammar, plan section 8): nvngx.cpp's own log_eval_ok through
+    // ngxd_log_eval_ok - one emitter for both surfaces, stamped from the same eval sequence.
+    const unsigned long long eval_id =
+        ngxd_log_eval_ok(&c->fs, d->depth.resource ? 3 : 2, ins, &bi_out, c->fs.chain, fp);
     // Per-frame + 1 Hz observability, the d5 style the gates can grep:
     static unsigned long long s_last_ms = 0;
     const unsigned long long now = ngx_ms();
     if (c->creates == 0 || now - s_last_ms >= 1000u) {
         s_last_ms = now;
         ffx_log("frame %u: %ux%u -> %ux%u eval #%llu OK", c->fs.frame_idx, c->fs.rw, c->fs.rh, c->fs.ow,
-                c->fs.oh, c->fs.eval_id);
+                c->fs.oh, eval_id);
     }
     ++c->creates;
     return FFX_API_RETURN_OK;

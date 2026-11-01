@@ -1416,6 +1416,22 @@ NVSDK_NGX_Result ngxd_record_bridge(VkCommandBuffer cmd, FeatureState_* s, const
                          *reinterpret_cast<const BridgeImage*>(out));
 }
 
+// The FFX surface's per-frame OK line rides the SAME emitter and the SAME g_eval_seq as the NGX
+// export's (ngx_bridge_shared.h declares it): one grammar for both surfaces, so the harness's
+// g2-ffx gate greps `eval #N OK: ... fmt col=.. mv=.. dep=..` exactly as it does for the dlss
+// cell (plan section 8).  The id is taken and stamped here so the caller's [ffx]-prefixed line
+// can echo it.
+unsigned long long ngxd_log_eval_ok(FeatureState_* s, size_t n, const BridgeImage_* ins,
+                                    const BridgeImage_* out, const ngxd::FrameChain* c,
+                                    const ngxd::FrameParams& fp) {
+    auto* fs = static_cast<FeatureState*>(s);
+    const unsigned long long eval_id = ++g_eval_seq;
+    fs->eval_id = eval_id;
+    log_eval_ok(eval_id, fs, n, reinterpret_cast<const BridgeImage*>(ins),
+                *reinterpret_cast<const BridgeImage*>(out), c, fp);
+    return eval_id;
+}
+
 // Exports
 extern "C" {
 

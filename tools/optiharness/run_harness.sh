@@ -272,6 +272,7 @@ echo "  running ($(date +%H:%M:%S), timeout 900 s)..."
         WINEDLLOVERRIDES=winmm,dxgi=n,b \
         PROTON_FORCE_NVAPI=1 \
         DLSS5_AMD_WEIGHTS="$ROOT/build/ngx-weights" \
+        DLSS5_AMD_SHADER_DIR="$SHDIR" \
         STEAM_COMPAT_DATA_PATH="$RUN_PREFIX" \
         STEAM_COMPAT_CLIENT_INSTALL_PATH="$STEAM" \
         VK_ICD_FILENAMES="$RADV_ICD" \
@@ -320,13 +321,28 @@ else
         n_nvidia=$(grep -cF "Running on Nvidia" "$OLOG")
         n_gone=$(grep -cE "falling back to FSR|Upscaler can't created" "$OLOG")
         n_bad0=$(grep -cF "_EvaluateFeature result: BAD00000" "$OLOG")
+        # ffx1/ffx2 cells (plan section 8, g1-ffx): stock v0.9.4 has no FFXFeatureDx12, so the
+        # WORKING value is fsr31 (Dx12Upscaler=ffx lands in GetFeature's default branch and
+        # silently substitutes fsr21 - measured, run 10:14).  For those cells g1 asks for the
+        # fsr31 create line + the SR-slot load of OUR dll + ZERO "changing backend to" lines:
+        # the exposure probe's re-create counts too - every such line is a frame the provider
+        # did not serve.  n_sr stays inert (1) for every other cell, byte-identical behaviour.
+        n_sr=1
+        FFXCELL=0
+        if grep -qiE '^[[:space:]]*Dx12Upscaler[[:space:]]*=[[:space:]]*(ffx|fsr31)([[:space:]]*;.*)?[[:space:]]*$' "$INI"; then
+            FFXCELL=1
+            n_create=$(grep -cE "Creating new (dlssd?|fsr31|ffx) upscaler" "$OLOG")
+            n_sr=$(grep -cE "FfxApiProxy::InitFfxDx12_SR Loaded from .*dlss5-amd-ffx\.dll" "$OLOG")
+            n_gone=$(grep -cE "changing backend to|falling back to|Upscaler can't created" "$OLOG")
+        fi
         if [[ $EXPECT -eq 1 ]]; then
             # inverted: the refusal (BAD00000) must COME BACK through OptiScaler, no FSR fallback
             if (( n_create < 1 || n_load < 1 || n_gone > 0 || n_bad0 < 1 )); then g1=FAIL; fi
         else
-            if (( n_create < 1 || n_load < 1 || n_gone > 0 || n_bad0 > 0 )); then g1=FAIL; fi
+            if (( n_create < 1 || n_load < 1 || n_gone > 0 || n_bad0 > 0 || n_sr < 1 )); then g1=FAIL; fi
         fi
         g1note="create=$n_create loaded_from_nvngx=$n_load running_on_nvidia=$n_nvidia fsr_fallback=$n_gone bad00000=$n_bad0"
+        (( FFXCELL )) && g1note+=" sr_slot=$n_sr"
     else
         g1=FAIL; g1note="no OptiScaler.log in $STAGE"
     fi
