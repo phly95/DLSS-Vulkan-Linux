@@ -888,6 +888,50 @@ static NVSDK_NGX_Result record_bridge(VkCommandBuffer cmd, FeatureState* s, cons
         ngx_log("dumped chain out/in of frame 0 (out %ux%u, in %dx%d) + mv/dep planes",
                 c->out_width(), c->out_height(), c->width(), c->height());
     }
+    // S7 FLASH hunt (2026-11-01): the user reports "frequently flashes the whole screen bright".
+    // Leading port-side suspect (read-only analysis ses_e6ab37de): sr_downsample.comp feeds the
+    // OUT plane's alpha as a nearest-neighbor fetch of a low-res input alpha, unsanitized and
+    // history-free.  If the game composites out-alpha, junk frames READ as fullscreen flashes.
+    // Instrument: every ~300 frames (and each of the S6 dump frames), tag frames where out
+    // min/max deviate wildly from its running median (RGB) OR where the ALPHA plane's max
+    // diverges from its own running median - the log line is the evidence, no extra IO.
+    if (dump_probe_on() && s->frame_idx >= 3) {
+        const unsigned oW = c->out_width(), oH = c->out_height();
+        const size_t npx = size_t(oW) * oH;
+        const uint16_t* h16 = static_cast<const uint16_t*>(c->out_color());
+        float rgb_med = 0.0f, a_max = 0.0f, a_med_candidate = 0.0f;   // a_med filled below from history
+        (void)a_med_candidate;
+        float rs = 0.f, gs = 0.f, bs = 0.f;
+        for (size_t i = 0; i < npx; ++i) {
+            const float r = ngxd::dlss_half_to_float(h16[i * 4 + 0]);
+            const float g = ngxd::dlss_half_to_float(h16[i * 4 + 1]);
+            const float b = ngxd::dlss_half_to_float(h16[i * 4 + 2]);
+            const float a = ngxd::dlss_half_to_float(h16[i * 4 + 3]);
+            rs += r; gs += g; bs += b;
+            if (a > a_max) a_max = a;
+        }
+        const float rmean = float(rs) / npx, gmean = float(gs) / npx, bmean = float(bs) / npx;
+        static std::vector<float> rgb_hist, a_hist;     // running mean history, running alpha-max
+        size_t rm = rgb_hist.size();
+        if (rm >= 6) {
+            std::vector<float> rh(rm), ah(rm);
+            for (size_t i = 0; i < rm; ++i) { rh[i] = rgb_hist[i]; ah[i] = a_hist[i]; }
+            std::nth_element(rh.begin(), rh.begin() + rm / 2, rh.end());
+            std::nth_element(ah.begin(), ah.begin() + rm / 2, ah.end());
+            rgb_med = rh[rm / 2];
+            a_med_candidate = ah[rm / 2];
+        }
+        rgb_hist.push_back((rmean + gmean + bmean) * 0.3333f);
+        a_hist.push_back(a_max);
+        const float rgb_now = (rmean + gmean + bmean) * 0.3333f;
+        const bool rgb_dev = (rgb_med > 0.f) && (std::fabs(rgb_now - rgb_med) > 0.35f * rgb_med + 0.05f);
+        const bool a_dev = (a_med_candidate > 0.f) && (std::fabs(a_max - a_med_candidate) > 0.35f * a_med_candidate + 0.05f);
+        if ((s->frame_idx % 300) == 0 || s->frame_idx == 10 || s->frame_idx == 60 ||
+            s->frame_idx == 300 || s->frame_idx == 900 || s->frame_idx == 1800 || rgb_dev || a_dev)
+            ngx_log("S7 flash tick %u: rgbmean=%.4f med=%.4f%s a_max=%.4f a_med=%.4f%s [S7]",
+                    s->frame_idx, rgb_now, rgb_med, rgb_dev ? " RGB-DEVIANT" : "",
+                    a_max, a_med_candidate, a_dev ? " ALPHA-DEVIANT" : "");
+    }
     // S4 (next link of the SR-quality hunt): the frame-2 snapshot above caught the MV plane at
     // the menu (86.9% non-finite channel words; Depth clean).  Sample LATER frames - 10 and 60,
     // well into gameplay - so "sentinel only in menu frames" vs "sentinel in gameplay too" is
@@ -916,18 +960,56 @@ static NVSDK_NGX_Result record_bridge(VkCommandBuffer cmd, FeatureState* s, cons
         char fn[64];
         std::snprintf(fn, sizeof fn, "dlss5-amd-dump_mv_f%u.bin", s->frame_idx);
         if (FILE* fm = std::fopen(fn, "wb")) { std::fwrite(mv, 4, nfl, fm); std::fclose(fm); }
+        // S7 (2026-11-01): the S6 frames answered "no motion" (99.9% exact zeros during pans).
+        // ORDERING-vs-NEVER discriminator: diff the plane against the PREVIOUS dumped frame's
+        // bytes in RAM (no extra IO).  changed>0 at consecutive sampled frames = the plane DOES
+        // get new content between evals but arrives stale/just-in-time (ordering, B: fix by
+        // coping one frame late); changed==0 across minutes = the game never writes THIS plane
+        // in DLSS mode (C: the MVs go somewhere SL does not hand us - game-side).
+        static std::vector<unsigned char> prev_mv;   // raw bytes of the last dumped frame
+        size_t changedpx = 0;
+        if (prev_mv.size() == nfl * 4) {
+            const unsigned char* now = static_cast<const unsigned char*>(c->in_mv());
+            for (size_t pxi = 0; pxi < c->width() * c->height(); ++pxi) {
+                unsigned anth = 0;
+                for (size_t b = 0; b < 8; ++b) anth |= unsigned(prev_mv[pxi * 8 + b] ^ now[pxi * 8 + b]);
+                if (anth) ++changedpx;
+            }
+        }
+        prev_mv.assign(static_cast<const unsigned char*>(c->in_mv()),
+                       static_cast<const unsigned char*>(c->in_mv()) + nfl * 4);
         if (s->frame_idx == 300 || s->frame_idx == 900 || s->frame_idx == 1800)
-            ngx_log("S6 mv frame %u: maxAbs=%.6g |v|>0.02: %zu/%zu (%.3f%%) finite %.1f%% -> %s [S6]",
+            ngx_log("S6 mv frame %u: maxAbs=%.6g |v|>0.02: %zu/%zu (%.3f%%) finite %.1f%% "
+                    "delta: %zu px changed vs prev dump -> %s [S6]",
                     s->frame_idx, max_abs, big, nfl, 100.0 * (double)big / (double)nfl,
-                    100.0 * (double)fin / (double)nfl, fn);
+                    100.0 * (double)fin / (double)nfl, changedpx, fn);
         else
             ngx_log("S4 mv frame %u: %zu/%zu channel words finite (%.1f%%) -> %s [S4]",
                     s->frame_idx, fin, nfl, 100.0 * (double)fin / (double)nfl, fn);
     }
-    // Per-frame verdict: the slices recorded while recording frame N are readable from frame N+1.
-    // Frame 0 reading full and later frames not would mean the image, not the copy, is the problem.
-    if (dump_probe_on() && s->frame_idx >= 2 && s->frame_idx <= 6) {
-        report_diag_slices(out, s->frame_idx - 2);
+    // S7 ticker (2026-11-01): stats-only sample every ~600 frames - no disk IO, one pass.
+    // maxAbs + nonzero fraction + delta-vs-last-sample in the log line itself; decides
+    // "plane ever changes in gameplay" at high frequency without waiting for the 300/900/1800
+    // instants. Statics: last sample bytes for delta, frame of the last sample.
+    if (s->frame_idx >= 2000 && (s->frame_idx % 600) == 0 && dump_probe_on()) {
+        const size_t nfl = size_t(c->width()) * c->height() * 2;
+        const float* mv = static_cast<const float*>(c->in_mv());
+        float max_abs = 0.0f;
+        size_t nz = 0;
+        for (size_t i = 0; i < nfl; ++i) {
+            const float a = std::fabs(mv[i]);
+            if (a > max_abs) max_abs = a;
+            nz += (mv[i] != 0.0f) ? 1u : 0u;
+        }
+        static std::vector<float> prev_s7;
+        size_t dp = 0;
+        if (prev_s7.size() == nfl) {
+            for (size_t p = 0; p < c->width() * c->height(); ++p)
+                if (prev_s7[p * 2] != mv[p * 2] || prev_s7[p * 2 + 1] != mv[p * 2 + 1]) ++dp;
+        }
+        prev_s7.assign(mv, mv + nfl);
+        ngx_log("S7 mv tick %u: maxAbs=%.6g nonzero %zu/%zu (%.3f%%) delta %zu px [S7]",
+                s->frame_idx, max_abs, nz, nfl, 100.0 * (double)nz / (double)nfl, dp);
     }
     // One-time geometry of what the caller actually handed over: a quarter-wide input image would
     // show up here as 480x1080 while the frame line below still says 1920x1080 (that line is the
