@@ -526,7 +526,13 @@ ffxDispatch(ffxContext* context, const ffxDispatchDescHeader* desc) {
     // --- record --------------------------------------------------------------------------
     BridgeImage_ ins[3] = {bi_color, bi_mv, bi_dep};
     const NVSDK_NGX_Result rr = ngxd_record_bridge(vkcmd, &c->fs, fp, ins, d->depth.resource ? 3 : 2, &bi_out);
-    ++c->fs.frame_idx;
+    // NO frame_idx bump here: record_bridge already owns the counter (nvngx.cpp:818, incremented
+    // before its own log line).  This surface used to increment a SECOND time, so the counter
+    // advanced +2 per dispatch and sat on ODD values inside record_bridge - every even-keyed
+    // diagnostic condition (frame_idx == 2 frame-2 dump, == 10/60/300/900/1800 MV snapshots,
+    // the S7 flash tick's log gate) silently never fired on the FFX surface while the flash
+    // block's >= 3 guard still ran its full-image read EVERY frame: 47 s/frame in-game,
+    // zero log lines, "unplayable framerate" (measured 2026-11-01, bin64 session).
     if (!ngx_ok(rr)) {
         ffx_log("dispatch: record refused (0x%x)", unsigned(rr));
         return FFX_API_RETURN_ERROR_RUNTIME_ERROR;

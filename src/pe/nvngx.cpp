@@ -863,6 +863,14 @@ static NVSDK_NGX_Result record_bridge(VkCommandBuffer cmd, FeatureState* s, cons
     // Instrument: every ~300 frames (and each of the S6 dump frames), tag frames where out
     // min/max deviate wildly from its running median (RGB) OR where the ALPHA plane's max
     // diverges from its own running median - the log line is the evidence, no extra IO.
+    //
+    // COST, measured in-game 2026-11-01: a FULL read of the 4K output (33.2M halfwords of
+    // DEVICE_LOCAL|HOST_VISIBLE staging = uncached ReBAR, ~600 ns/load) took ~47 s PER FRAME -
+    // "recorded in 47097 ms" on every eval while the block's log gate stayed dead (the FFX
+    // surface double-counted frame_idx, so the counter was odd and never matched 10/60/300...).
+    // A fullscreen flash moves every pixel, so a spatial stride of ~4096 samples detects it
+    // exactly as well for ~16k loads (~10 ms); what sparse sampling can miss is a sub-screen
+    // highlight, which is not this hunt's target.
     if (dump_probe_on() && s->frame_idx >= 3) {
         const unsigned oW = c->out_width(), oH = c->out_height();
         const size_t npx = size_t(oW) * oH;
@@ -870,7 +878,9 @@ static NVSDK_NGX_Result record_bridge(VkCommandBuffer cmd, FeatureState* s, cons
         float rgb_med = 0.0f, a_max = 0.0f, a_med_candidate = 0.0f;   // a_med filled below from history
         (void)a_med_candidate;
         float rs = 0.f, gs = 0.f, bs = 0.f;
-        for (size_t i = 0; i < npx; ++i) {
+        const size_t stride = (npx > 4096) ? npx / 4096 : 1;
+        size_t ns = 0;
+        for (size_t i = 0; i < npx; i += stride, ++ns) {
             const float r = ngxd::dlss_half_to_float(h16[i * 4 + 0]);
             const float g = ngxd::dlss_half_to_float(h16[i * 4 + 1]);
             const float b = ngxd::dlss_half_to_float(h16[i * 4 + 2]);
@@ -878,7 +888,7 @@ static NVSDK_NGX_Result record_bridge(VkCommandBuffer cmd, FeatureState* s, cons
             rs += r; gs += g; bs += b;
             if (a > a_max) a_max = a;
         }
-        const float rmean = float(rs) / npx, gmean = float(gs) / npx, bmean = float(bs) / npx;
+        const float rmean = float(rs) / ns, gmean = float(gs) / ns, bmean = float(bs) / ns;
         static std::vector<float> rgb_hist, a_hist;     // running mean history, running alpha-max
         size_t rm = rgb_hist.size();
         if (rm >= 6) {
