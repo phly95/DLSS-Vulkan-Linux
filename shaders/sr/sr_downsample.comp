@@ -200,7 +200,19 @@ void main() {
 
     int src_x = clamp(int(ox * W / oW), 0, W - 1);
     int src_y = clamp(int(oy * H / oH), 0, H - 1);
+    // C1 (2026-11-01): the alpha is a nearest-neighbour copy of the low-res input's alpha and is
+    // stored unsanitized, so a NON-FINITE input alpha reaches the OUT plane verbatim; if the game
+    // composites out-alpha, such a frame reads as a full-screen flash.  src/pe/nvngx.cpp:859-865
+    // (read-only) calls this the "leading port-side suspect" and added the S7 instrumentation -
+    // there is still no S7 result row, so the CAUSATION stays unproven; what is provable is that
+    // the port must not emit non-finite alpha it never received as a value.
+    // Only non-finite values are rewritten, to the host's own "no alpha here" convention:
+    // docs/sr/HOST-RE.md:215 "Alpha is 1.0 for formats without one" (codes 4/6 already decode to
+    // alpha 1.0 there), the same rule sr_gather.comp:63-66 applies to motion vectors (san_mv:
+    // non-finite = no information).  Every FINITE alpha takes the other branch of this select
+    // unchanged, so the cell-A gate is byte-identical (docs/notes/k_sr_downsample.md, 2026-11-01).
     float alpha = float(g_col[src_y * W + src_x].a);
+    if (isnan(alpha) || isinf(alpha)) alpha = 1.0;
 
 #if OUT_F16
     out_color[oy * oW + ox] =

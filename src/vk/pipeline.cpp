@@ -1914,6 +1914,24 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             std::memcpy(push + 144, &jy, 4);                                 // +0x90 F20y
             std::memcpy(push + 148, &jpx, 4);                                // +0x94 F28x (the previous frame's)
             std::memcpy(push + 152, &jpy, 4);                                // +0x98 F28y
+            // +0x9c..+0xa8 and +0xb4/+0xb8: the level-15 ratios. srref fills them from the geometry
+            // (.f2(0x9c, fW/f15w, fH/f15h).put(0xa4, f15w/fW, f15h/fH) ... .f2(0xb4, F34x/mrx,
+            // F34y/mry)); the port used to leave them 0 and bake their fixture values (3.0, 1/3)
+            // into sr_enc0 / sr_enc0L_in, which is only right when W15/W == 3 - render 1920x1080
+            // -> 3840x2160, and never at 1.5x or 3.0x, nor with mvhi (output-sized MVs -> W15/oW).
+            // That is the frame-1 temporal collapse the S8 matrix measured at 1.5x/3.0x and on the
+            // frozen mvhi cells: every history position and MV store scaled 1.33x / 0.67x too far.
+            // F34x/F34y stay out of it: S6 already folded the app's MV.Scale into the gather decode,
+            // so what is pushed here is 1/mrx (the geometric factor only), exactly what the oracle's
+            // net effect is once its own g_mv has been scaled by F34x at the same point.
+            const float fWf = float(W), fHf = float(H), f15wf = float(W15), f15hf = float(H15);
+            const float inv15x = fWf / f15wf, inv15y = fHf / f15hf;
+            const float r15x = f15wf / fWf, r15y = f15hf / fHf;
+            const float mv15x = mvhi ? f15wf / float(oW) : r15x;
+            const float mv15y = mvhi ? f15hf / float(oH) : r15y;
+            std::memcpy(push + 156, &inv15x, 4); std::memcpy(push + 160, &inv15y, 4);
+            std::memcpy(push + 164, &r15x, 4);   std::memcpy(push + 168, &r15y, 4);
+            std::memcpy(push + 180, &mv15x, 4);  std::memcpy(push + 184, &mv15y, 4);
             // +0xbc mvoff: srref's mv_offset_kernel is 0 for unjittered MVs (as on both
             // dumped frames); the push is zero-filled, stated here for the args-parity reader.
             const float mvoff0 = 0.0f;

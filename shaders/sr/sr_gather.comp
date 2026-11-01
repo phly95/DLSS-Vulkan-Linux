@@ -11,8 +11,11 @@
 //
 // PERF (2026-10-28, optimisation phase): the three inputs are bound as byte arrays and were read
 // with one `buffer_load_ubyte` per byte - 19 memory instructions per pixel for data that is
-// dword-aligned by construction (the host pushes pitch_col = W*8, pitch_mv = pitch_dep = W*4 and
-// every format multiplies x by 4, 8 or 16). The buffers are now declared as `uint` arrays and the
+// dword-aligned by construction (the host pushes pitch_col = W * sr_col_bpp(fmt_col) per format,
+// src/vk/pipeline.cpp:1851-1856, since 46f2054 - the old fixed W*8 was right only for fmt_col 0 and
+// is what made every non-default colour cell read the wrong rows; pitch_mv = W*4 (fmt_mv 0) or W*8,
+// pitch_dep = W*4 - and every format multiplies x by 4, 8 or 16). The buffers are now declared as
+// `uint` arrays and the
 // whole 32-bit word is loaded once, then unpacked with shifts: 3 loads + 3 stores per pixel.
 // Nothing about the decoded values changes - the byte order is the same little-endian word.
 
