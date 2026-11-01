@@ -490,8 +490,21 @@ static bool read_frame_params(NVSDK_NGX_Parameter* p, const FeatureState* s, ngx
     if (ngx_ok(p->vtbl->GetFloat(p, "DLSS.Pre.Exposure", &f))) fp.pre_exposure = f;
     f = 1.0f;
     if (ngx_ok(p->vtbl->GetFloat(p, "DLSS.Exposure.Scale", &f))) fp.exposure = f;
+    // S5 (master-2 Q3#2, 2026-10-31 evening): the CANONICAL keys are MV.Scale.X / MV.Scale.Y - the
+    // harness writes exactly those (opti_client.cpp:1048-1056, from the fixture's mv_scale pair) and
+    // sl.dlss.dll carries the strings while the GAME exe has none (SL is the writer).  The line
+    // below historically read a key nobody ever sets, which is why every d5 diag prints the primed
+    // 1.0000 - plumbing bug proven by master-2, impact pending the actual value.  Read X (canonical),
+    // then Y, then the legacy spelling; still OBSERVE-ONLY (consumption lands only if SL writes !=1).
+    float mv_scale_y = 1.0f, sharp = 0.0f;
+    int sharp_set = 0;
     f = 1.0f;
-    if (ngx_ok(p->vtbl->GetFloat(p, "MV.Scale", &f))) fp.mv_scale = f;
+    if (ngx_ok(p->vtbl->GetFloat(p, "MV.Scale.X", &f)) ||
+        ngx_ok(p->vtbl->GetFloat(p, "MV.Scale.Y", &f)) ||
+        ngx_ok(p->vtbl->GetFloat(p, "MV.Scale", &f)))
+        fp.mv_scale = f;
+    if (ngx_ok(p->vtbl->GetFloat(p, "MV.Scale.Y", &mv_scale_y))) { /* kept for the diag */ }
+    if (ngx_ok(p->vtbl->GetFloat(p, "Sharpness", &sharp))) sharp_set = 1;
     // D5 (H2/H3 triage, 2026-10-31, 1 Hz): jitter pair + MV.Scale + reset/exposure on the record.
     // H2 asks whether the app ever delivers jitter (SL's "cameraPinholeOffset invalid" would leave
     // jx/jy at 0 forever); H3 asks what MV.Scale actually is (read-but-unconsumed, see pipeline.h).
@@ -499,8 +512,10 @@ static bool read_frame_params(NVSDK_NGX_Parameter* p, const FeatureState* s, ngx
     const unsigned long long d5_now = ngx_ms();
     if (d5_now - d5_last_ms >= 1000u) {
         d5_last_ms = d5_now;
-        ngx_log("d5 diag: jx=%.6f jy=%.6f prev=(%.6f,%.6f) mv_scale=%.4f reset=%d pre_exp=%.4f [diag-d5]",
-                fp.jx, fp.jy, fp.jpx, fp.jpy, fp.mv_scale, fp.reset, fp.pre_exposure);
+        ngx_log("d5 diag: jx=%.6f jy=%.6f prev=(%.6f,%.6f) mv_scale=%.4f mvY=%.4f sharp=%.3f(+%d) "
+                "reset=%d pre_exp=%.4f [diag-d5]",
+                fp.jx, fp.jy, fp.jpx, fp.jpy, fp.mv_scale, mv_scale_y, sharp, sharp_set,
+                fp.reset, fp.pre_exposure);
     }
     // The chain works on whole frames.  A subrect that is not the whole render target would need the
     // gather to read a window of the image, which the port does not have; refuse instead of guessing.
