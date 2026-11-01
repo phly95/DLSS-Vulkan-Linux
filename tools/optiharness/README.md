@@ -29,8 +29,9 @@ headlessly and gate on its exact bootstrap lines (see "Streamline boot").
         # gather decode consumes the scale, so this cell must stay photo-identical to the
         # default pixel cell at f16 precision.
 
-Exit code 0 only when every gate passes; each run prints a `HARNESS SUMMARY` (script gates g1–g4,
-plus g5 under `--sl`) and the exe writes its own `HARNESS SUMMARY` block plus `out/summary.txt`
+Exit code 0 only when every gate passes; each run prints a `HARNESS SUMMARY` (script gates g1–g4 -
+g3 carrying its `g3b` CONTENT sub-gate, see "g3 content" below - plus g5 under `--sl`) and the exe
+writes its own `HARNESS SUMMARY` block plus `out/summary.txt`
 and `out/eval_ms.csv`.
 
 ## What each number brackets (and why no line mimics the runner's)
@@ -73,6 +74,108 @@ plus OptiScaler may early-return its first evaluate for change-backend bookkeepi
   healthy evaluate sits at `nz ≈ 1.00` (measured: 1.000000 on all frames); 0.10 is a conservative
   floor that still catches "never written".  Under `--expect-fail` the inequality inverts
   (`nz < 0.10` on every frame = output never written, measured: exactly 0.000000).
+  **What nz does NOT prove** (and did not before 2026-11-01): a *frozen* replay of one frame and a
+  *scrambled* frame both sit at `nz = 1.000000` - so `nz` alone is blind to both. That hole is
+  closed by g3's content sub-gate, g3b, next.
+- **g3b content** (the g3 CONTENT sub-gate, `tools/optiharness/content_gate.py`, invoked by
+  `run_harness.sh` on the very same `out_<i>.f32` read-backs - no oracle, no reference frame, no
+  change to anything frozen).  Two statistics per consecutive pair over frames 1..N-1, RGB only
+  (alpha is a constant 1):
+
+      mean_i = mean |out_i - out_{i-1}|                    average per-frame change
+      frac_i = fraction of RGB samples with |Δ| > 0.05     how much of the frame moved
+
+  **Calibration - measured 2026-11-01 with this very script** (`bash tools/optiharness/run_harness.sh`,
+  1920x1080 → 3840x2160, 12 frames, `--report` mode of `content_gate.py`, on
+  `build/optiharness/out`; two fixtures built FROM those frames):
+
+  | population | mean_i min | mean_i max | frac_i min | frac_i max | verdict |
+  |---|---|---|---|---|---|
+  | healthy (the real run, 11 pairs) | 0.00779327 | 0.15699814 | 0.03951296 | 0.33365218 | **PASS** |
+  | frozen (`out_1..11` = symlinks to `out_0`, same frame replayed 12×) | 0.00000000 | 0.00000000 | 0.000000 | 0.000000 | **FAIL** — trips both floors |
+  | scrambled-A (each frame's own RGB samples independently permuted, `default_rng(20261101)`) | 0.19201234 | 0.19498892 | 0.73412584 | 0.74969425 | **FAIL** — `frac` ceiling only |
+  | scrambled-B (every RGB sample drawn IID from the **pooled** 12-frame distribution) | 0.21419674 | 0.21428631 | 0.82184992 | 0.82211018 | **FAIL** — `frac` ceiling only |
+
+  Fixture recipes (re-runnable from the run dir above): *frozen* is twelve `ln -s out_0.f32`;
+  *scrambled-A* permutes each frame's RGB rows along the sample axis with a seeded
+  `np.random.default_rng(20261101)` (alpha copied untouched, so the frame's own value distribution
+  — hence `nz = 1.0` — is preserved exactly and only the sample **order** is destroyed);
+  *scrambled-B* indexes every RGB sample from the concatenation of all 12 frames' RGB.  Both
+  scrambles are independent draws from the content's own value distribution, which is the
+  definition the ceiling was reasoned from.
+
+  The healthy distribution is bimodal by construction: the checker inverts every other frame
+  (`opti_client.cpp:364`, `frame >> 1`), so the pairs alternate ~0.147–0.157 (inversion frames) and
+  ~0.008–0.015 (pan-only frames: the 6 px colour pan + 2 px MV pan, `opti_client.cpp:362/374`).
+  Reproduced on a second run dir — `build/optiharness/sl-baseline_out` (2026-10-31 `--sl` run)
+  holds **byte-identical** frames (`md5` of `out_0`/`out_5` equal in both dirs; the port's output
+  is deterministic on this input) and prints the same eleven pairs.
+
+  **Bars** (constants `content_gate.py:68-70`, each with its measured margin):
+
+  | rule | bar | healthy margin | catches |
+  |---|---|---|---|
+  | (a) NOT-FROZEN | `min mean_i > 0.001` | 7.8× (0.0078) | stuck/replayed frame (measured 0.000000) |
+  | (a) NOT-FROZEN | `min frac_i > 0.01` | 4.0× (0.0395) | same, second witness |
+  | (b) NOT-SCRAMBLED | `max mean_i < 0.40` | 2.5× (0.157) | violent frame-to-frame jumps |
+  | (b) NOT-SCRAMBLED | `max frac_i < 0.55` | 1.65× (0.334) | scrambled frames (0.734 / 0.822 sit ABOVE it) |
+
+  **Why two statistics**: neither mean ceiling catches either scramble — 0.195 and 0.214 both sit
+  under 0.40 — while `frac` separates the healthy 0.334 from the weaker scramble's 0.734 by 2.2×.
+  The bar 0.55 sits between them: 1.65× over the healthy maximum, 1.34× under the weaker scramble
+  (midpoint of those two = 0.534, so the bar keeps one step of extra room on the healthy side).
+  Both fixtures FAIL the gate — frozen trips **both** floors, each scramble trips the `frac`
+  ceiling while its mean would still pass the mean ceiling, which is exactly why the `frac`
+  ceiling exists.  **No threshold was moved to fit this measurement**: `0.001 / 0.40 / 0.01 /
+  0.55` are exactly the bars every row above was scored against, and every margin still holds.
+
+  **Every mode exercised standalone on 2026-11-01** (rc in brackets): healthy [0] PASS; frozen
+  [1] FAIL `min mean 0 <= 0.001 (FROZEN …)`; scrambled-A/B [1] FAIL `max frac … >= 0.55
+  (SCRAMBLED …)`; `--expect-fail` on frozen [0] PASS (`inverted ok` — the refused run must be
+  frame-to-frame indistinguishable) and on the healthy run [1] FAIL (`max mean 0.156998 > 0.001`
+  — a healthy run must not pass `--expect-fail`); `--ceilings-only` on scrambled-A [1] FAIL
+  (floors dropped, the `frac` ceiling still catches it); `--frames 1` [0] `CONTENT_GATE SKIP
+  reason=needs>=2-frames`; missing dir [2] `CONTENT_GATE ERROR reason=missing:…/out_0.f32` —
+  exit 2 is what `run_harness.sh` maps to `g3b FAIL` (fail closed).
+
+  **Semantics kept intact**: the existing `nz >= 0.10` rule and its `--expect-fail` inversion are
+  untouched; g3b applies the *same* inversion (the refused run's output is all-zero and identical
+  every frame ⇒ it passes only when `max mean_i <= 0.001` **and** `max frac_i <= 0.01`; a healthy
+  run's numbers under `--expect-fail` FAIL it, measured). `--corpus` runs pass `--ceilings-only`
+  (the NOT-FROZEN floors drop - frame-to-frame motion belongs to the corpus files, not to the
+  harness's synthetic pan - the scramble ceilings stay). `--frames 1` prints
+  `CONTENT_GATE SKIP reason=needs>=2-frames` (no temporal claim to gate). Fail-closed: missing or
+  short frames, non-finite samples, or no numpy interpreter ⇒ `CONTENT_GATE ERROR` (exit 2) ⇒
+  `g3b FAIL`. Every run prints the whole verdict line as `g3b content` in the `HARNESS SUMMARY`,
+  and g3b joins `HARNESS RESULT` exactly like g1–g4.
+
+      build/venv/bin/python -I tools/optiharness/content_gate.py build/optiharness/out \
+          --frames 12 --report          # standalone / calibration view of an existing run
+
+  **End-to-end, g3b inside a real `run_harness.sh` pass** (2026-11-01 15:43, `bash
+  tools/optiharness/run_harness.sh --out build/optiharness/out_g3b`, post-`80aa2f7` shaders):
+
+      g3 non-black  : PASS   threshold 'every frame nz >= 0.10', viol=0/12, min nz=1.000000
+      g3b content   : PASS   CONTENT_GATE PASS n=11 mean_min=0.00778715 mean_max=0.15700708
+                             frac_min=0.03947752 frac_max=0.33365138 …
+      HARNESS RESULT: PASS  (opti_client rc=0, exe summary RESULT=PASS)
+
+  That is a **second, independent healthy sample** of the calibration above (its frames were
+  produced by the post-`80aa2f7` shader build, the calibration dir's by the pre-fix one): every
+  statistic lands within 1e-5 … 1e-3 of the calibration values and the margins are unchanged
+  (mean_min 7.8× over the floor, frac_max 1.65× under the ceiling). The FAIL side of the wiring was
+  exercised on the two runs before it: g3b printed
+  `CONTENT_GATE ERROR … reason=missing:…/out_0.f32`, `g3b content : FAIL` appeared in the summary
+  and `HARNESS RESULT: FAIL` followed — exit 2 from `content_gate.py` maps to `g3b FAIL` exactly as
+  documented (fail closed).
+
+  **`--out` is now absolutized** (the `mkdir` block in `run_harness.sh`): `winpath()` is a pure text
+  transform (`Z:` + backslashes), so a *relative* `--out` reached the PE as the drive-relative
+  `Z:build\…`, the exe opened nothing and exited `rc=1` after eval #1 with `out_*.f32`,
+  `client.log`, `eval_ms.csv` **and** `summary.txt` all absent while the port log (written into the
+  CWD by the dll) still looked healthy — so g3 read `OUT_NZ frames 0/12` and every gate went red on
+  a run that never actually failed. Measured 2026-11-01; relative paths now resolve against the repo
+  root the script already `cd`s to.
 - **g4 timing**: `EVAL_MS` n and median > 0 over frames 1.. plus a table with `GPU_EVAL_MS`
   median/p95; `n/a` lines are reported as a *degradation*, not a failure (per the contract above).
 - **g5 SL boot** (`--sl` only, never folded into g1–g4): five independent subchecks, each printed
@@ -86,8 +189,8 @@ plus OptiScaler may early-return its first evaluate for change-backend bookkeepi
      detected version must be >= the required one, `sort -V`),
   4. no `Missing NGX context`,
   5. `Loaded plugin 'sl.dlss'` present.
-  g5 joins the exit verdict ONLY under `--sl`; without `--sl` the run is byte-for-byte the old
-  four-gate run.
+  g5 joins the exit verdict ONLY under `--sl`; without `--sl` the run is exactly the four-gate run
+  (g1–g4, g3 carrying its g3b content sub-gate since 2026-11-01).
 
 The exe adds its own four gates (`GATE eval / nonblack / timing / port`, `RESULT=` in
 `summary.txt`), inverted wholesale by `--expect-fail`, and its exit code feeds `HARNESS RESULT`.
@@ -210,7 +313,8 @@ reads.  The two FAILING checks are the decisive doom lines anyway (`Failed to in
 | `opti_client.cpp` | the exe: host sequence `Init → AllocateParameters → CreateFeature → per-frame EvaluateFeature` (the NVSDK export surface verified by `objdump -p` on the shipped dxgi.dll: 53+ NVSDK entries), synthetic/corpus inputs, timing pairs, read-back + black detector, the `--sl` Streamline boot + `SLDLSS` probes, the `--sl-rr` RR request + `SL-RR-ENABLE` marker (see the dated `--sl-rr` section) |
 | `OptiScaler.harness.ini` | the harness-local ini template (each key and every deliberately-unset key documented inline) |
 | `build.sh` | cross-compile to `build/optiharness/opti_client.exe`, FMT16=1 (Output RGBA16F = `DLSS5_AMD_OUT_F16=1` of the package), mirrors `tools/verify/ngx_client/build.sh` incl. the podman fallback; runs `sl_abi_check.cpp` on host g++ first |
-| `run_harness.sh` | staging (port DLL copy, OptiScaler + `nvngx_dlss.dll` + `nvngx_dlssd.dll` + 11 sl.* + shaders as symlinks, ini = `--ini` file or the template), prefix-busy detection + clone, Proton 10.0-pinned probe, env incl. `SL_NVAPI_VER`, run, gates g1-g5.  Since 2026-10-31 (N5) also N5's upscaler companions: the 9 of OptiScaler's 10 probed companion dlls that exist in the game's `bin64`, the absent one skipped with a note (see the dated N5 section).  Since 2026-10-31 also `--sl-rr`: the RR request passthrough plus g5's OPTIONAL sixth subcheck c6_rr_enable (see the dated `--sl-rr` section) |
+| `content_gate.py` | the **g3 CONTENT sub-gate (g3b)**: NOT-FROZEN / NOT-SCRAMBLED checks computed from the read-back `out_<i>.f32` frames (mean change + changed-fraction, calibrated bars and rationale in the "g3 content" section above); invoked by `run_harness.sh` right after g3, `--expect-fail` inverts it, `--corpus` drops the floors, exit 2 = fail closed |
+| `run_harness.sh` | staging (port DLL copy, OptiScaler + `nvngx_dlss.dll` + `nvngx_dlssd.dll` + 11 sl.* + shaders as symlinks, ini = `--ini` file or the template), prefix-busy detection + clone, Proton 10.0-pinned probe, env incl. `SL_NVAPI_VER`, run, gates g1-g5 + the g3b content sub-gate.  Since 2026-10-31 (N5) also N5's upscaler companions: the 9 of OptiScaler's 10 probed companion dlls that exist in the game's `bin64`, the absent one skipped with a note (see the dated N5 section).  Since 2026-10-31 also `--sl-rr`: the RR request passthrough plus g5's OPTIONAL sixth subcheck c6_rr_enable (see the dated `--sl-rr` section) |
 | `sl-include/` | the nine NVIDIA Streamline v2.14.1 headers, verbatim from tag v2.14.1 (`VENDORED.txt` = url/commit/date/licence) |
 | `sl_abi_check.cpp` | hand-derived layout assertions, host-compiled by build.sh before every cross-build |
 

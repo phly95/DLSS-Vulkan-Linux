@@ -186,6 +186,12 @@ ln -s "$SHDIR" "$STAGE/dlss5-amd/shaders"
 cp "$INI" "$STAGE/OptiScaler.ini"     # $INI = --ini <path>, or the harness template when absent
 cp "$EXE" "$STAGE/opti_client.exe"
 mkdir -p "$OUTD"
+# ABSOLUTIZE before anything uses it: winpath() below is a pure text transform ("Z:" + backslashed
+# path), so a relative --out reached the PE as the DRIVE-RELATIVE "Z:build\..." and the exe opened
+# nothing - measured 2026-11-01: rc=1 after eval #1 with out_*.f32, client.log, eval_ms.csv and
+# summary.txt ALL absent while the port log (written to the CWD by the dll) looked healthy, so every
+# gate read "0 frames".  Relative --out now resolves against the repo root the script already cd'd to.
+OUTD=$(cd -- "$OUTD" && pwd -P) || die "--out: cannot resolve output dir"
 rm -f "$OUTD"/out_*.f32 "$OUTD/eval_ms.csv" "$OUTD/summary.txt" "$OUTD/client.log" "$OUTD/run.stdout.log"
 echo "  staged $STAGE (nvngx=$(basename "$NVNGX"), ini=$INI, shaders=$SHDIR, mode=$MODE, frames=$FRAMES)"
 
@@ -400,6 +406,37 @@ else
     g3=FAIL; g3note="OUT_NZ frames $n_out/$FRAMES"
 fi
 
+# --- g3b: the CONTENT sub-gate of g3 (NOT-FROZEN / NOT-SCRAMBLED) ---------------------------------
+# nz >= 0.10 proves only that something non-black was written: a frozen replay or a scrambled frame
+# both satisfy it.  The synthetic input pans EVERY frame (opti_client.cpp:362 the colour gradient
+# pans 6*frame px, :374 the MotionVectors pan +2 px / +0.25 px), so consecutive out_<i>.f32 read-
+# backs must (a) differ by more than a measured epsilon - a stuck/replayed frame does not - and (b)
+# differ by LESS than a generous upper bound - a scrambled frame jumps the content's full dynamic
+# range every frame.  Calibrated bars + rationale + measured distributions: README "g3 content"
+# (thresholds live in tools/optiharness/content_gate.py:68-70).  Same inversion semantics as g3:
+# --expect-fail requires an all-zero, identical-every-frame output; --corpus runs drop the floors
+# (their frame-to-frame motion belongs to the corpus files) but keep the scramble ceilings.
+g3b=PASS; g3bnote=""
+CG=$TOOL/content_gate.py
+CGPY="$ROOT/build/venv/bin/python"          # the repo's numpy interpreter (README "g3 content")
+[[ -x "$CGPY" ]] || CGPY=$(command -v python3 || true)
+if [[ ! -f "$CG" || -z "$CGPY" ]]; then
+    g3b=FAIL; g3bnote="content gate not runnable (script=$CG interpreter=${CGPY:-none})"
+else
+    CGARGS=(--frames "$FRAMES")
+    [[ $EXPECT -eq 1 ]] && CGARGS+=(--expect-fail)
+    [[ " ${EXTRA[*]-} " == *" --corpus "* ]] && CGARGS+=(--ceilings-only)
+    CGOUT=$("$CGPY" -I "$CG" "$OUTD" "${CGARGS[@]}" 2>&1)
+    CGRC=$?
+    CGLINE=$(printf '%s\n' "$CGOUT" | grep -m1 '^CONTENT_GATE ' || true)
+    if [[ -z "$CGLINE" ]]; then
+        CGLINE="CONTENT_GATE ERROR (no verdict line): $(printf '%s' "$CGOUT" | tail -1)"
+        CGRC=2
+    fi
+    [[ $CGRC -eq 0 ]] || g3b=FAIL        # 1 = FAIL, 2 = could not evaluate -> fail closed
+    g3bnote=$CGLINE
+fi
+
 # --- g4: timings, frames 1..N (frame 0 excluded, the repo convention) ---
 stats_sorted() {  # stdin: numbers already ascending; prints "n median p95"
     awk '{ a[NR-1] = $1 } END {
@@ -513,6 +550,7 @@ echo "  mode=$MODE expect_fail=$EXPECT sl=$SLMODE frames=$FRAMES nvngx=$(basenam
 echo "  g1 OptiScaler : $g1   $g1note"
 echo "  g2 port log   : $g2   $g2note"
 echo "  g3 non-black  : $g3   $g3note"
+echo "  g3b content   : $g3b  $g3bnote"
 echo "  g4 timing     : $g4   $g4note"
 [[ $SLMODE -eq 1 ]] && { echo "  g5 SL boot    : $g5   $g5note"; echo "                   $g5detail"; }
 if [[ -f "$OUTD/summary.txt" ]]; then
@@ -520,7 +558,7 @@ if [[ -f "$OUTD/summary.txt" ]]; then
     sed 's/^/  /' "$OUTD/summary.txt"
 fi
 ALL=PASS
-for x in "$g1" "$g2" "$g3" "$g4"; do [[ $x == PASS ]] || ALL=FAIL; done
+for x in "$g1" "$g2" "$g3" "$g3b" "$g4"; do [[ $x == PASS ]] || ALL=FAIL; done
 [[ $RC -eq 0 ]] || ALL=FAIL
 TAIL="opti_client rc=$RC, exe summary RESULT=${EXE_RESULT:-n/a}"
 # g5 joins the verdict only when the caller asked for the Streamline boot (--sl): the baseline
