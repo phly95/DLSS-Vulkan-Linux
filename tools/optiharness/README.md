@@ -23,6 +23,11 @@ headlessly and gate on its exact bootstrap lines (see "Streamline boot").
                                                                            # driver version, g5 data)
     bash tools/optiharness/run_harness.sh --corpus DIR [--frames N]        # V9 file corpus inputs
     bash tools/optiharness/run_harness.sh --mv-fmt rg16 --dep-fmt r32f     # proven-format bisect
+    bash tools/optiharness/run_harness.sh --mv-units uv                    # S6 (2026-10-31):
+        # MV.Scale.X/.Y = (planeW, -planeH) with UV-normalized MV content -- what Crimson
+        # Desert's SL actually writes in-game (measured pair (1280, -720) at 22:32); the port's
+        # gather decode consumes the scale, so this cell must stay photo-identical to the
+        # default pixel cell at f16 precision.
 
 Exit code 0 only when every gate passes; each run prints a `HARNESS SUMMARY` (script gates g1–g4,
 plus g5 under `--sl`) and the exe writes its own `HARNESS SUMMARY` block plus `out/summary.txt`

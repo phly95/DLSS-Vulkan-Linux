@@ -36,7 +36,9 @@ layout(push_constant) uniform GatherArgs {
     layout(offset = 72) int W;
     int H;
     int mvhi;
-    int pad;
+    layout(offset = 84) float mv_scale_x;   // S6: NGX MV.Scale.X/.Y, guarded host-side (1.0 default)
+    layout(offset = 88) float mv_scale_y;   // pixel-scale decodes: mv = san(raw) * scale
+    layout(offset = 92) uint pad;
 };
 
 uint b32(uint off) { return in_col[off >> 2]; }
@@ -50,9 +52,24 @@ uint b32_mv(uint off) { return in_mv[off >> 2]; }
 // exactly the user's verdict: blocky patches + shimmer + no AA (D1's corpus fixtures never
 // carried non-finites, so headless PSNR could not see this).  Non-finite = no motion, and the
 // clamp keeps an FLT_MAX-style sentinel from overflowing into inf on the f16 cast.
+// S6 (2026-10-31 night): the app's NGX MV.Scale.X/.Y now scales the decoded values so the chain
+// keeps its plane-pixel convention no matter what units the app delivers (in-game Crimson Desert
+// via SL: UV-normalized - measured MV.Scale = (1280.0, -720.0) = (plane width, -plane height),
+// raw gameplay MVs max|v| 8.25e-5 == 0.1 px un-scaled).  pixel_out = san(raw) * scale, then
+// re-clamped to +-65504 BEFORE the f16 cast: scale can legitimately exceed 1 (1280), so
+// scale * 65504 would overflow the f16 without it.  When scale == (1.0, 1.0) - the harness
+// corpus, the pixel-unit apps - multiplying an already-san_mv()-clamped value by exactly 1.0
+// and re-clamping returns the identical value, so the decode is bit-identical to S4's.
 float san_mv(float v) {
     if (isnan(v) || isinf(v)) return 0.0;
     return clamp(v, -65504.0, 65504.0);
+}
+f16vec2 mv_pair(float raw_x, float raw_y) {
+    float mx = san_mv(raw_x) * mv_scale_x;
+    float my = san_mv(raw_y) * mv_scale_y;
+    mx = clamp(mx, -65504.0, 65504.0);
+    my = clamp(my, -65504.0, 65504.0);
+    return f16vec2(float16_t(mx), float16_t(my));
 }
 uint16_t b16_mv(uint off) { return uint16_t((in_mv[off >> 2] >> ((off & 2u) * 8u)) & 0xffffu); }
 
@@ -122,16 +139,13 @@ void main() {
     if (mvhi == 0) {
         if (fmt_mv == 0) {
             uint off = y * pitch_mv + x * 4;
-            g_mv[out_idx] = f16vec2(float16_t(san_mv(uint16BitsToFloat16(b16_mv(off)))),
-                                    float16_t(san_mv(uint16BitsToFloat16(b16_mv(off + 2)))));
+            g_mv[out_idx] = mv_pair(uint16BitsToFloat16(b16_mv(off)), uint16BitsToFloat16(b16_mv(off + 2)));
         } else if (fmt_mv == 1) {
             uint off = (y * pitch_mv + x * 8) >> 2;
-            g_mv[out_idx] = f16vec2(float16_t(san_mv(uintBitsToFloat(in_mv[off]))),
-                                    float16_t(san_mv(uintBitsToFloat(in_mv[off + 1]))));
+            g_mv[out_idx] = mv_pair(uintBitsToFloat(in_mv[off]), uintBitsToFloat(in_mv[off + 1]));
         } else {
             uint off = y * pitch_mv + x * 8;
-            g_mv[out_idx] = f16vec2(float16_t(san_mv(uint16BitsToFloat16(b16_mv(off)))),
-                                    float16_t(san_mv(uint16BitsToFloat16(b16_mv(off + 2)))));
+            g_mv[out_idx] = mv_pair(uint16BitsToFloat16(b16_mv(off)), uint16BitsToFloat16(b16_mv(off + 2)));
         }
     }
 

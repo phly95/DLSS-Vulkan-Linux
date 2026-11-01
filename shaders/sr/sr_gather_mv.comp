@@ -14,6 +14,9 @@ layout(set = 0, binding = 1) writeonly buffer OutMv { f16vec2 g_mvhi[]; };
 layout(push_constant) uniform GatherMvArgs {
     layout(offset = 8) uint pitch_mv;
     int fmt_mv;
+    layout(offset = 16) float mv_scale_x;   // S6: NGX MV.Scale.X/.Y, same scaling contract as
+    layout(offset = 20) float mv_scale_y;   // sr_gather.comp's mv_pair - the g_mvhi consumers see
+                                            // plane pixels too (SL's UV-normalized in-game pair).
     layout(offset = 24) int ow;
     int oh;
 };
@@ -34,9 +37,18 @@ uint16_t read_u16_mv(uint off) {
 
 // S4 tick: identical to sr_gather.comp's guard - the game's non-finite MV sentinel (measured
 // 86.9% inf in the in-game dump) must not run through g_mvhi into history math either.
+// S6 tick: plus the app's MV.Scale pair, exactly sr_gather.comp's mv_pair - san(raw) * scale,
+// re-clamped before the f16 cast; scale (1,1) is bit-identical to the S4 decode.
 float san_mv(float v) {
     if (isnan(v) || isinf(v)) return 0.0;
     return clamp(v, -65504.0, 65504.0);
+}
+f16vec2 mv_pair(float rx, float ry) {
+    float mx = san_mv(rx) * mv_scale_x;
+    float my = san_mv(ry) * mv_scale_y;
+    mx = clamp(mx, -65504.0, 65504.0);
+    my = clamp(my, -65504.0, 65504.0);
+    return f16vec2(float16_t(mx), float16_t(my));
 }
 
 void main() {
@@ -49,19 +61,16 @@ void main() {
         uint off = y * pitch_mv + x * 4;
         uint16_t mx = read_u16_mv(off);
         uint16_t my = read_u16_mv(off + 2);
-        g_mvhi[out_idx] = f16vec2(float16_t(san_mv(uint16BitsToFloat16(mx))),
-                                  float16_t(san_mv(uint16BitsToFloat16(my))));
+        g_mvhi[out_idx] = mv_pair(uint16BitsToFloat16(mx), uint16BitsToFloat16(my));
     } else if (fmt_mv == 1) {
         uint off = y * pitch_mv + x * 8;
         uint mx = read_u32_mv(off);
         uint my = read_u32_mv(off + 4);
-        g_mvhi[out_idx] = f16vec2(float16_t(san_mv(uintBitsToFloat(mx))),
-                                  float16_t(san_mv(uintBitsToFloat(my))));
+        g_mvhi[out_idx] = mv_pair(uintBitsToFloat(mx), uintBitsToFloat(my));
     } else {
         uint off = y * pitch_mv + x * 8;
         uint16_t mx = read_u16_mv(off);
         uint16_t my = read_u16_mv(off + 2);
-        g_mvhi[out_idx] = f16vec2(float16_t(san_mv(uint16BitsToFloat16(mx))),
-                                  float16_t(san_mv(uint16BitsToFloat16(my))));
+        g_mvhi[out_idx] = mv_pair(uint16BitsToFloat16(mx), uint16BitsToFloat16(my));
     }
 }

@@ -389,6 +389,7 @@ struct FeatureState {
     float prev_jx = 0.0f, prev_jy = 0.0f;   // NGX hands the current jitter only; the chain needs both
     ID3D12DXVKInteropDevice* interop = nullptr;   // D3D12 path only
     ID3D12Device* d3d_device = nullptr;           // D3D12 path only (AddRef'd)
+    mutable char s6_logged = 0;   // S6: one [S6] mv-scale line per feature, first non-identity frame
 };
 
 // One input or output image of a frame, with the layout the caller left it in.
@@ -494,27 +495,45 @@ static bool read_frame_params(NVSDK_NGX_Parameter* p, const FeatureState* s, ngx
     // harness writes exactly those (opti_client.cpp:1048-1056, from the fixture's mv_scale pair) and
     // sl.dlss.dll carries the strings while the GAME exe has none (SL is the writer).  The line
     // below historically read a key nobody ever sets, which is why every d5 diag prints the primed
-    // 1.0000 - plumbing bug proven by master-2, impact pending the actual value.  Read X (canonical),
-    // then Y, then the legacy spelling; still OBSERVE-ONLY (consumption lands only if SL writes !=1).
-    float mv_scale_y = 1.0f, sharp = 0.0f;
-    int sharp_set = 0;
+    // 1.0000 - plumbing bug proven by master-2.
+    // S6 (in-game session 22:32, 145 MB log): SL writes X = 1280.0 (== the MV plane width) and
+    // Y = -720.0 (== NEGATIVE plane height) = UV-normalized MVs, 1.0 = full plane, Y mirrored.
+    // The port CONSUMES the pair from here on: the chain gathers mv *= scale (shaders/sr/
+    // sr_gather*.comp), so pixel-unit apps see the unchanged identity and UV apps land on the
+    // chain's plane-pixel convention (prev = cur + mv, tools/scenes/check_mv.py).  Per-axis reads,
+    // legacy 'MV.Scale' spelling as the X fallback; each axis independent (an app may set only one
+    // with the Y unit, measured: X only on some sessions).  Guard = DlssNr_Pipeline_Dx12.cpp:
+    // 123-128: non-finite or exactly 0 -> 1.0 (a dead key must not scale MVs to 0).
     f = 1.0f;
     if (ngx_ok(p->vtbl->GetFloat(p, "MV.Scale.X", &f)) ||
-        ngx_ok(p->vtbl->GetFloat(p, "MV.Scale.Y", &f)) ||
         ngx_ok(p->vtbl->GetFloat(p, "MV.Scale", &f)))
-        fp.mv_scale = f;
-    if (ngx_ok(p->vtbl->GetFloat(p, "MV.Scale.Y", &mv_scale_y))) { /* kept for the diag */ }
+        fp.mv_scale_x = f;
+    f = 1.0f;
+    if (ngx_ok(p->vtbl->GetFloat(p, "MV.Scale.Y", &f)))
+        fp.mv_scale_y = f;
+    if (!std::isfinite(fp.mv_scale_x) || fp.mv_scale_x == 0.0f) fp.mv_scale_x = 1.0f;
+    if (!std::isfinite(fp.mv_scale_y) || fp.mv_scale_y == 0.0f) fp.mv_scale_y = 1.0f;
+    // One observability bench-mark per feature: the first frame whose scale is not the identity
+    // names the exact in-game pair (legacy: d5 diag was the only record, at 1 Hz partly lost in
+    // the 145 MB stream).
+    if (!s->s6_logged && (fp.mv_scale_x != 1.0f || fp.mv_scale_y != 1.0f)) {
+        s->s6_logged = 1;
+        ngx_log("[S6] mv scale=(%g,%g) (MV.Scale.X/.Y, UV-normalized when X==planeW && Y==-planeH)",
+                fp.mv_scale_x, fp.mv_scale_y);
+    }
+    float sharp = 0.0f;
+    int sharp_set = 0;
     if (ngx_ok(p->vtbl->GetFloat(p, "Sharpness", &sharp))) sharp_set = 1;
     // D5 (H2/H3 triage, 2026-10-31, 1 Hz): jitter pair + MV.Scale + reset/exposure on the record.
     // H2 asks whether the app ever delivers jitter (SL's "cameraPinholeOffset invalid" would leave
-    // jx/jy at 0 forever); H3 asks what MV.Scale actually is (read-but-unconsumed, see pipeline.h).
+    // jx/jy at 0 forever); H3 asks what MV.Scale actually is (S5 read it, S6 consumes it).
     static unsigned long long d5_last_ms = 0;
     const unsigned long long d5_now = ngx_ms();
     if (d5_now - d5_last_ms >= 1000u) {
         d5_last_ms = d5_now;
         ngx_log("d5 diag: jx=%.6f jy=%.6f prev=(%.6f,%.6f) mv_scale=%.4f mvY=%.4f sharp=%.3f(+%d) "
                 "reset=%d pre_exp=%.4f [diag-d5]",
-                fp.jx, fp.jy, fp.jpx, fp.jpy, fp.mv_scale, mv_scale_y, sharp, sharp_set,
+                fp.jx, fp.jy, fp.jpx, fp.jpy, fp.mv_scale_x, fp.mv_scale_y, sharp, sharp_set,
                 fp.reset, fp.pre_exposure);
     }
     // The chain works on whole frames.  A subrect that is not the whole render target would need the
@@ -532,7 +551,7 @@ static bool read_frame_params(NVSDK_NGX_Parameter* p, const FeatureState* s, ngx
     // 57-59 dB path.  fmt_mv is then *re-derived from the MV resource actually fetched*, in
     // collect_frame below, because the in-game MotionVectors are not RG16F (see the Slot table);
     // fmt_col/fmt_dep stay 0 here - both are the only code this bridge carries for RGBA16F/R32F.
-    // MV.Scale is not read by the chain, exactly as in the CLI runner.
+    // MV.Scale X/Y ARE now read (above) and consumed by the chain's gather decode (S6).
     fp.fmt_col = fp.fmt_mv = fp.fmt_dep = 0;
     return true;
 }
@@ -875,16 +894,35 @@ static NVSDK_NGX_Result record_bridge(VkCommandBuffer cmd, FeatureState* s, cons
     // settled with two more files, and put the finite fraction straight into the port log so the
     // answer is visible without the dump.  The staging still holds the PRE-shader (raw) bytes,
     // so this measures the game's content, not our san_mv() guard.
-    if ((s->frame_idx == 10 || s->frame_idx == 60) && dump_probe_on()) {
+    // S6 (2026-10-31 night): frames 300/900/1800 under the SAME dump pattern, adding magnitude
+    // stats over the same staging: maxAbs and the fraction of channel words with |v| > 0.02.
+    // SL's UV-normalized vectors (MV.Scale.X = plane width) in real pans should read maxAbs
+    // ~1e-2..1e-1 after unit conversion (i.e. raw ~3e-5 at most screens' widths) while a broken
+    // SL MV transfer stays pinned near 1e-5 - the S6 f10/f60 data answered "finite" but not
+    // "moving"; these frames decide the UV-units hypothesis over minutes of gameplay.
+    if ((s->frame_idx == 10 || s->frame_idx == 60 || s->frame_idx == 300 || s->frame_idx == 900 ||
+         s->frame_idx == 1800) && dump_probe_on()) {
         const size_t nfl = size_t(c->width()) * c->height() * 2;   // 2 channels, float32
         const float* mv = static_cast<const float*>(c->in_mv());
-        size_t fin = 0;
-        for (size_t i = 0; i < nfl; ++i) fin += std::isfinite(mv[i]) ? 1u : 0u;
+        size_t fin = 0, big = 0;
+        float max_abs = 0.0f;
+        for (size_t i = 0; i < nfl; ++i) {
+            const float v = mv[i];
+            fin += std::isfinite(v) ? 1u : 0u;
+            const float a = std::fabs(v);
+            if (a > max_abs) max_abs = a;
+            big += a > 0.02f ? 1u : 0u;
+        }
         char fn[64];
         std::snprintf(fn, sizeof fn, "dlss5-amd-dump_mv_f%u.bin", s->frame_idx);
         if (FILE* fm = std::fopen(fn, "wb")) { std::fwrite(mv, 4, nfl, fm); std::fclose(fm); }
-        ngx_log("S4 mv frame %u: %zu/%zu channel words finite (%.1f%%) -> %s [S4]",
-                s->frame_idx, fin, nfl, 100.0 * (double)fin / (double)nfl, fn);
+        if (s->frame_idx == 300 || s->frame_idx == 900 || s->frame_idx == 1800)
+            ngx_log("S6 mv frame %u: maxAbs=%.6g |v|>0.02: %zu/%zu (%.3f%%) finite %.1f%% -> %s [S6]",
+                    s->frame_idx, max_abs, big, nfl, 100.0 * (double)big / (double)nfl,
+                    100.0 * (double)fin / (double)nfl, fn);
+        else
+            ngx_log("S4 mv frame %u: %zu/%zu channel words finite (%.1f%%) -> %s [S4]",
+                    s->frame_idx, fin, nfl, 100.0 * (double)fin / (double)nfl, fn);
     }
     // Per-frame verdict: the slices recorded while recording frame N are readable from frame N+1.
     // Frame 0 reading full and later frames not would mean the image, not the copy, is the problem.

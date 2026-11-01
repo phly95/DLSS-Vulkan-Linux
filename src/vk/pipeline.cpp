@@ -812,8 +812,8 @@ FrameChain* FrameChain::create(VkDevice dev, VkPhysicalDevice phys,
     };
 
     if (mode == "sr") {
-        add_pipe("sr_gather", 6, 88);
-        add_pipe("sr_gather_mv", 2, 32);
+        add_pipe("sr_gather", 6, 96);      // S6: 88 -> 96, mv_scale_x/.y at +84/+88
+        add_pipe("sr_gather_mv", 2, 32);   // size unchanged: S6 uses the free +16/+20 slots
         add_pipe("sr_exposure", 1, 32);
         add_pipe("sr_ae_luma", 2, 48);
         add_pipe("sr_ae_reduce", 2, 32);
@@ -1745,6 +1745,10 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
     int fmt_nrm = fp.fmt_nrm, fmt_alb = fp.fmt_alb, fmt_spa = fp.fmt_spa, fmt_rgh = fp.fmt_rgh;
     int mvhi = fp.mvhi, ldr = fp.ldr;
     float exposure_val = fp.exposure, pre_val = fp.pre_exposure;
+    // S6: the app's MV scale pair (NGX MV.Scale.X/.Y, guarded in read_frame_params: non-finite or
+    // 0 -> 1.0) reaches the gather decode so the chain keeps its plane-pixel convention no matter
+    // what units the app delivers (in-game SL: UV-normalized, X = plane width, Y = -plane height).
+    float mv_scale_x = fp.mv_scale_x, mv_scale_y = fp.mv_scale_y;
     float jx = fp.jx, jy = fp.jy, jpx = fp.jpx, jpy = fp.jpy;
     float dec0_s0 = this->dec0_s0, dec0_f0 = this->dec0_f0, dec0_f1 = this->dec0_f1;
     const std::string& preset = this->preset;
@@ -1837,7 +1841,9 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
         const int* sr_l = (preset == "L") ? sr_l_L : sr_l_M;
         // 1. Gather
         {
-            uint8_t push[88] = {0};
+            // S6: push grew 88 -> 96 bytes: mv_scale_x@84, mv_scale_y@88 (the former pad@84 and
+            // the ABI tail) carry the scaled MV convention, see sr_gather.comp's GatherArgs.
+            uint8_t push[96] = {0};
             // Row pitches are the tightly-packed texel sizes (srref: W*col_bpp etc.;
             // HOST-RE GatherArgs +0x18/+0x1c/+0x20). The old fixed W*8/W*4/W*4 was right
             // only for the canonical fmt_col 0, so every other colour format read the
@@ -1859,15 +1865,21 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
             std::memcpy(push + 72, &W, 4);
             std::memcpy(push + 76, &H, 4);
             std::memcpy(push + 80, &mvhi, 4);
-            dispatch(cmd, "sr_gather", {&in_col, &in_mv_, &in_dep, &g_col, &g_mv, &g_dep}, push, 88, (W + 15) / 16, (H + 15) / 16, 1);
+            std::memcpy(push + 84, &mv_scale_x, 4);
+            std::memcpy(push + 88, &mv_scale_y, 4);
+            dispatch(cmd, "sr_gather", {&in_col, &in_mv_, &in_dep, &g_col, &g_mv, &g_dep}, push, 96, (W + 15) / 16, (H + 15) / 16, 1);
             inject_after(cmd, "gather", sr_l[0]);
         }
 
         if (mvhi) {
+            // S6: the same app-side MV scale reaches the mvhi gather path (floats ride the
+            // struct's free 16/20 slots, sr_gather_mv.comp's GatherMvArgs - push size unchanged).
             uint8_t push[32] = {0};
             uint32_t pmv = uint32_t(oW) * uint32_t((fmt_mv == 0) ? 4 : 8);
             std::memcpy(push + 8, &pmv, 4);
             std::memcpy(push + 12, &fmt_mv, 4);
+            std::memcpy(push + 16, &mv_scale_x, 4);
+            std::memcpy(push + 20, &mv_scale_y, 4);
             std::memcpy(push + 24, &oW, 4);
             std::memcpy(push + 28, &oH, 4);
             dispatch(cmd, "sr_gather_mv", {&in_mv_, &g_mvhi}, push, 32, (oW + 15) / 16, (oH + 15) / 16, 1);
@@ -2175,7 +2187,9 @@ void FrameChain::record(VkCommandBuffer cmd, const FrameParams& fp) {
         //    int/float offset is filled as the oracle does where the host has the value. The pointers
         //    (0x00..0x87) stay zero: the shader does not read them (the oracle ISA proves neither
         //    instance reads +0xe0 g_mvhi / +0xf0 mv_scale either - docs/notes/k_sr_post.md, l-post
-        //    decode). 0xd4 (ldr) and 0xf0 (mv_scale) are not in FrameParams and stay zero. 0xf8 is the
+        //    decode).  0xf0 (mv_scale) therefore stays zero even after S6: the app's MV.Scale is
+        //    consumed once, at the gather decode, so every downstream consumer sees plane pixels;
+        //    the sr_post push is the oracle's verbatim-zero. 0xf8 is the
         //    oracle's mv_offset_kernel value, 0 on both dumped frames (srref: "0 for unjittered MVs").
         //    The previous build's stand-in offsets (136..252) are gone. DLSS5_AMD_POST_PUSH_DUMP=<file>
         //    appends each frame's push (256 bytes) to <file>, for the byte-for-byte comparison with the

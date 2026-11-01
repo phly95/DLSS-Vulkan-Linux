@@ -177,6 +177,12 @@ struct Opt {
     std::string odir, csv, corpus;
     unsigned w = 1920, h = 1080, ow = 3840, oh = 2160;
     std::string mv_fmt = "rg32", dep_fmt = "d32s8";
+    // S6 (2026-10-31): --mv-units uv models what Crimson Desert's Streamline actually delivers
+    // (measured MV.Scale = (planeW, -planeH) with UV-normalized MV content): synth_mv stores
+    // (2/w, -0.25/h) and MV.Scale.X/.Y = (float(w), -float(h)), so scale * mv reproduces the
+    // exact same (2.0, 0.25) px pan the px mode feeds.  Default "px" = every parity cell as of
+    // now (pixel MVs + scale 1,1).
+    std::string mv_units = "px";
     bool expect_fail = false;
     bool sl = false;                   // --sl: boot the game's Streamline stack before the Opti flow
     bool sl_rr = false;                // --sl-rr (implies --sl): REQUEST kFeatureDLSS_RR after slInit +
@@ -188,7 +194,7 @@ static int usage() {
     sayerr(
         "[opti_client] usage: opti_client.exe [--opti | --direct] [--nvngx NAME] [--frames N]\n"
         "    [--out DIR] [--csv FILE] [--w W] [--h H] [--ow W] [--oh H]\n"
-        "    [--mv-fmt rg32|rg16] [--dep-fmt d32s8|r32f] [--corpus DIR] [--expect-fail]\n"
+        "    [--mv-fmt rg32|rg16] [--mv-units px|uv] [--dep-fmt d32s8|r32f] [--corpus DIR] [--expect-fail]\n"
         "    [--sl] [--sl-rr]  (--sl-rr implies --sl: request kFeatureDLSS_RR and print\n"
         "                      [opti_client] SL-RR-ENABLE rc=0x<x> ctx=<state> for run_harness g5 c6)");
     return 1;
@@ -366,12 +372,17 @@ static void synth_color(void* dst, UINT pitch, unsigned w, unsigned h, int frame
     }
 }
 // Motion vectors: constant pan +2 px in x, +0.25 px in y (NGX convention: previous = current + mv).
-static void synth_mv(void* dst, UINT pitch, unsigned w, unsigned h, bool rg32) {
+// S6: --mv-units uv stores the same pan in UV-normalized units - (2/w, -0.25/h), and the caller
+// then sets MV.Scale.X/.Y = (float(w), -float(h)), so uv * scale reproduces exactly (2.0, 0.25)
+// px; the y sign models SL's negative-height Y scale (in-game measured pair (1280, -720)).
+static void synth_mv(void* dst, UINT pitch, unsigned w, unsigned h, bool rg32, bool uv = false) {
+    const float mvx = uv && w ? 2.0f / float(w) : 2.0f;
+    const float mvy = uv && h ? -0.25f / float(h) : 0.25f;
     for (unsigned y = 0; y < h; ++y) {
         uint8_t* row = static_cast<uint8_t*>(dst) + size_t(y) * pitch;
         for (unsigned x = 0; x < w; ++x) {
-            if (rg32) { float* f = reinterpret_cast<float*>(row) + x * 2; f[0] = 2.0f; f[1] = 0.25f; }
-            else { uint16_t* q = reinterpret_cast<uint16_t*>(row) + x * 2; q[0] = f2h_(2.0f); q[1] = f2h_(0.25f); }
+            if (rg32) { float* f = reinterpret_cast<float*>(row) + x * 2; f[0] = mvx; f[1] = mvy; }
+            else { uint16_t* q = reinterpret_cast<uint16_t*>(row) + x * 2; q[0] = f2h_(mvx); q[1] = f2h_(mvy); }
         }
     }
 }
@@ -541,6 +552,7 @@ int main(int argc, char** argv) {
         else if (a == "--ow") o.ow = unsigned(std::atoi(next().c_str()));
         else if (a == "--oh") o.oh = unsigned(std::atoi(next().c_str()));
         else if (a == "--mv-fmt") o.mv_fmt = next();
+        else if (a == "--mv-units") o.mv_units = next();
         else if (a == "--dep-fmt") o.dep_fmt = next();
         else if (a == "--corpus") o.corpus = next();
         else if (a == "--expect-fail") o.expect_fail = true;
@@ -551,6 +563,7 @@ int main(int argc, char** argv) {
     if (o.frames < 1 || o.frames > 256) FAIL("--frames 1..256");
     if (o.odir.empty()) return usage();
     if (o.mv_fmt != "rg32" && o.mv_fmt != "rg16") FAIL("--mv-fmt rg32|rg16");
+    if (o.mv_units != "px" && o.mv_units != "uv") FAIL("--mv-units px|uv");
     if (o.dep_fmt != "d32s8" && o.dep_fmt != "r32f") FAIL("--dep-fmt d32s8|r32f");
 
     // Open the message mirror before the first line so client.log starts with the mode header
@@ -617,9 +630,9 @@ int main(int argc, char** argv) {
         o.mv_fmt = "rg16"; o.dep_fmt = "r32f";
     }
 
-    say("[opti_client] mode=%s frames=%d %ux%u -> %ux%u mv=%s dep=%s%s%s\n",
+    say("[opti_client] mode=%s frames=%d %ux%u -> %ux%u mv=%s dep=%s mvunits=%s%s%s\n",
                 o.direct ? "direct" : "opti", o.frames, o.w, o.h, o.ow, o.oh,
-                o.mv_fmt.c_str(), o.dep_fmt.c_str(),
+                o.mv_fmt.c_str(), o.dep_fmt.c_str(), o.mv_units.c_str(),
                 o.corpus.empty() ? "" : " corpus=", o.corpus.empty() ? "" : o.corpus.c_str());
     
 
@@ -1009,7 +1022,7 @@ int main(int argc, char** argv) {
                     std::memcpy(static_cast<uint8_t*>(m) + size_t(y) * pt,
                                 b.data() + size_t(y) * o.w * s.bpp, size_t(o.w) * s.bpp);
             } else if (s.kind == 0) synth_color(m, pt, o.w, o.h, i);
-            else if (s.kind == 1) synth_mv(m, pt, o.w, o.h, mv_rg32);
+            else if (s.kind == 1) synth_mv(m, pt, o.w, o.h, mv_rg32, o.mv_units == "uv");
             else if (s.kind == 2) synth_depth(m, pt, o.w, o.h);
             else synth_rr(unsigned(s.kind), m, pt, o.w, o.h);   // kind 3..6, the RR slots (rr_run only)
             s.up->Unmap(0, nullptr);
@@ -1052,8 +1065,16 @@ int main(int argc, char** argv) {
         } else {
             p->Set("Jitter.Offset.X", float((i * 5) % 8) * 0.125f - 0.4375f);
             p->Set("Jitter.Offset.Y", float((i * 3) % 8) * 0.125f - 0.4375f);
-            p->Set("MV.Scale.X", 1.0f);
-            p->Set("MV.Scale.Y", 1.0f);
+            // S6: --mv-units uv writes exactly what SL writes in-game (measured in-game pair
+            // (planeW, -planeH), e.g. (1280, -720)) so the port consumes the same physical key
+            // pattern; the pixel path keeps (1.0, 1.0) for every existing parity cell.
+            if (o.mv_units == "uv") {
+                p->Set("MV.Scale.X", float(o.w));
+                p->Set("MV.Scale.Y", -float(o.h));
+            } else {
+                p->Set("MV.Scale.X", 1.0f);
+                p->Set("MV.Scale.Y", 1.0f);
+            }
             p->Set("Reset", i == 0 ? 1 : 0);
             p->Set("DLSS.Pre.Exposure", 1.0f);
         }
@@ -1198,7 +1219,7 @@ int main(int argc, char** argv) {
 
     char summary[4096];
     std::snprintf(summary, sizeof summary,
-        "mode=%s\nframes=%d\nrender=%ux%u\noutput=%ux%u\nmv=%s\ndep=%s\ncorpus=%s\nexpect_fail=%d\n"
+        "mode=%s\nframes=%d\nrender=%ux%u\noutput=%ux%u\nmv=%s\ndep=%s\nmvunits=%s\ncorpus=%s\nexpect_fail=%d\n"
         "EVAL_MS n=%zu median=%.4f p95=%.4f min=%.4f max=%.4f  (frames 1..)\n"
         "GPU_EVAL_MS n=%zu median=%.4f p95=%.4f tags=%s\n"
         "PORT_RECORD_MS present=%d n=%d median=%.4f  (dlss5-amd-ngx.log 'recorded in N ms')\n"
@@ -1206,7 +1227,7 @@ int main(int argc, char** argv) {
         "OUT_NZ min=%.6f max=%.6f threshold=0.10  (frames 1..)\n"
         "GATE eval=%s\nGATE nonblack=%s\nGATE timing=%s\nGATE port=%s\nRESULT=%s\n",
         o.direct ? "direct" : "opti", o.frames, o.w, o.h, o.ow, o.oh,
-        o.mv_fmt.c_str(), o.dep_fmt.c_str(), o.corpus.c_str(), o.expect_fail ? 1 : 0,
+        o.mv_fmt.c_str(), o.dep_fmt.c_str(), o.mv_units.c_str(), o.corpus.c_str(), o.expect_fail ? 1 : 0,
         ev.size(), median_(ev), p95_(ev), min_of(ev), max_of(ev),
         gp.size(), median_(gp), p95_(gp), ts_ok ? "d3d12-timestamp" : "n/a-timestamps-unsupported",
         pl.present ? 1 : 0, pl.rec_n, pl.rec_median,
