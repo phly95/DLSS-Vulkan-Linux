@@ -28,6 +28,14 @@ headlessly and gate on its exact bootstrap lines (see "Streamline boot").
         # Desert's SL actually writes in-game (measured pair (1280, -720) at 22:32); the port's
         # gather decode consumes the scale, so this cell must stay photo-identical to the
         # default pixel cell at f16 precision.
+    bash tools/optiharness/run_harness.sh --scene disoc                    # Gemini-2 claim 9d
+        # (2026-11-01): foreground rect [w/4,3w/4)x[h/4,3h/4) with its OWN depth (0.2 flat) and
+        # a counter-panning MV (-4,-2 px vs the background's +2,+0.25) and counter-panning
+        # colour, so mv_nondil != prev_mvec1 != mv_ero along its border - the input condition
+        # sr_post's 3-candidate selection exists for (docs/notes/k_sr_post.md R5) and no default
+        # cell ever contained.  Default --scene pan is byte-identical to the old scene; the g3b
+        # content bars are calibrated on `pan` ONLY (content_gate.py docstring), so a disoc run's
+        # g3b numbers are informative, not calibrated.
 
 Exit code 0 only when every gate passes; each run prints a `HARNESS SUMMARY` (script gates g1–g4 -
 g3 carrying its `g3b` CONTENT sub-gate, see "g3 content" below - plus g5 under `--sl`) and the exe

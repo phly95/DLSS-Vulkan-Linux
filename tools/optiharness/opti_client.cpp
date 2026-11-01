@@ -183,6 +183,18 @@ struct Opt {
     // exact same (2.0, 0.25) px pan the px mode feeds.  Default "px" = every parity cell as of
     // now (pixel MVs + scale 1,1).
     std::string mv_units = "px";
+    // Gemini-2 claim 9d (verified TRUE 2026-11-01): the default synthetic scene gives every
+    // pixel the SAME motion vector ((2.0, 0.25) px) and depth a plain y-gradient, so no
+    // foreground/background disocclusion ever exists for the temporal path to resolve.
+    //   pan   (default) = today's scene byte-for-byte - every content_gate calibration in
+    //                      tools/optiharness/content_gate.py stays valid for default runs;
+    //   disoc            = a foreground rect [w/4,3w/4) x [h/4,3h/4) with its OWN depth (0.2
+    //                      flat vs the background gradient) and its OWN motion vector
+    //                      (-4.0,-2.0 px against the background's (+2.0,+0.25)), so the three
+    //                      sr_post MV candidates (mv_nondil/prev_mvec1/mv_ero) genuinely differ
+    //                      along the rect's edges.  Manual/future --ref use only: run_harness
+    //                      does not pass --scene, and no gate's thresholds are calibrated on it.
+    std::string scene = "pan";
     bool expect_fail = false;
     bool sl = false;                   // --sl: boot the game's Streamline stack before the Opti flow
     bool sl_rr = false;                // --sl-rr (implies --sl): REQUEST kFeatureDLSS_RR after slInit +
@@ -195,6 +207,8 @@ static int usage() {
         "[opti_client] usage: opti_client.exe [--opti | --direct] [--nvngx NAME] [--frames N]\n"
         "    [--out DIR] [--csv FILE] [--w W] [--h H] [--ow W] [--oh H]\n"
         "    [--mv-fmt rg32|rg16] [--mv-units px|uv] [--dep-fmt d32s8|r32f] [--corpus DIR] [--expect-fail]\n"
+        "    [--scene pan|disoc]  (disoc = foreground rect with its own depth + counter-panning MV;\n"
+        "                      default pan = the calibrated synthetic scene, unchanged)\n"
         "    [--sl] [--sl-rr]  (--sl-rr implies --sl: request kFeatureDLSS_RR and print\n"
         "                      [opti_client] SL-RR-ENABLE rc=0x<x> ctx=<state> for run_harness g5 c6)");
     return 1;
@@ -352,17 +366,27 @@ static inline void ts_end(ID3D12GraphicsCommandList* cl, ID3D12QueryHeap* qh, UI
 // ------------------------------------------------------------------------------------------------
 // synthetic inputs: deterministic, generated in-process (no file dependencies unless --corpus)
 // ------------------------------------------------------------------------------------------------
+// --scene disoc foreground rect (Gemini-2 claim 9d): [w/4,3w/4) x [h/4,3h/4) of EVERY input, so
+// colour, motion AND depth carry the same edge.  Default scene ("pan") never calls this.
+static inline bool disoc_fg(unsigned x, unsigned y, unsigned w, unsigned h) {
+    return x >= w / 4 && x < (3 * w) / 4 && y >= h / 4 && y < (3 * h) / 4;
+}
 // Colour: a moving gradient + a moving 16 px checker, every channel strictly non-zero, so a black
 // output can only mean the evaluate produced nothing - this is the non-black gate's justification
 // (the threshold is a conservative >= 0.10 while the healthy expectation here is ~1.00).
-static void synth_color(void* dst, UINT pitch, unsigned w, unsigned h, int frame) {
+// disoc: the foreground rect counter-pans (its gradient phase walks BACKWARD while the background
+// walks forward), so colour edges and motion edges coincide exactly.
+static void synth_color(void* dst, UINT pitch, unsigned w, unsigned h, int frame, bool disoc = false) {
     for (unsigned y = 0; y < h; ++y) {
         uint16_t* px = reinterpret_cast<uint16_t*>(static_cast<uint8_t*>(dst) + size_t(y) * pitch);
         for (unsigned x = 0; x < w; ++x) {
-            const float gx = float((x + 6u * unsigned(frame)) % w) / float(w);
+            const bool fg = disoc && disoc_fg(x, y, w, h);
+            const float gx = fg
+                ? float((x + w - ((6u * unsigned(frame)) % w)) % w) / float(w)
+                : float((x + 6u * unsigned(frame)) % w) / float(w);
             const float gy = float(y) / float(h);
             const bool chk = (((x >> 4) ^ (y >> 4) ^ (unsigned(frame) >> 1)) & 1u) != 0;
-            const float r = 0.25f + 0.50f * gx;
+            const float r = fg ? 0.75f - 0.50f * gx : 0.25f + 0.50f * gx;
             const float g = 0.25f + 0.50f * gy;
             const float b = chk ? 0.875f : 0.375f;
             const float a = 1.0f;
@@ -375,25 +399,38 @@ static void synth_color(void* dst, UINT pitch, unsigned w, unsigned h, int frame
 // S6: --mv-units uv stores the same pan in UV-normalized units - (2/w, -0.25/h), and the caller
 // then sets MV.Scale.X/.Y = (float(w), -float(h)), so uv * scale reproduces exactly (2.0, 0.25)
 // px; the y sign models SL's negative-height Y scale (in-game measured pair (1280, -720)).
-static void synth_mv(void* dst, UINT pitch, unsigned w, unsigned h, bool rg32, bool uv = false) {
+// disoc: the foreground rect moves AGAINST the background ((-4.0,-2.0) px vs (+2.0,+0.25)), so
+// mv_nondil (centre read), prev_mvec1 (min-depth) and mv_ero (max-depth) genuinely disagree along
+// its border - the input condition sr_post's candidate selection (docs/notes/k_sr_post.md R5) exists
+// for and no default-harness cell has ever contained.  UV mode keeps the same sign convention as
+// the background (scale (w,-h) reproduces (-4,-2) px from (-4/w, +2/h)).
+static void synth_mv(void* dst, UINT pitch, unsigned w, unsigned h, bool rg32, bool uv = false,
+                     bool disoc = false) {
     const float mvx = uv && w ? 2.0f / float(w) : 2.0f;
     const float mvy = uv && h ? -0.25f / float(h) : 0.25f;
     for (unsigned y = 0; y < h; ++y) {
         uint8_t* row = static_cast<uint8_t*>(dst) + size_t(y) * pitch;
         for (unsigned x = 0; x < w; ++x) {
-            if (rg32) { float* f = reinterpret_cast<float*>(row) + x * 2; f[0] = mvx; f[1] = mvy; }
-            else { uint16_t* q = reinterpret_cast<uint16_t*>(row) + x * 2; q[0] = f2h_(mvx); q[1] = f2h_(mvy); }
+            const bool fgr = disoc && disoc_fg(x, y, w, h);
+            const float vx = fgr ? (uv && w ? -4.0f / float(w) : -4.0f) : mvx;
+            const float vy = fgr ? (uv && h ? 2.0f / float(h) : -2.0f) : mvy;
+            if (rg32) { float* f = reinterpret_cast<float*>(row) + x * 2; f[0] = vx; f[1] = vy; }
+            else { uint16_t* q = reinterpret_cast<uint16_t*>(row) + x * 2; q[0] = f2h_(vx); q[1] = f2h_(vy); }
         }
     }
 }
 // Depth (the R32F bisect fallback): a plane over [0,1] in y.  The d32s8 variant cannot be filled
 // per-pixel: D3D12 offers no COPY_DEST for a depth-stencil resource, so it takes a constant
 // ClearDepthStencilView(0.5) at creation - valid floats, all the non-black gate needs (README).
-static void synth_depth(void* dst, UINT pitch, unsigned w, unsigned h) {
+// disoc: the foreground rect is a flat near plane (0.2) against the background gradient - a real
+// depth discontinuity on the same edge as the colour/MV edge (r32f fill only; the d32s8 variant
+// cannot be filled per-pixel and stays its constant clear, see above).
+static void synth_depth(void* dst, UINT pitch, unsigned w, unsigned h, bool disoc = false) {
     for (unsigned y = 0; y < h; ++y) {
         float* row = reinterpret_cast<float*>(static_cast<uint8_t*>(dst) + size_t(y) * pitch);
         const float d = float(y) / float(h ? h : 1);
-        for (unsigned x = 0; x < w; ++x) row[x] = d;
+        for (unsigned x = 0; x < w; ++x)
+            row[x] = (disoc && disoc_fg(x, y, w, h)) ? 0.2f : d;
     }
 }
 
@@ -553,6 +590,7 @@ int main(int argc, char** argv) {
         else if (a == "--oh") o.oh = unsigned(std::atoi(next().c_str()));
         else if (a == "--mv-fmt") o.mv_fmt = next();
         else if (a == "--mv-units") o.mv_units = next();
+        else if (a == "--scene") o.scene = next();
         else if (a == "--dep-fmt") o.dep_fmt = next();
         else if (a == "--corpus") o.corpus = next();
         else if (a == "--expect-fail") o.expect_fail = true;
@@ -564,7 +602,9 @@ int main(int argc, char** argv) {
     if (o.odir.empty()) return usage();
     if (o.mv_fmt != "rg32" && o.mv_fmt != "rg16") FAIL("--mv-fmt rg32|rg16");
     if (o.mv_units != "px" && o.mv_units != "uv") FAIL("--mv-units px|uv");
+    if (o.scene != "pan" && o.scene != "disoc") FAIL("--scene pan|disoc");
     if (o.dep_fmt != "d32s8" && o.dep_fmt != "r32f") FAIL("--dep-fmt d32s8|r32f");
+    if (!o.corpus.empty() && o.scene != "pan") FAIL("--scene conflicts with --corpus (corpus inputs win)");
 
     // Open the message mirror before the first line so client.log starts with the mode header
     // ("wb": binary, so the CRT's text mode cannot turn \n into \r\n and break the parsers).
@@ -630,9 +670,9 @@ int main(int argc, char** argv) {
         o.mv_fmt = "rg16"; o.dep_fmt = "r32f";
     }
 
-    say("[opti_client] mode=%s frames=%d %ux%u -> %ux%u mv=%s dep=%s mvunits=%s%s%s\n",
+    say("[opti_client] mode=%s frames=%d %ux%u -> %ux%u mv=%s dep=%s mvunits=%s scene=%s%s%s\n",
                 o.direct ? "direct" : "opti", o.frames, o.w, o.h, o.ow, o.oh,
-                o.mv_fmt.c_str(), o.dep_fmt.c_str(), o.mv_units.c_str(),
+                o.mv_fmt.c_str(), o.dep_fmt.c_str(), o.mv_units.c_str(), o.scene.c_str(),
                 o.corpus.empty() ? "" : " corpus=", o.corpus.empty() ? "" : o.corpus.c_str());
     
 
@@ -1021,9 +1061,9 @@ int main(int argc, char** argv) {
                 for (unsigned y = 0; y < o.h; ++y)
                     std::memcpy(static_cast<uint8_t*>(m) + size_t(y) * pt,
                                 b.data() + size_t(y) * o.w * s.bpp, size_t(o.w) * s.bpp);
-            } else if (s.kind == 0) synth_color(m, pt, o.w, o.h, i);
-            else if (s.kind == 1) synth_mv(m, pt, o.w, o.h, mv_rg32, o.mv_units == "uv");
-            else if (s.kind == 2) synth_depth(m, pt, o.w, o.h);
+            } else if (s.kind == 0) synth_color(m, pt, o.w, o.h, i, o.scene == "disoc");
+            else if (s.kind == 1) synth_mv(m, pt, o.w, o.h, mv_rg32, o.mv_units == "uv", o.scene == "disoc");
+            else if (s.kind == 2) synth_depth(m, pt, o.w, o.h, o.scene == "disoc");
             else synth_rr(unsigned(s.kind), m, pt, o.w, o.h);   // kind 3..6, the RR slots (rr_run only)
             s.up->Unmap(0, nullptr);
             if (i > 0) d3d_barrier(cl, s.tex, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
@@ -1219,7 +1259,7 @@ int main(int argc, char** argv) {
 
     char summary[4096];
     std::snprintf(summary, sizeof summary,
-        "mode=%s\nframes=%d\nrender=%ux%u\noutput=%ux%u\nmv=%s\ndep=%s\nmvunits=%s\ncorpus=%s\nexpect_fail=%d\n"
+        "mode=%s\nframes=%d\nrender=%ux%u\noutput=%ux%u\nmv=%s\ndep=%s\nmvunits=%s\nscene=%s\ncorpus=%s\nexpect_fail=%d\n"
         "EVAL_MS n=%zu median=%.4f p95=%.4f min=%.4f max=%.4f  (frames 1..)\n"
         "GPU_EVAL_MS n=%zu median=%.4f p95=%.4f tags=%s\n"
         "PORT_RECORD_MS present=%d n=%d median=%.4f  (dlss5-amd-ngx.log 'recorded in N ms')\n"
@@ -1227,7 +1267,7 @@ int main(int argc, char** argv) {
         "OUT_NZ min=%.6f max=%.6f threshold=0.10  (frames 1..)\n"
         "GATE eval=%s\nGATE nonblack=%s\nGATE timing=%s\nGATE port=%s\nRESULT=%s\n",
         o.direct ? "direct" : "opti", o.frames, o.w, o.h, o.ow, o.oh,
-        o.mv_fmt.c_str(), o.dep_fmt.c_str(), o.mv_units.c_str(), o.corpus.c_str(), o.expect_fail ? 1 : 0,
+        o.mv_fmt.c_str(), o.dep_fmt.c_str(), o.mv_units.c_str(), o.scene.c_str(), o.corpus.c_str(), o.expect_fail ? 1 : 0,
         ev.size(), median_(ev), p95_(ev), min_of(ev), max_of(ev),
         gp.size(), median_(gp), p95_(gp), ts_ok ? "d3d12-timestamp" : "n/a-timestamps-unsupported",
         pl.present ? 1 : 0, pl.rec_n, pl.rec_median,

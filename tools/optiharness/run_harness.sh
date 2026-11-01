@@ -73,7 +73,7 @@ INI_OVERRIDE=           # empty = stage the default OptiScaler.harness.ini (byte
 usage() {
     echo "usage: tools/optiharness/run_harness.sh [--nvngx PATH] [--expect-fail] [--frames N]"
     echo "      [--direct] [--sl] [--sl-rr] [--out DIR] [--ini PATH] [--mv-fmt rg32|rg16] [--dep-fmt d32s8|r32f]"
-    echo "      [--corpus DIR] [--w W] [--h H] [--ow W] [--oh H] [--mv-units px|uv]"
+    echo "      [--corpus DIR] [--w W] [--h H] [--ow W] [--oh H] [--mv-units px|uv] [--scene pan|disoc]"
     echo "      env: SL_NVAPI_VER=<n>  also sets DXVK_NVAPI_DRIVER_VERSION=<n> for the run"
     echo "           SL_NVAPI_ARCH=<ID> also sets DXVK_NVAPI_GPU_ARCH=<ID> (e.g. AD100 - D5 RR arch gate)"
 }
@@ -90,7 +90,7 @@ while [[ $# -gt 0 ]]; do
         --out) OUTD=$2; shift 2;;
         --ini) INI_OVERRIDE=$2; shift 2;;
         --help|-h) usage; exit 0;;
-        --mv-fmt|--mv-units|--dep-fmt|--w|--h|--ow|--oh|--corpus) EXTRA+=("$1" "$2"); shift 2;;
+        --mv-fmt|--mv-units|--dep-fmt|--w|--h|--ow|--oh|--corpus|--scene) EXTRA+=("$1" "$2"); shift 2;;
         *) echo "unknown argument: $1" >&2; usage; exit 2;;
     esac
 done

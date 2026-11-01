@@ -9,8 +9,8 @@ no reference image, nothing frozen is touched.
 Metric (frames 1..N-1, RGB channels of the raw f32 read-back, alpha excluded - it is a constant 1):
     mean_i  = mean |out_i - out_{i-1}|                 average per-frame change
     frac_i  = fraction of RGB samples with |out_i - out_{i-1}| > 0.05   how MUCH of the frame moved
-The synthetic input pans every frame (opti_client.cpp:362 the colour gradient pans 6 px/frame,
-:374 the MotionVectors pan +2 px / +0.25 px), so a HEALTHY output changes every frame by a small
+The synthetic input pans every frame (opti_client.cpp:386 the colour gradient pans 6 px/frame,
+:398 the MotionVectors pan +2 px / +0.25 px), so a HEALTHY output changes every frame by a small
 but measurable amount, while a scrambled one jumps by the content's full dynamic range.
 
 Calibration - measured 2026-11-01 with this very script, three populations, one real run dir
