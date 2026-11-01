@@ -568,7 +568,7 @@ ffxDispatch(ffxContext* context, const ffxDispatchDescHeader* desc) {
         const bool mv_render = (bi_mv.w == c->fs.rw && bi_mv.h == c->fs.rh);
         fp.mvhi = (mv_out && !mv_render) ? 1 : 0;
         const bool flag = (c->flags & FFX_UPSCALE_ENABLE_DISPLAY_RESOLUTION_MOTION_VECTORS) != 0;
-        if (flag != (fp.mvhi != 0))
+        if (flag != (fp.mvhi != 0) && c->creates < 2)   // one-shot: the mismatch is permanent or never
             ffx_log("dispatch: MV %ux%u vs render %ux%u / output %ux%u: mvhi=%d (flag %s) - %s",
                     bi_mv.w, bi_mv.h, c->fs.rw, c->fs.rh, c->fs.ow, c->fs.oh, fp.mvhi,
                     flag ? "set" : "clear",
