@@ -114,9 +114,18 @@ fi
 # diagnostics sessions that may park it as dxgi.dll.optiscaler-off (measured 2026-10-31: present,
 # 25 379 632 B = the same v0.9.4 proxy this harness booted yesterday); fall back to that name so
 # a parallel experiment can turn OptiScaler "off" in the game without breaking this harness.
-DXGI_SRC="$GAME/dxgi.dll"
-[[ -f "$DXGI_SRC" ]] || DXGI_SRC="$GAME/dxgi.dll.optiscaler-off"
-[[ -f "$DXGI_SRC" ]] || die "no OptiScaler dxgi.dll in $GAME (nor dxgi.dll.optiscaler-off)"
+# ffx2 cell: OPTISCALER_SRC stands a FORKED OptiScaler in for the game's stock dxgi (the
+# tools/optiscaler-fork build from a scratch copy of the vendored tree) - the game dir carries
+# the staged ffx1 in-path Opti now and must stay pristine, and the override keeps the fork as
+# the ONLY variable vs the ffx1 cell (same ini shape, same port dll, same gates).
+if [[ -n "${OPTISCALER_SRC:-}" ]]; then
+    DXGI_SRC="$OPTISCALER_SRC"
+    [[ -f "$DXGI_SRC" ]] || die "OPTISCALER_SRC not found: $DXGI_SRC"
+else
+    DXGI_SRC="$GAME/dxgi.dll"
+    [[ -f "$DXGI_SRC" ]] || DXGI_SRC="$GAME/dxgi.dll.optiscaler-off"
+    [[ -f "$DXGI_SRC" ]] || die "no OptiScaler dxgi.dll in $GAME (nor dxgi.dll.optiscaler-off)"
+fi
 [[ -f "$GAME/nvngx_dlss.dll" ]] || die "no nvngx_dlss.dll in $GAME (the port's CreateFeature check refuses without it)"
 # same failure semantics as nvngx_dlss.dll above: a missing source is fatal, never a dangling link
 [[ -f "$GAME/nvngx_dlssd.dll" ]] || die "no nvngx_dlssd.dll in $GAME (the D1 RR cells need the DLSS-D companion beside _nvngx.dll)"
@@ -329,11 +338,15 @@ else
         # did not serve.  n_sr stays inert (1) for every other cell, byte-identical behaviour.
         n_sr=1
         FFXCELL=0
-        if grep -qiE '^[[:space:]]*Dx12Upscaler[[:space:]]*=[[:space:]]*(ffx|fsr31)([[:space:]]*;.*)?[[:space:]]*$' "$INI"; then
+        if grep -qiE '^[[:space:]]*Dx12Upscaler[[:space:]]*=[[:space:]]*(ffx|fsr31|dlss5_amd)([[:space:]]*;.*)?[[:space:]]*$' "$INI"; then
             FFXCELL=1
-            n_create=$(grep -cE "Creating new (dlssd?|fsr31|ffx) upscaler" "$OLOG")
+            # stock: "Creating new fsr31 upscaler"; the FORK's own create line (TryCreateOptiFeature,
+            # measured ffx2 run 11:37): "Creating DLSS5-AMD upscaler feature" - one pattern, both.
+            n_create=$(grep -cE "Creating( new)? (dlssd?|fsr31|ffx|DLSS5-AMD) upscaler" "$OLOG")
             n_sr=$(grep -cE "FfxApiProxy::InitFfxDx12_SR Loaded from .*dlss5-amd-ffx\.dll" "$OLOG")
             n_gone=$(grep -cE "changing backend to|falling back to|Upscaler can't created" "$OLOG")
+            # the fork identifies the GPU as "Nvidia detected: true" instead of "Running on Nvidia"
+            n_nvidia=$(grep -cE "Running on Nvidia|Nvidia detected: true" "$OLOG")
         fi
         if [[ $EXPECT -eq 1 ]]; then
             # inverted: the refusal (BAD00000) must COME BACK through OptiScaler, no FSR fallback
