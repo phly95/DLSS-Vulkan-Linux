@@ -517,7 +517,7 @@ ffxDispatch(ffxContext* context, const ffxDispatchDescHeader* desc) {
     }
     c->prev_jx = fp.jx; c->prev_jy = fp.jy; c->have_prev_j = true;
     // THE FORMAT CODE, settled from the fetched MV image exactly as the NGX surface settles it
-    // (nvngx.cpp:1320-1323): the harness feeds RG32F MotionVectors, which the chain decodes as
+    // (nvngx.cpp:1338-1341): the harness feeds RG32F MotionVectors, which the chain decodes as
     // code 1 AND reads as 8 B/texel rows (pipeline.cpp:1849/1851).  read_frame_params' default
     // 0 would have the chain read 4 B/texel - the "input pitch ... MotionVectors ... MISMATCH"
     // line the first wired run printed.  The FFX surface is never RR, so 1 is the only non-zero
@@ -526,7 +526,7 @@ ffxDispatch(ffxContext* context, const ffxDispatchDescHeader* desc) {
     // --- record --------------------------------------------------------------------------
     BridgeImage_ ins[3] = {bi_color, bi_mv, bi_dep};
     const NVSDK_NGX_Result rr = ngxd_record_bridge(vkcmd, &c->fs, fp, ins, d->depth.resource ? 3 : 2, &bi_out);
-    // NO frame_idx bump here: record_bridge already owns the counter (nvngx.cpp:818, incremented
+    // NO frame_idx bump here: record_bridge already owns the counter (nvngx.cpp:819, incremented
     // before its own log line).  This surface used to increment a SECOND time, so the counter
     // advanced +2 per dispatch and sat on ODD values inside record_bridge - every even-keyed
     // diagnostic condition (frame_idx == 2 frame-2 dump, == 10/60/300/900/1800 MV snapshots,
