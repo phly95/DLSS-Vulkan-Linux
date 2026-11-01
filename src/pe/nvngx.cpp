@@ -605,6 +605,7 @@ static unsigned vk_format_bpp(VkFormat f) {
         case VK_FORMAT_R32G32_SFLOAT:       return 8;
         case VK_FORMAT_R16G16_SFLOAT:       return 4;
         case VK_FORMAT_R32_SFLOAT:         return 4;
+        case VK_FORMAT_R8G8B8A8_UNORM:     return 4;   // RR code 5, kRrBppE[5] = 4
         // The depth-aspect texel the copy actually writes (D32_SFLOAT = 4 B), NOT the image's
         // combined depth+stencil texel: VkCmdCopyImageToBuffer with aspectMask DEPTH strides in
         // aspect texels, and the chain reads dep at W * 4 (pipeline.cpp:1852).
@@ -1133,6 +1134,13 @@ static_assert(DXGI_FORMAT_R32G32_FLOAT == 16, "the in-game MotionVectors DXGI fo
 // 63,760 refused frames (100%) in the run that measured it.  DXGI_FORMAT_R32G8X24_TYPELESS is the
 // typeless D32+S8 container (mingw dxgiformat.h:58, 0x13).
 static_assert(DXGI_FORMAT_R32G8X24_TYPELESS == 19, "the in-game Depth DXGI format, as the log prints it");
+// The RR albedo of record: 1,312 x FAIL slot=DiffuseAlbedo fmt=28 per session
+// (tools/scenario/REPORT.md:905, RR-OPEN-KNOWN-CAUSE, parked there with "fix = accept R8G8B8A8").
+// R8G8B8A8_UNORM is code 5 of the RR texfmt table (texfmt.py RR_BPP[5] = 4 B; rr_texfmt.glsl
+// dec_rr code 5 = RGBA8 UNORM /255 little-endian R,G,B,A = exactly VK_FORMAT_R8G8B8A8_UNORM's
+// memory layout) - the DECODE chain has carried it all along; what was missing is this map row,
+// the slot gate below and the code/pitch re-derivation in collect_frame.
+static_assert(DXGI_FORMAT_R8G8B8A8_UNORM == 28, "the in-game RR albedo DXGI format, as the log prints it");
 
 VkFormat ngxd_dxgi_to_vk(DXGI_FORMAT f) {
     switch (f) {
@@ -1141,6 +1149,10 @@ VkFormat ngxd_dxgi_to_vk(DXGI_FORMAT f) {
         case DXGI_FORMAT_R32G32_FLOAT: return VK_FORMAT_R32G32_SFLOAT;
         case DXGI_FORMAT_R32_FLOAT: return VK_FORMAT_R32_SFLOAT;
         case DXGI_FORMAT_R32G32B32A32_FLOAT: return VK_FORMAT_R32G32B32A32_SFLOAT;
+        // RR albedo (DXGI 28, measured in-game): the view vkd3d creates for it, carried only into
+        // the slots whose gather code can decode it (extra[] below accepts it for DiffuseAlbedo /
+        // SpecularAlbedo; every other slot still refuses through want_format).
+        case DXGI_FORMAT_R8G8B8A8_UNORM: return VK_FORMAT_R8G8B8A8_UNORM;
         // Depth-stencil containers, resolved exactly as vkd3d-proton resolves them when it CREATEs
         // the image (libs/vkd3d/utils.c "vkd3d_depth_stencil_formats", table read from the source:
         // 19/20/21 -> VK_FORMAT_D32_SFLOAT_S8_UINT); the copy then reads its DEPTH aspect
@@ -1285,10 +1297,16 @@ static NVSDK_NGX_Result collect_frame(NVSDK_NGX_Parameter* p, FeatureState* s, b
         // (BridgeImage::aspect DEPTH); fmt_dep stays 0's either way (read_frame_params:490).
         {"Depth", "Depth", VK_FORMAT_R32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT},
     };
+    // DiffuseAlbedo/SpecularAlbedo take a second format: VK_FORMAT_R8G8B8A8_UNORM (DXGI 28,
+    // measured in-game, REPORT.md:905) = RR code 5, 4 B/texel.  The code is re-derived from the
+    // fetched image in the loop below (the fmt_mv precedent), so the default RGBA16F path keeps
+    // code 0 and every pitch it reads is unchanged.
     const Slot extra[] = {
         {"GBuffer.Normals", "GBuffer.Normals", VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_UNDEFINED},
-        {"DLSS.Input.DiffuseAlbedo", "DiffuseAlbedo", VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_UNDEFINED},
-        {"DLSS.Input.SpecularAlbedo", "SpecularAlbedo", VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_UNDEFINED},
+        {"DLSS.Input.DiffuseAlbedo", "DiffuseAlbedo", VK_FORMAT_R16G16B16A16_SFLOAT,
+         VK_FORMAT_R8G8B8A8_UNORM},
+        {"DLSS.Input.SpecularAlbedo", "SpecularAlbedo", VK_FORMAT_R16G16B16A16_SFLOAT,
+         VK_FORMAT_R8G8B8A8_UNORM},
         {"GBuffer.Roughness", "Roughness", VK_FORMAT_R32_SFLOAT, VK_FORMAT_UNDEFINED},
     };
     const char* common_short[] = {"col", "mv", "dep"};
@@ -1328,6 +1346,14 @@ static NVSDK_NGX_Result collect_frame(NVSDK_NGX_Parameter* p, FeatureState* s, b
     // what read_frame_params prefilled and the only mismatch-free answer for the harness's
     // DXGI_FORMAT_R16G16_FLOAT MotionVectors (ngx_client/main.cpp:88 code0 = 0).
     for (size_t k = 0; k < *n; ++k) {
+        // RR albedo re-derivation (the same rule as fmt_mv below): a fetched R8G8B8A8_UNORM view
+        // (DXGI 28) is RR code 5 - 4 B/texel in kRrBppE[5] / kBpp[5] / rr_bpp(5), decoded by
+        // dec_rr code 5.  RGBA16F views keep the prefilled code 0, so the default-format path is
+        // byte-identical; these slots are only fetched on the RR path (extra[] is rr-only).
+        if (ins[k].format == VK_FORMAT_R8G8B8A8_UNORM) {
+            if (!std::strcmp(ins[k].name, "DiffuseAlbedo"))   { fp.fmt_alb = 5; continue; }
+            if (!std::strcmp(ins[k].name, "SpecularAlbedo"))  { fp.fmt_spa = 5; continue; }
+        }
         if (std::strcmp(ins[k].name, "MotionVectors") != 0) continue;
         if (ins[k].format == VK_FORMAT_R32G32_SFLOAT)
             fp.fmt_mv = rr ? 10 : 1;
