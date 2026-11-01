@@ -620,9 +620,11 @@ static unsigned vk_format_bpp(VkFormat f) {
 //   1849 sr_mv_bpp = (fmt_mv == 0) ? 4 : 8 with 1851 pmv = W * that, 1852 pdep = W * 4.
 // RR: pipeline.cpp:2251 pitch(code) = W * kRrBpp[code] (the same table as texfmt.py RR_BPP).
 // Both divide out W - the dispatch width (pipeline.cpp:1862/2261, W = render width, NOT oW; the
-// oW pitch at 1868 belongs to sr_gather_mv, which only runs when mvhi is set and the bridge never
-// sets it).  Returns 0 for a slot whose code is not mirrored here, so the copy falls back to the
-// image's own packing instead of guessing.
+// oW pitch at 1868 belongs to sr_gather_mv, which runs when mvhi is set - collect_frame sets
+// fp.mvhi = 1 for an output-sized MotionVectors image, and the FFX surface derives the same flag
+// from its dispatch's dimensions, so BOTH bridges can now reach that path).  Returns 0 for a slot
+// whose code is not mirrored here, so the copy falls back to the image's own packing instead of
+// guessing.
 static unsigned chain_row_bytes(const ngxd::FrameChain* c, bool rr, const ngxd::FrameParams& fp,
                                 const char* name) {
     if (!c) return 0;
@@ -1369,6 +1371,20 @@ static NVSDK_NGX_Result collect_frame(NVSDK_NGX_Parameter* p, FeatureState* s, b
         const unsigned mv_bpp = vk_format_bpp(ins[k].format);
         const unsigned chain_w = unsigned(c->width());
         if (mv_bpp && chain_row_bytes(c, rr, fp, ins[k].name) == chain_w * mv_bpp && ins[k].w > chain_w) {
+            // Display-resolution MVs are not a layout failure when the image is exactly the
+            // chain's OUTPUT extent (Gemini-2 claim 4): the chain already has the oW-pitch path -
+            // fp.mvhi routes sr_gather's MV half off (sr_gather.comp:142 `if (mvhi == 0)`) and
+            // sr_gather_mv reads in_mv_ at the oW pitch (pipeline.cpp:1874-1885, pmv = oW *
+            // bpp), which is exactly the tight pack copy_row_texels leaves for an image wider
+            // than W (nvngx.cpp:675 returns 0 there); in_mv_ is sized max(W,oW) x max(H,oH) x 16
+            // (pipeline.cpp:968) so the copy fits.  Only SR: the RR record path has no
+            // sr_gather_mv twin, so RR keeps the original refusal.
+            if (!rr && ins[k].w == s->ow && ins[k].h == s->oh) {
+                fp.mvhi = 1;
+                ngx_log("MotionVectors %ux%u are output-sized (chain %u tx in, %ux%u out): mvhi=1",
+                        ins[k].w, ins[k].h, chain_w, s->ow, s->oh);
+                break;
+            }
             char ctx[160];
             std::snprintf(ctx, sizeof ctx, "image %ux%u=%u B/tx, chain rows %u tx (%u B), W=%u",
                           ins[k].w, ins[k].h, mv_bpp, chain_w, chain_w * mv_bpp, chain_w);

@@ -30,9 +30,11 @@
 // Provider label: "DLSS5-AMD (FFX)" (exported for tooling; nothing in OptiScaler v0.9.4
 // resolves it - same pattern other front ends use for their own diagnostics).
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cwchar>
 #include <new>
 
@@ -286,8 +288,14 @@ ffxQuery(ffxContext* context, ffxQueryDescHeader* desc) {
             (ffxQueryDescUpscaleGetRenderResolutionFromQualityMode*)desc;
         if (d->qualityMode > 4 || !d->pOutRenderWidth || !d->pOutRenderHeight)
             return FFX_API_RETURN_ERROR_PARAMETER;
-        *d->pOutRenderWidth = d->displayWidth / (int)kQualityRatio[d->qualityMode];
-        *d->pOutRenderHeight = d->displayHeight / (int)kQualityRatio[d->qualityMode];
+        // Divide in FLOATING point (Gemini-2 claim 1): the old `(int)kQualityRatio[...]`
+        // truncated 1.5f -> 1 and 1.7f -> 1, so Quality/Balanced queries returned the full
+        // display resolution instead of 1.5x/1.7x render.  The integer modes this game uses
+        // (2.0f, 3.0f) are bit-identical either way - 3840 / (int)3.0f == 3840 / 3.0f - so this
+        // is a latent-bug fix with zero change on the 2.0x/3.0x in-game path.  +0.5 rounds to
+        // nearest (1.5x of 1280x720 display = 853x480, not 852x479).
+        *d->pOutRenderWidth = (uint32_t)((double)d->displayWidth / (double)kQualityRatio[d->qualityMode] + 0.5);
+        *d->pOutRenderHeight = (uint32_t)((double)d->displayHeight / (double)kQualityRatio[d->qualityMode] + 0.5);
         return FFX_API_RETURN_OK;
     }
     case FFX_API_QUERY_DESC_TYPE_UPSCALE_GETJITTERPHASECOUNT: {
@@ -372,10 +380,25 @@ ffxDispatch(ffxContext* context, const ffxDispatchDescHeader* desc) {
         c->fs.rh = d->renderSize.height;
         c->fs.ow = d->upscaleSize.width ? d->upscaleSize.width : c->maxUpscaleSize.width;
         c->fs.oh = d->upscaleSize.height ? d->upscaleSize.height : c->maxUpscaleSize.height;
-        // Preset from the dispatch quality flags is not carried per-frame; v1 keeps M (the
-        // 1920x1080 -> 3840x2160 default the harness + the game's pq=0 S2 rows tested).  The
-        // quality-mode query path (kQualityRatio) is advisory only at create time.
-        c->fs.preset = 'M';
+        // Preset (Gemini-2 claim 2): the FFX API carries no DLSS preset hint - the NGX surface
+        // reads DLSS.Hint.Render.Preset.Quality and maps hint 12 -> 'L' (nvngx.cpp:1772/1782,
+        // ngx_abi.h:45) - so this surface INFERRED it from the frame geometry instead of keeping
+        // v1's hardcoded 'M'.  Measured in-game on this very build (bin64 dlss5-amd-ngx.log):
+        // the NGX surface runs `preset=L 1280x720 -> 3840x2160` (3.0x) and `preset=M 1920x1080
+        // -> 3840x2160` (2.0x), and tools/report/psnr3x_gate.py names 3.0x preset L (cell D/E)
+        // "the CURRENT in-game combo" - while the FFX path built `ngx-weights/M` at 3.0x for the
+        // same frames (log: `[ffx] dispatch: creating the chain ... from .../ngx-weights/M`),
+        // i.e. the game ran M where DLSS5 wants L.  Rule: both per-axis ratios >= 2.5 -> 'L',
+        // else 'M'; every ratio <= 2.0x (the ffx1/ffx2 1920x1080 -> 3840x2160 harness cells)
+        // stays on the old 'M'.  DLSS5_AMD_PRESET=L|M overrides for an in-game A/B.
+        const float ratio_x = float(c->fs.ow) / float(c->fs.rw);
+        const float ratio_y = float(c->fs.oh) / float(c->fs.rh);
+        char preset = (ratio_x >= 2.5f && ratio_y >= 2.5f) ? 'L' : 'M';
+        if (const char* envp = std::getenv("DLSS5_AMD_PRESET")) {
+            if (*envp == 'L' || *envp == 'M') preset = *envp;
+            else if (*envp) ffx_log("dispatch: DLSS5_AMD_PRESET='%s' is not L/M - ignored", envp);
+        }
+        c->fs.preset = preset;
         c->fs.frame_idx = 0;
         c->fs.eval_id = 0;
         c->fs.s6_logged = 0;
@@ -421,12 +444,12 @@ ffxDispatch(ffxContext* context, const ffxDispatchDescHeader* desc) {
                     "weights are) - refusing frames");
             return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
         }
-        const std::string w = root + "/M";
-        ffx_log("dispatch: creating the chain %ux%u -> %ux%u from %s", c->fs.rw, c->fs.rh, c->fs.ow, c->fs.oh,
-                w.c_str());
+        const std::string w = root + "/" + preset;
+        ffx_log("dispatch: creating the chain %ux%u -> %ux%u (ratio %.3gx%.3g) preset %c from %s",
+                c->fs.rw, c->fs.rh, c->fs.ow, c->fs.oh, ratio_x, ratio_y, preset, w.c_str());
         const unsigned long long t0 = ngx_ms();
         std::string err;
-        c->fs.chain = ngxd::FrameChain::create(ngxd_vk_device(), ngxd_vk_phys_dev(), "sr", "M",
+        c->fs.chain = ngxd::FrameChain::create(ngxd_vk_device(), ngxd_vk_phys_dev(), "sr", std::string(1, preset),
                                                int(c->fs.rw), int(c->fs.rh), int(c->fs.ow), int(c->fs.oh),
                                                w, shaders, &err);
         if (!c->fs.chain) {
@@ -434,8 +457,8 @@ ffxDispatch(ffxContext* context, const ffxDispatchDescHeader* desc) {
             ffx_log("dispatch: no frame chain (%s)", err.c_str());
             return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
         }
-        ffx_log("dispatch: preset M %ux%u -> %ux%u chain ready in %llu ms, %zu pipelines",
-                c->fs.rw, c->fs.rh, c->fs.ow, c->fs.oh, ngx_ms() - t0, c->fs.chain->pipeline_count());
+        ffx_log("dispatch: preset %c %ux%u -> %ux%u chain ready in %llu ms, %zu pipelines",
+                preset, c->fs.rw, c->fs.rh, c->fs.ow, c->fs.oh, ngx_ms() - t0, c->fs.chain->pipeline_count());
     }
     // --- the command list -> the chain ---------------------------------------------
     ID3D12GraphicsCommandList* cl = (ID3D12GraphicsCommandList*)d->commandList;
@@ -511,6 +534,13 @@ ffxDispatch(ffxContext* context, const ffxDispatchDescHeader* desc) {
     // (1280,-720) = UV-normalized flipped-Y).  The S6 gather decode consumes it unchanged.
     fp.mv_scale_x = d->motionVectorScale.x;
     fp.mv_scale_y = d->motionVectorScale.y;
+    // Gemini-2 claim 3: the same guard the NGX surface applies to MV.Scale.X/.Y
+    // (nvngx.cpp:482-483, reference = DlssNr_Pipeline_Dx12.cpp:123-128): a caller that passes
+    // 0.0/NaN must not zero every motion vector out (zero MVs = no reprojection = ghosted
+    // temporal accumulation).  In-game OptiScaler passes (1280, -720), so this changes nothing
+    // on the measured path - it only closes the unguarded hole the FFX surface had.
+    if (!std::isfinite(fp.mv_scale_x) || fp.mv_scale_x == 0.0f) fp.mv_scale_x = 1.0f;
+    if (!std::isfinite(fp.mv_scale_y) || fp.mv_scale_y == 0.0f) fp.mv_scale_y = 1.0f;
     if ((fp.mv_scale_x != 1.0f || fp.mv_scale_y != 1.0f) && !c->fs.s6_logged) {
         c->fs.s6_logged = 1;
         ffx_log("[S6] mv scale=(%g,%g)", fp.mv_scale_x, fp.mv_scale_y);
@@ -523,6 +553,28 @@ ffxDispatch(ffxContext* context, const ffxDispatchDescHeader* desc) {
     // line the first wired run printed.  The FFX surface is never RR, so 1 is the only non-zero
     // answer, mirroring `fp.fmt_mv = rr ? 10 : 1`.
     if (bi_mv.format == VK_FORMAT_R32G32_SFLOAT) fp.fmt_mv = 1;
+    // Display-resolution MVs (Gemini-2 claim 4): the FFX surface never looked at
+    // FFX_UPSCALE_ENABLE_DISPLAY_RESOLUTION_MOTION_VECTORS (ffx_upscale.h:43, bit 1) nor at the
+    // fetched MV image's extent, and fp.mvhi stayed 0 - so an output-sized MV was copied tightly
+    // (copy_row_texels returns 0 once img.w > W, nvngx.cpp:675) and then read by sr_gather at the
+    // RENDER stride (pipeline.cpp:1870) = sheared vectors, never reaching sr_gather_mv
+    // (pipeline.cpp:1874-1885, the oW-pitch path the chain already implements and its frozen
+    // mvhi cells test).  Decide from the ACTUAL dimensions (the flag can lie in either
+    // direction; dims cannot), mirroring the dimension rule the chain's own mvhi cells use.
+    // In-game this stays 0: flags 0x29/0x39 have bit 1 clear and the MV plane is 1280x720 =
+    // render size (log: `input pitch ... MotionVectors 1280x720+8B chain 10240B=1280 tx -> ok`).
+    {
+        const bool mv_out = (bi_mv.w == c->fs.ow && bi_mv.h == c->fs.oh);
+        const bool mv_render = (bi_mv.w == c->fs.rw && bi_mv.h == c->fs.rh);
+        fp.mvhi = (mv_out && !mv_render) ? 1 : 0;
+        const bool flag = (c->flags & FFX_UPSCALE_ENABLE_DISPLAY_RESOLUTION_MOTION_VECTORS) != 0;
+        if (flag != (fp.mvhi != 0))
+            ffx_log("dispatch: MV %ux%u vs render %ux%u / output %ux%u: mvhi=%d (flag %s) - %s",
+                    bi_mv.w, bi_mv.h, c->fs.rw, c->fs.rh, c->fs.ow, c->fs.oh, fp.mvhi,
+                    flag ? "set" : "clear",
+                    flag ? "flag claims display-res but the image is not output-sized - dims win"
+                         : "flag clear but the image is output-sized - dims win");
+    }
     // --- record --------------------------------------------------------------------------
     BridgeImage_ ins[3] = {bi_color, bi_mv, bi_dep};
     const NVSDK_NGX_Result rr = ngxd_record_bridge(vkcmd, &c->fs, fp, ins, d->depth.resource ? 3 : 2, &bi_out);
