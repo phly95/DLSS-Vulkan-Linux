@@ -59,6 +59,14 @@ if [[ -f "$ROOT/src/pe/nvngx.cpp" ]]; then
     fi
 fi
 
+# FFX_SKELETON=1 (optional): also syntax-check the FFX front-end skeleton with mingw into
+# build/package/dlss5-amd-ffx.dll.  Default (unset) = untouched default behaviour.
+if [[ "${FFX_SKELETON:-0}" == "1" ]] && [[ -f "$ROOT/src/ffx/ffx_front.cpp" ]] \
+   && command -v x86_64-w64-mingw32-g++ >/dev/null; then
+    x86_64-w64-mingw32-g++ -std=c++17 -shared -O2 "$ROOT/src/ffx/ffx_front.cpp" \
+        -o "$ROOT/build/package/dlss5-amd-ffx.dll" -static -static-libgcc -static-libstdc++
+fi
+
 if command -v g++ >/dev/null; then
     g++ -std=c++17 -O2 -I"$ROOT/reference-nr-vulkan/toolchain/Vulkan-Headers/include" \
         -Wl,-rpath,"$RPATH" \
