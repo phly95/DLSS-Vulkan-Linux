@@ -400,7 +400,12 @@ float reset_feat(MVF f, float xx, float yy) {
     float ayv = k * dy;
     float S = axv * axv + ayv * ayv;
     float rt = sqrt(S);
-    float down = uintBitsToFloat(floatBitsToUint(rt) - 1u);
+    // S == 0 -> bits(0.0) - 1 = NaN, selected by `r10 <= 0`, reaching the fp8 store as -448 and
+    // collapsing the network to its constant output on every exactly-zero-MV pixel (see
+    // sr_enc0L_in.comp's identical line: still objects rendered black, oracle fine on the same
+    // corpus). The model value is ln(1+sqrt(0)) = 0, which is what the oracle's quantizer yields
+    // for the NaN; rt > 0 takes exactly the old expression.
+    float down = (rt == 0.0) ? 0.0 : uintBitsToFloat(floatBitsToUint(rt) - 1u);
     float up = uintBitsToFloat(floatBitsToUint(rt) + 1u);
     float r10 = S - up * rt;
     float root = (r10 > 0.0) ? up : ((r10 <= 0.0) ? down : rt);

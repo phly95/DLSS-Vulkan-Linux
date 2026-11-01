@@ -356,7 +356,15 @@ float reset_feat(MVF f, float xx, float yy) {
     float ayv = resetk * dy;
     float S = axv * axv + ayv * ayv;
     float rt = sqrt(S);
-    float down = uintBitsToFloat(floatBitsToUint(rt) - 1u);
+    // S == 0 (a pixel whose MV is EXACTLY zero against an exactly-zero prev_mvec - i.e. every
+    // still pixel) makes bits(rt) - 1 = 0xFFFFFFFF = NaN, and `r10 <= 0` then SELECTS it: the NaN
+    // survives to the fp8 store, whose RADV clamp maps it to -448 (max(NaN,-448) = -448), and that
+    // single -448 feature drives the whole network to its constant output (measured: every mv==0
+    // pixel becomes 6.37769699e-06, flat, frame after frame, while srref on the same corpus reaches
+    // 41 dB). The oracle's own quantizer maps NaN to 0 (tools/sr/sr_enc0L_model.py q8r_code:
+    // `np.where(np.isnan(x), 0, x)`), and the model value here IS 0 (ln(1+sqrt(0)) = 0), so pin the
+    // nextafter-down term to 0 for rt == 0. For rt > 0 this line is bit-identical to before.
+    float down = (rt == 0.0) ? 0.0 : uintBitsToFloat(floatBitsToUint(rt) - 1u);
     float up = uintBitsToFloat(floatBitsToUint(rt) + 1u);
     float r10 = S - up * rt;
     float root = (r10 > 0.0) ? up : ((r10 <= 0.0) ? down : rt);
