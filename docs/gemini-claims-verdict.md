@@ -154,7 +154,7 @@ fixtures built from those frames. All numbers below are this script's own `--rep
 | scrambled-A (per-frame RGB permutation, `default_rng(20261101)`) | 0.19201234 .. 0.19498892 | 0.73412584 .. 0.74969425 | **FAIL** (`frac` ceiling) |
 | scrambled-B (IID draws from the pooled 12-frame distribution) | 0.21419674 .. 0.21428631 | 0.82184992 .. 0.82211018 | **FAIL** (`frac` ceiling) |
 
-**Thresholds (`content_gate.py:68-70`: `0.001 / 0.40 / 0.01 / 0.55`) are sane and were NOT moved.**
+**Thresholds (`content_gate.py:71-73`, `LOW_MEAN/HIGH_MEAN/LOW_FRAC/HIGH_FRAC` = `0.001 / 0.40 / 0.01 / 0.55`) are sane and were NOT moved.**
 
 * `min mean > 0.001` — healthy 0.0078 = **7.8×** over; frozen exactly 0.
 * `min frac > 0.01` — healthy 0.0395 = **4.0×** over; frozen exactly 0.

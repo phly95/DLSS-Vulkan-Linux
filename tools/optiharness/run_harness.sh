@@ -413,7 +413,8 @@ fi
 # backs must (a) differ by more than a measured epsilon - a stuck/replayed frame does not - and (b)
 # differ by LESS than a generous upper bound - a scrambled frame jumps the content's full dynamic
 # range every frame.  Calibrated bars + rationale + measured distributions: README "g3 content"
-# (thresholds live in tools/optiharness/content_gate.py:68-70).  Same inversion semantics as g3:
+# (thresholds = LOW_MEAN/HIGH_MEAN/LOW_FRAC/HIGH_FRAC in content_gate.py:71-73).  Same inversion
+# semantics as g3:
 # --expect-fail requires an all-zero, identical-every-frame output; --corpus runs drop the floors
 # (their frame-to-frame motion belongs to the corpus files) but keep the scramble ceilings.
 g3b=PASS; g3bnote=""

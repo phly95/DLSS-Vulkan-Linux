@@ -111,7 +111,8 @@ plus OptiScaler may early-return its first evaluate for change-backend bookkeepi
   holds **byte-identical** frames (`md5` of `out_0`/`out_5` equal in both dirs; the port's output
   is deterministic on this input) and prints the same eleven pairs.
 
-  **Bars** (constants `content_gate.py:68-70`, each with its measured margin):
+  **Bars** (the `LOW_MEAN / HIGH_MEAN / LOW_FRAC / HIGH_FRAC` constants, `content_gate.py:71-73`
+  — line numbers drift, the names do not; each with its measured margin):
 
   | rule | bar | healthy margin | catches |
   |---|---|---|---|
