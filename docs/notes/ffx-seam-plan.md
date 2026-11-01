@@ -438,3 +438,54 @@ New cell `ffx1` (design; to be implemented after the skeleton compiles):
 4. Dispatch path: frame params from the desc, gather/exposure wiring, barriers.
 5. Harness cell `ffx1` + gates; measure vs dlss cell.
 6. Game dir: ini-override install (`FfxDx12SRPath`), measure in Crimson Desert behind OptiScaler.
+7. Fork follow-up (stage-2 polish): a first-class OptiScaler entry, tested as a parallel path.
+
+   The ini-override route needs no OptiScaler modification, but OptiScaler v0.9.4 is also
+   forkable at trivial cost — source is vendored in
+   `reference-nr-vulkan/artifacts/ref/OptiScaler-NR-src/` (GPL-3.0; personal use
+   unencumbered, publish the diff if ever distributed). A dedicated "DLSS5-AMD" menu entry is
+   a 4-line first-class diff, replacing WrongGPU.asi's entire fragile pattern-patching
+   apparatus (ImGui::Selectable confidence voting, runtime byte patches):
+
+   1. `OptiTypes.h` — add `DLSS5AMD` to `enum class Upscaler` (OptiTypes.h:42-66).
+   2. `OptiTypes.cpp:37 UpscalerDisplayName()` — `case Upscaler::DLSS5AMD: return "DLSS5-AMD";`.
+   3. `menu/menu_common.cpp:546 AddDx12Backends()` — append `Upscaler::DLSS5AMD` to the
+      `RenderUpscalerCombo` options list (this is the exact function WrongGPU.asi byte-patches).
+   4. Backend routing — map `Upscaler::DLSS5AMD` to the FFX feature class with our library
+       path default (or reuse the FFX path: the dll loaded is whatever `[Libraries]` points at).
+
+   Real new work = building OptiScaler itself once (Proton-host build script; the vendored
+   tree carries its build system). Tracking cost per OptiScaler release ≈ re-applying the
+   4-line diff (mechanisable: `tools/optiscaler-fork/patch.sh`). Plan: land BOTH — the ini
+   route first (works with stock Opti, proves the seam), then the fork for the named entry;
+   the two are additive and independent, and the harness should gate them as separate cells
+   (`ffx1` = ini route over stock Opti; `ffx2` = fork route) so a regression in either is
+   attributable.
+8. Two-path test plan (user-approved 2026-11-01: prepare both without interaction):
+   `ffx1` = ini-override cell over STOCK OptiScaler v0.9.4 (dxgi.dll as shipped in bin64);
+   `ffx2` = forked-Opti cell (our patched dxgi.dll carrying the `DLSS5AMD` entry, same ini
+   minus the override since the fork's routing targets our dll directly). Both cells share
+   the port dll + gates; the fork's build runs in a scratch copy of the vendored tree, never
+   in place.
+
+   The ini-override route needs no OptiScaler modification, but OptiScaler v0.9.4 is also
+   forkable at trivial cost — source is vendored in
+   `reference-nr-vulkan/artifacts/ref/OptiScaler-NR-src/` (GPL-3.0; personal use
+   unencumbered, publish the diff if ever distributed). A dedicated "DLSS5-AMD" menu entry is
+   a 4-line first-class diff, replacing WrongGPU.asi's entire fragile pattern-patching
+   apparatus (ImGui::Selectable confidence voting, runtime byte patches):
+
+   1. `OptiTypes.h` — add `DLSS5AMD` to `enum class Upscaler` (OptiTypes.h:42-66).
+   2. `OptiTypes.cpp:37 UpscalerDisplayName()` — `case Upscaler::DLSS5AMD: return "DLSS5-AMD";`.
+   3. `menu/menu_common.cpp:546 AddDx12Backends()` — append `Upscaler::DLSS5AMD` to the
+      `RenderUpscalerCombo` options list (this is the exact function WrongGPU.asi byte-patches).
+   4. Backend routing — map `Upscaler::DLSS5AMD` to the FFX feature class with our library
+       path default (or reuse the FFX path: the dll loaded is whatever `[Libraries]` points at).
+
+   Real new work = building OptiScaler itself once (Proton-host build script; the vendored
+   tree carries its build system). Tracking cost per OptiScaler release ≈ re-applying the
+   4-line diff (mechanisable: `tools/optiscaler-fork/patch.sh`). Plan: land BOTH — the ini
+   route first (works with stock Opti, proves the seam), then the fork for the named entry;
+   the two are additive and independent, and the harness should gate them as separate cells
+   (`ffx1` = ini route over stock Opti; `ffx2` = fork route) so a regression in either is
+   attributable.
