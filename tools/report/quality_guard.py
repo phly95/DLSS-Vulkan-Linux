@@ -16,8 +16,55 @@ Bars, per cell (the port may be BETTER than NeuralHub against ground truth; it m
   T1  temporal: mean over t>=1 of tPSNR(port) - tPSNR(ref) >= -0.20 dB, where tPSNR(x) compares the
       frame-to-frame change of x, tm(x_t) - tm(x_t-1), with ground truth's (flicker / ghosting /
       shimmer that per-frame PSNR does not see)
-  B1  backstop: every frame PSNR(port, ref) >= 38.0 dB (the look stays NeuralHub's; HEAD sits at 41.7
-      on seq, where the port already deviates - see the commit that added this file)
+  B1  backstop: every frame PSNR(port, ref) >= 41.0 dB (see the anchor below)
+
+WHICH METRIC IS WHICH - do not conflate this script's bars with the referee's V4 bars:
+  * B1 HERE measures PSNR(port, NeuralHub-oracle OUTPUT) - how far the port's frame drifted from
+    what NeuralHub's own srref rendered on the identical inputs.  It is a REGRESSION FLOOR for the
+    optimisation phase ("the look still matches the oracle frame-for-frame"), deliberately loose.
+    It has NO ground-truth term and it is NOT the V4 bar.  It does share V4's FIRST term (per-frame
+    PSNR against the oracle output) but at a deliberately LOOSER threshold - 41.0 < 50.0 - and
+    without V4's mean or GT-delta terms, so a green B1 is never a V4 pass; that is intentional and
+    is exactly the gap the doc block below exists to name.
+  * V4 is the frozen referee's quality bar and the ONLY authority for 50/55/0.1:
+    tools/verify/eval_verify.py:30 (READ ONLY - imported here, never modified) = per frame
+    PSNR(port, oracle output) >= 50.0 dB AND mean >= 55.0 dB AND, with ground truth,
+    |PSNR(port, GT) - PSNR(oracle, GT)| <= 0.1 dB on EVERY frame, no non-finite value.  Those numbers
+    gate tools/verify's own cells (run_all.sh); this script does not restate them as its own bars and
+    must never be read as if it enforced them.  Coverage-wise the 1.5x/2.0x/3.0x + UV-MV matrix gate
+    is tools/report/psnr3x_gate.py, which applies V4's exact numbers to the cells tools/verify never
+    built.
+  * G1/G2 HERE compare the SIGNED GT delta against -0.20/-0.50 dB - the optimisation phase's
+    "no further loss vs the phase-start baseline" rule (KNOWN_GAP below), NOT V4's 0.1 dB absolute
+    delta.
+
+B1 anchor (measured on HEAD BEFORE this bar was raised, 2026-11-01:
+`build/venv/bin/python -I tools/report/quality_guard.py`):
+    sr_M_seq 41.85 | sr_M_static 57.13 | sr_L_static 55.42 | sr_L_seq 33.12
+  sr_L_seq already failed G1/G2/T1 in that measurement (an accuracy item, not an optimisation
+  regression), so it did not set the bar.  Measured minimum of the cells that pass every other bar
+  = 41.85 dB; chosen bar = 41.0 dB, i.e. margin 0.85 dB BELOW that measured minimum (every healthy
+  cell keeps passing, and a >0.85 dB loss on the worst cell trips B1).  The old 38.0 dB bar sat
+  3.85 dB under that measured minimum, so the old guard could lose 3.85 dB on its worst healthy
+  cell - a large regression - and still print `B1:ok`.
+AFTER-RAISE run, MEASURED FRESH 2026-11-01 15:13-15:28 (same command, whole run to completion,
+tree state = HEAD incl. 80aa2f7, shader spv 15:11-15:12 / vk_runner 15:12, i.e. the run read one
+consistent build):
+    sr_M_seq 41.91 | sr_M_static 57.13 | sr_L_seq 42.12 | sr_L_static 55.42
+  -> every cell PASS (G1/G2/T1/B1 all ok), QUALITY GUARD: PASS, worst cell 41.91 vs bar 41.0
+  (margin 0.91 dB).  Per-cell detail of that run:
+    sr_M_seq    G1 +2.841  G2 +0.403  T1 +2.935  B1 41.91
+    sr_M_static G1 -0.042  G2 -0.106  T1 -0.036  B1 57.13
+    sr_L_seq    G1 +2.557  G2 +0.306  T1 +2.722  B1 42.12
+    sr_L_static G1 +0.014  G2 -0.082  T1 +0.010  B1 55.42
+  CORRECTION to the numbers an earlier draft of this docstring carried (41.85 / 57.13 / 42.11 /
+  55.42): those were a run made before 80aa2f7 reached the shared tree; this run is the measured
+  reality and is what the bar is reported against.  Two cells reproduce to the digit (57.13,
+  55.42), the two seq cells move by +0.06 and +0.01 dB.  The bar was NOT moved for any of it: it
+  stays 41.0, anchored to the pre-raise measurement above (41.85), and the fresh worst healthy
+  cell (41.91) sits 0.91 dB over it.  sr_L_seq also recovered 33.12 -> 42.12 across the same span
+  (G1 -1.983 -> +2.557) - that is another session's accuracy fix landing in the tree, not this
+  bar; it never moved the anchor either.
 PSNR is tools/verify/eval_verify.py's (tone-mapped x/(1+x), RGB), imported, not copied.
 Data: build/qguard/ (symlinks into the referee run build/verify/run_20261028_003547_1291489, the
 inputs, ground truth and srref outputs of that run). Exit 0 = every bar of every cell passes.
@@ -44,7 +91,12 @@ RR_CELLS = {  # preset F = Ray Reconstruction, oracle = rrref (referee cells rr_
     "seq": ("seq/rr", "seq/gt", "out_ref/rr_F_seq"),
     "static": ("base/rr", "base/rr_gt", "out_ref/rr_F_static"),
 }
-G1, G2, T1, B1 = -0.20, -0.50, -0.20, 38.0
+# B1 = 41.0: anchored 0.85 dB under the measured HEAD minimum 41.85 (sr_M_seq, the worst of the
+# cells that pass every other bar - the docstring's anchor block lists both measurements, the
+# margins and the fresh 2026-11-01 confirmation run, whose worst healthy cell is 41.91, 0.91 dB
+# over this bar).  38.0 (the bar this commit replaced) sat 3.85 dB under that anchor, so it could
+# lose 3.85 dB on the worst healthy cell and still print B1:ok.
+G1, G2, T1, B1 = -0.20, -0.50, -0.20, 41.0
 # Cells that already miss the bars at the start of the optimisation phase: there the bars are relative
 # to that baseline (no further loss), and the gap itself is an open accuracy item, not an optimisation
 # regression. rr_F_seq at main fb78207 (2026-10-28): G1 mean -1.545, G2 min -2.712, T1 mean -1.517;
