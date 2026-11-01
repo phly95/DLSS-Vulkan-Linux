@@ -36,6 +36,14 @@
 #include <cwchar>
 #include <new>
 
+// Step 3 (2026-11-01): the FFX surface now drives the VERY SAME bridge the NGX surface runs -
+// one dxgi_to_vk map, one interop dance, one record path.  The shared declarations live in
+// src/pe/ngx_bridge_shared.h; nvngx.cpp (static -> extern'd) provides the definitions.  This
+// TU is compiled TOGETHER with src/vk/pipeline.cpp + src/pe/nvngx.cpp into dlss5-amd-ffx.dll
+// (src/ffx/build.sh), so the NGX surface's machinery is linked, not duplicated.
+#include "../pe/ngx_bridge_shared.h"
+#include <d3d12.h>
+
 // ---------------------------------------------------------------------------
 // FidelityFX SDK API subset (MIT, AMD FidelityFX SDK; see the provenance note above).
 // ---------------------------------------------------------------------------
@@ -258,12 +266,19 @@ struct ffxQueryDescUpscaleGetGPUMemoryUsage {
 };
 
 // ---------------------------------------------------------------------------
-// Local logging (ffx_front writes its own log like the NGX bridge writes dlss5-amd-ngx.log).
-// v1 placeholder: stderr-free, AppendDebugView-free - a plain file next to the DLL is decided
-// with the ffx_d3d12.cpp step; for the skeleton a minimal CRT file logger keeps mingw happy.
+// Logging: the SHARED bridge log (ngx_log writes stderr + the CWD's dlss5-amd-ngx.log, the
+// one file the harness gates already grep).  Every line this surface writes is prefixed
+// "[ffx] " so one surface's lines are grep-able exactly (ngx_bridge_shared.h contract).
+// The skeleton's no-op local ffx_log is gone; ngx_log's varargs replace it.
 // ---------------------------------------------------------------------------
+static void ffx_log(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 static void ffx_log(const char* fmt, ...) {
-    (void)fmt;  // wired in step 3; the skeleton only needs the symbol to exist
+    va_list ap;
+    va_start(ap, fmt);
+    char buf[512];
+    std::vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    ngx_log("[ffx] %s", buf);
 }
 
 // ---------------------------------------------------------------------------
@@ -306,7 +321,11 @@ static void halton_jitter(int32_t index, int32_t phaseCount, float* outX, float*
 }
 
 // ---------------------------------------------------------------------------
-// Context object (skeleton: descriptor snapshot only; chain handle arrives in step 3).
+// Context object: descriptor snapshot + the BRIDGE feature state.  The chain is built lazily
+// on the first dispatch (build-then-frame: FFX hands us the device in create, but the real
+// acquire/format evidence only exists at the first frame's resources; nvngx.cpp builds the
+// chain inside CreateFeature and reacts to resize by destroy+recreate - FFX has no resize
+// desc, the plan's lifecycle section pins the same answer here).
 // ---------------------------------------------------------------------------
 struct FfxUpscaleContext {
     uint32_t                     flags = 0;
@@ -315,6 +334,17 @@ struct FfxUpscaleContext {
     ffxApiMessage                fpMessage = nullptr;
     void*                        d3d12Device = nullptr;
     unsigned long long           creates = 0;
+    // The bridge side (ngx_bridge_shared.h FeatureState_): chain + interop + diag counters.
+    FeatureState_                fs = {};
+    // The frame parameters the NEXT dispatch feeds the chain (jitter pair: the caller hands
+    // the current jitter only, the chain wants prev+cur - same trick nvngx.cpp's Evaluate does).
+    bool have_prev_j = false;
+    float prev_jx = 0.0f, prev_jy = 0.0f;
+    // MV scale observed (S6 observability parity: one line per feature at the first non-identity).
+    float mvx = 1.0f, mvy = 1.0f;
+    // One-time chain-build failure (so a permanently broken config doesn't retry every frame).
+    bool build_failed = false;
+    char build_err[192] = "";
 };
 
 static FfxUpscaleContext* as_ctx(ffxContext* c) { return c ? (FfxUpscaleContext*)*c : nullptr; }
@@ -367,6 +397,23 @@ ffxCreateContext(ffxContext* context, ffxCreateContextDescHeader* desc, const vo
     c->fpMessage = up->fpMessage;
     c->d3d12Device = be->device;
     c->creates = 0;
+    // The bridge feature state: sizes stay 0 until the first dispatch names the REAL frame
+    // geometry (FFX contexts are max-size, frames are actual-size).  feature int: NVSDK enum 1
+    // = SuperSampling, so the shared record path takes its SR branch (rr stays false).
+    c->fs = FeatureState_{};
+    c->fs.feature = NVSDK_NGX_Feature_SuperSampling;
+    c->fs.d3d_device = (ID3D12Device*)be->device;
+    if (c->fs.d3d_device) c->fs.d3d_device->AddRef();
+    // The vkd3d interop dance NOW (nvngx.cpp: ngxd_interop_device_for) - without it the first
+    // GetVulkanResourceInfo has nothing to ask; it also fills g_vk_* + the entry points.
+    ID3D12DXVKInteropDevice* interop = nullptr;
+    if (c->fs.d3d_device && ngxd_interop_device_for(c->fs.d3d_device, &interop) && interop) {
+        c->fs.interop = interop;   // consumed by the fetch/record path; ref owned by fs
+        ffx_log("create: interop device ok (vkd3d handing the game's VkDevice)");
+    } else {
+        ffx_log("create: NO interop device (device=%p not vkd3d-proton?) - dispatch will refuse",
+                (void*)c->fs.d3d_device);
+    }
     *context = (ffxContext)c;
     ffx_log("ffxCreateContext: UPSCALE maxRender=%ux%u maxUpscale=%ux%u flags=0x%x",
             up->maxRenderSize.width, up->maxRenderSize.height,
@@ -379,6 +426,9 @@ ffxDestroyContext(ffxContext* context, const void* memCb) {
     (void)memCb;
     FfxUpscaleContext* c = as_ctx(context);
     if (!c) return FFX_API_RETURN_OK;  // NULL / foreign double-destroy tolerance (plan section 3)
+    if (c->fs.chain) { delete c->fs.chain; c->fs.chain = nullptr; }
+    if (c->fs.interop) { c->fs.interop->Release(); c->fs.interop = nullptr; }
+    if (c->fs.d3d_device) { c->fs.d3d_device->Release(); c->fs.d3d_device = nullptr; }
     delete c;
     if (context) *context = nullptr;
     ffx_log("ffxDestroyContext: destroyed");
@@ -515,11 +565,177 @@ ffxDispatch(ffxContext* context, const ffxDispatchDescHeader* desc) {
                 d->jitterOffset.x, d->jitterOffset.y,
                 d->motionVectorScale.x, d->motionVectorScale.y, d->reset ? 1u : 0u);
     }
+    if (c->build_failed) {
+        // One refuse per context after a failed build (the reason is already in the log).
+        return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
+    }
+    // --- frame geometry -----------------------------------------------------------
+    // First frame (or after the context saw a NEW size): set the shared FeatureState_'s sizes
+    // and build the chain once.  FFX has no resize desc (plan §3) - a changed render or upscale
+    // size destroys + rebuilds the chain here, the same answer nvngx.cpp's resize takes.
+    const bool same =
+        c->fs.rw == d->renderSize.width && c->fs.rh == d->renderSize.height &&
+        c->fs.ow == d->upscaleSize.width && c->fs.oh == d->upscaleSize.height &&
+        c->fs.chain != nullptr;
+    if (!same) {
+        if (c->fs.chain) { delete c->fs.chain; c->fs.chain = nullptr; ffx_log("dispatch: size change -> rebuild"); }
+        c->fs.rw = d->renderSize.width;
+        c->fs.rh = d->renderSize.height;
+        c->fs.ow = d->upscaleSize.width ? d->upscaleSize.width : c->maxUpscaleSize.width;
+        c->fs.oh = d->upscaleSize.height ? d->upscaleSize.height : c->maxUpscaleSize.height;
+        // Preset from the dispatch quality flags is not carried per-frame; v1 keeps M (the
+        // 1920x1080 -> 3840x2160 default the harness + the game's pq=0 S2 rows tested).  The
+        // quality-mode query path (kQualityRatio) is advisory only at create time.
+        c->fs.preset = 'M';
+        c->fs.frame_idx = 0;
+        c->fs.eval_id = 0;
+        c->fs.s6_logged = 0;
+        // build the chain RIGHT HERE (nvngx.cpp build_chain's FFX twin, against the shared
+        // FeatureState_'s fields; weights at DLSS5_AMD_WEIGHTS, shaders beside the DLL).
+        // module_path_tail is private to nvngx.cpp; the DLL's dir trick works identically by
+        // asking the weights root + the SAME dlss5-amd\\shaders tail the NGX surface uses.
+        if (!c->fs.interop) {
+            c->build_failed = true;
+            ffx_log("dispatch: refuse - no interop device (create logged the reason)");
+            return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
+        }
+        char shaders[MAX_PATH] = {0};
+        {
+            HMODULE self = nullptr;
+            GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               (LPCWSTR)&ffxCreateContext, &self);
+            wchar_t wpath[MAX_PATH] = {0};
+            if (self && GetModuleFileNameW(self, wpath, MAX_PATH)) {
+                // ...\\bin64\\dlss5-amd-ffx.dll -> ...\\bin64\\dlss5-amd\\shaders
+                std::wstring ws(wpath);
+                const size_t slash = ws.find_last_of(L"\\/");
+                if (slash != std::wstring::npos) {
+                    const std::wstring dir = ws.substr(0, slash) + L"\\dlss5-amd\\shaders";
+                    WideCharToMultiByte(CP_UTF8, 0, dir.c_str(), -1, shaders, sizeof shaders, nullptr, nullptr);
+                }
+            }
+            if (!shaders[0]) ffx_log("dispatch: shaders dir unresolved (GetModuleFileName failed)");
+        }
+        const std::string root = ngxd_weights_root();
+        if (root.empty()) {
+            c->build_failed = true;
+            ffx_log("dispatch: DLSS5_AMD_WEIGHTS is not set (installer has to say where the packed "
+                    "weights are) - refusing frames");
+            return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
+        }
+        const std::string w = root + "/M";
+        ffx_log("dispatch: creating the chain %ux%u -> %ux%u from %s", c->fs.rw, c->fs.rh, c->fs.ow, c->fs.oh,
+                w.c_str());
+        const unsigned long long t0 = ngx_ms();
+        std::string err;
+        c->fs.chain = ngxd::FrameChain::create(ngxd_vk_device(), ngxd_vk_phys_dev(), "sr", "M",
+                                               int(c->fs.rw), int(c->fs.rh), int(c->fs.ow), int(c->fs.oh),
+                                               w, shaders, &err);
+        if (!c->fs.chain) {
+            c->build_failed = true;
+            ffx_log("dispatch: no frame chain (%s)", err.c_str());
+            return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
+        }
+        ffx_log("dispatch: preset M %ux%u -> %ux%u chain ready in %llu ms, %zu pipelines",
+                c->fs.rw, c->fs.rh, c->fs.ow, c->fs.oh, ngx_ms() - t0, c->fs.chain->pipeline_count());
+    }
+    // --- the command list -> the chain ---------------------------------------------
+    ID3D12GraphicsCommandList* cl = (ID3D12GraphicsCommandList*)d->commandList;
+    ID3D12GraphicsCommandListExt* ext = nullptr;
+    if (FAILED(cl->QueryInterface(ngxd_IID_ID3D12GraphicsCommandListExt, reinterpret_cast<void**>(&ext))) || !ext) {
+        ffx_log("dispatch: the command list has no ID3D12GraphicsCommandListExt (not vkd3d?)");
+        return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
+    }
+    VkCommandBuffer vkcmd = VK_NULL_HANDLE;
+    ext->GetVulkanHandle(&vkcmd);
+    ext->Release();
+    if (!vkcmd) {
+        ffx_log("dispatch: GetVulkanHandle gave a null VkCommandBuffer");
+        return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
+    }
+    // --- resource fetch --------------------------------------------------------------
+    // Bridge slots, exactly the NGX D3D12 path's table.  FFX hands the D3D12 resource pointer
+    // + its state in the desc; the shared dxgi_to_vk map + interop translate.
+    // NOTE: FfxApiResource here is the SKELETON's simplified shape (description as POINTER);
+    // the vendored ffx_api_types.h has it BY VALUE.  v0.9.4's FfxApi_Proxy fills ours, so the
+    // skeleton shape stays until step 4's switch to the vendored headers.
+    (void)d;  // resources are consumed below via the desc's pointers
+    // Color (RG16B16A16 in-game; the harness cell stages RGBA16F - both code 0)
+    auto fill_bridge = [&](const FfxApiResource& r, const char* name, VkBuffer buf,
+                           D3D12_RESOURCE_STATES st, BridgeImage_& o) -> bool {
+        o = BridgeImage_{};
+        o.buf = buf;
+        o.name = name;
+        if (!r.resource || !c->fs.interop) return false;
+        ID3D12Resource* res = (ID3D12Resource*)r.resource;
+        const auto desc = res->GetDesc();
+        UINT64 handle = 0, off2 = 0;
+        const bool have = SUCCEEDED(c->fs.interop->GetVulkanResourceInfo(res, &handle, &off2)) && handle != 0;
+        o.image = have ? (VkImage)handle : VK_NULL_HANDLE;
+        o.format = ngxd_dxgi_to_vk(desc.Format);
+        o.w = unsigned(desc.Width);
+        o.h = unsigned(desc.Height);
+        o.dxgi = unsigned(desc.Format);
+        // depth-stencil images carry their texels on the DEPTH aspect (see the header audit)
+        if (o.format == VK_FORMAT_D32_SFLOAT_S8_UINT ||
+            o.format == VK_FORMAT_D24_UNORM_S8_UINT ||
+            o.format == VK_FORMAT_D32_SFLOAT) {
+            o.aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+        } else {
+            o.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+        }
+        c->fs.interop->GetVulkanImageLayout(res, st, &o.layout);
+        if (!have || o.format == VK_FORMAT_UNDEFINED || o.layout == VK_IMAGE_LAYOUT_UNDEFINED) {
+            ffx_log("dispatch: %s fetch failed (have=%d fmt=%d layout=%d dxgi=%u)", name, int(have),
+                    int(o.format), int(o.layout), o.dxgi);
+            return false;
+        }
+        return true;
+    };
+    BridgeImage_ bi_color, bi_mv, bi_dep, bi_out;
+    const bool ok_c = fill_bridge(d->color,    "Color",        c->fs.chain->in_color_buf(),   D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, bi_color);
+    const bool ok_m = fill_bridge(d->motionVectors, "MotionVectors", c->fs.chain->in_mv_buf(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, bi_mv);
+    const bool ok_d = d->depth.resource ? fill_bridge(d->depth, "Depth", c->fs.chain->in_depth_buf(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, bi_dep) : true;
+    const bool ok_o = fill_bridge(d->output,   "Output",       c->fs.chain->out_color_buf(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, bi_out);
+    if (!ok_c || !ok_m || !ok_d || !ok_o) {
+        ffx_log("dispatch: fetch refused (c=%d m=%d d=%d o=%d)", int(ok_c), int(ok_m), int(ok_d), int(ok_o));
+        return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
+    }
+    // --- frame parameters -------------------------------------------------------------
+    ngxd::FrameParams fp{};
+    fp.jx = d->jitterOffset.x;
+    fp.jy = d->jitterOffset.y;
+    if (c->have_prev_j) { fp.jpx = c->prev_jx; fp.jpy = c->prev_jy; }
+    fp.reset = d->reset ? 1 : 0;
+    fp.pre_exposure = d->preExposure > 0.0f ? d->preExposure : 1.0f;
+    fp.exposure = 1.0f;   // the chain's exposure comes pre-applied on the color input in FFX mode
+    // MV scale: FFX carries the SAME pair NGX's MV.Scale.X/.Y carries (measured in-game pair
+    // (1280,-720) = UV-normalized flipped-Y).  The S6 gather decode consumes it unchanged.
+    fp.mv_scale_x = d->motionVectorScale.x;
+    fp.mv_scale_y = d->motionVectorScale.y;
+    if ((fp.mv_scale_x != 1.0f || fp.mv_scale_y != 1.0f) && !c->fs.s6_logged) {
+        c->fs.s6_logged = 1;
+        ffx_log("[S6] mv scale=(%g,%g)", fp.mv_scale_x, fp.mv_scale_y);
+    }
+    c->prev_jx = fp.jx; c->prev_jy = fp.jy; c->have_prev_j = true;
+    // --- record --------------------------------------------------------------------------
+    BridgeImage_ ins[3] = {bi_color, bi_mv, bi_dep};
+    const NVSDK_NGX_Result rr = ngxd_record_bridge(vkcmd, &c->fs, fp, ins, d->depth.resource ? 3 : 2, &bi_out);
+    ++c->fs.frame_idx;
+    if (!ngx_ok(rr)) {
+        ffx_log("dispatch: record refused (0x%x)", unsigned(rr));
+        return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
+    }
+    // Per-frame + 1 Hz observability, the d5 style the gates can grep:
+    static unsigned long long s_last_ms = 0;
+    const unsigned long long now = ngx_ms();
+    if (c->creates == 0 || now - s_last_ms >= 1000u) {
+        s_last_ms = now;
+        ffx_log("frame %u: %ux%u -> %ux%u eval #%llu OK", c->fs.frame_idx, c->fs.rw, c->fs.rh, c->fs.ow,
+                c->fs.oh, c->fs.eval_id);
+    }
     ++c->creates;
-    // SKELETON: the frame chain is not wired in yet.  Report a runtime error so a host that
-    // dispatches anyway fails cleanly (Opti recreates the feature on RUNTIME_ERROR) instead of
-    // reading an unwritten output.
-    return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
+    return FFX_API_RETURN_OK;
 }
 
 }  // extern "C"

@@ -21,39 +21,27 @@
 #include "../vk/pipeline.h"
 #include "../vk/vkfuncs.h"
 
-// vkd3d-proton interop definitions
-static const GUID IID_ID3D12GraphicsCommandListExt = 
+// The ffx surface (src/ffx/ffx_front.cpp) links this same TU inside dlss5-amd-ffx.dll and drives
+// the bridge through the declarations below: one dxgi_to_vk map, one interop dance, one
+// record_bridge - the two surfaces cannot be allowed to drift apart.  Everything the NGX surface
+// keeps private (its own exports, the parameter object, the D3D12 hooks) stays `static` here.
+#include "ngx_bridge_shared.h"
+
+const GUID ngxd_IID_ID3D12GraphicsCommandListExt = 
     { 0x77a86b09, 0x2bea, 0x4801, { 0xb8, 0x9a, 0x37, 0x64, 0x8e, 0x10, 0x4a, 0xf1 } };
 
-static const GUID IID_ID3D12DXVKInteropDevice = 
+const GUID ngxd_IID_ID3D12DXVKInteropDevice = 
     { 0x39da4e09, 0xbd1c, 0x4198, { 0x9f, 0xae, 0x86, 0xbb, 0xe3, 0xbe, 0x41, 0xfd } };
 
-MIDL_INTERFACE("77a86b09-2bea-4801-b89a-37648e104af1")
-ID3D12GraphicsCommandListExt : public IUnknown
-{
-    virtual HRESULT STDMETHODCALLTYPE GetVulkanHandle(VkCommandBuffer * pVkCommandBuffer) = 0;
-    virtual HRESULT STDMETHODCALLTYPE LaunchCubinShader(void* handle, UINT32 x, UINT32 y, UINT32 z,
-                                                        const void* params, UINT32 param_size) = 0;
-};
+// The interop interfaces/IIDs now live in d3d12_interop.h (included via ngx_bridge_shared.h);
+// the aliases below keep every later `IID_*` call site here compiling untouched.
+static const GUID& IID_ID3D12GraphicsCommandListExt = ngxd_IID_ID3D12GraphicsCommandListExt;
+static const GUID& IID_ID3D12DXVKInteropDevice = ngxd_IID_ID3D12DXVKInteropDevice;
 
-MIDL_INTERFACE("39da4e09-bd1c-4198-9fae-86bbe3be41fd")
-ID3D12DXVKInteropDevice : public IUnknown
-{
-    virtual HRESULT STDMETHODCALLTYPE GetDXGIAdapter(REFIID iid, void** ppvObject) = 0;
-    virtual HRESULT STDMETHODCALLTYPE GetInstanceExtensions(UINT* pExtensionCount, const char** ppExtensions) = 0;
-    virtual HRESULT STDMETHODCALLTYPE GetDeviceExtensions(UINT* pExtensionCount, const char** ppExtensions) = 0;
-    virtual HRESULT STDMETHODCALLTYPE GetDeviceFeatures(const VkPhysicalDeviceFeatures2** ppFeatures) = 0;
-    virtual HRESULT STDMETHODCALLTYPE GetVulkanHandles(VkInstance* pVkInstance, VkPhysicalDevice* pVkPhysicalDevice,
-                                                       VkDevice* pVkDevice) = 0;
-    virtual HRESULT STDMETHODCALLTYPE GetVulkanQueueInfo(ID3D12CommandQueue* pCommandQueue, VkQueue* pVkQueue,
-                                                         UINT32* pVkQueueFamily) = 0;
-    virtual void STDMETHODCALLTYPE GetVulkanImageLayout(ID3D12Resource* pResource, D3D12_RESOURCE_STATES State,
-                                                        VkImageLayout* pVkLayout) = 0;
-    virtual HRESULT STDMETHODCALLTYPE GetVulkanResourceInfo(ID3D12Resource* pResource, UINT64* pVkHandle,
-                                                            UINT64* pBufferOffset) = 0;
-    virtual HRESULT STDMETHODCALLTYPE LockCommandQueue(ID3D12CommandQueue* pCommandQueue) = 0;
-    virtual HRESULT STDMETHODCALLTYPE UnlockCommandQueue(ID3D12CommandQueue* pCommandQueue) = 0;
-};
+HINSTANCE ngxd_hinstance = NULL;   // DllMain's instance (also used below via g_hinstance alias)
+
+// Barrier helper + format helpers the FFX surface needs for nothing directly (record_bridge uses
+// them internally); they stay static here - the shared surface goes through ngxd_record_bridge.
 
 // The frame chain is a plain C++ library (src/vk/pipeline.cpp); under the DLL it reaches Vulkan through
 // the pointers below, filled from NVSDK_NGX_VULKAN_Init's gipa/gdpa or from winevulkan in the process.
@@ -181,7 +169,9 @@ static const NVSDK_NGX_ParameterVtbl g_param_vtbl = {
 
 ParametersImpl::ParametersImpl() : vtbl(&g_param_vtbl) {}
 
-static HINSTANCE g_hinstance = NULL;
+// g_hinstance (the NGX surface's historical name) IS the shared bridge instance slot: one
+// storage, two names, and DllMain below sets it once.
+static HINSTANCE& g_hinstance = ngxd_hinstance;
 
 // Check NVIDIA DLL presence and size
 static bool check_nvidia_dll(NVSDK_NGX_Feature feat) {
@@ -238,9 +228,9 @@ static uint64_t g_eval_seq = 0;
 static const char* kPortTag = "diag-v1";   // which build wrote a line: stamped on the init lines
 
 static unsigned long long g_log_t0 = 0;
-static unsigned long long ngx_ms() { return GetTickCount64(); }
+unsigned long long ngx_ms() { return GetTickCount64(); }
 
-static void ngx_log(const char* fmt, ...) {
+void ngx_log(const char* fmt, ...) {
     char buf[1024];
     va_list ap;
     va_start(ap, fmt);
@@ -276,7 +266,7 @@ static bool module_path_tail(const char* tail, char* out, size_t cap) {
 // DLSS5_AMD_WEIGHTS, spelled the way the Win32 CRT can open it.  The packed weights live outside the game
 // folder (r2scan.py scans the game folder, build/vk, build/shaders and build/package), so the installer
 // hands their path over in the launch environment instead of copying them anywhere a scan would see them.
-static std::string weights_root() {
+std::string ngxd_weights_root() {
     const char* env = std::getenv("DLSS5_AMD_WEIGHTS");
     if (!env || !*env) return {};
     const std::string raw(env);
@@ -375,38 +365,16 @@ static bool load_vk_for_device(VkInstance inst, VkPhysicalDevice phys, VkDevice 
     return load_from_module();
 }
 
-struct FeatureState {
-    uint32_t id = 0;
-    NVSDK_NGX_Feature feature = NVSDK_NGX_Feature_SuperSampling;
-    char preset = 'M';
-    uint32_t rw = 0, rh = 0, ow = 0, oh = 0;
-    int frame_idx = 0;
-    // The EvaluateFeature call id (g_eval_seq) currently being served, so record_bridge's
-    // once-per-feature lines can be tied back to the exact call that recorded them (diag-v1).
-    unsigned long long eval_id = 0;
-    // the bridge
-    ngxd::FrameChain* chain = nullptr;
-    float prev_jx = 0.0f, prev_jy = 0.0f;   // NGX hands the current jitter only; the chain needs both
-    ID3D12DXVKInteropDevice* interop = nullptr;   // D3D12 path only
-    ID3D12Device* d3d_device = nullptr;           // D3D12 path only (AddRef'd)
-    mutable char s6_logged = 0;   // S6: one [S6] mv-scale line per feature, first non-identity frame
+// FeatureState is FeatureState_ (ngx_bridge_shared.h): the ffx surface shares the layout.  The
+// NGX surface's extra typing comes from the member functions/kinds below, not from fields.
+struct FeatureState : FeatureState_ {
+    NVSDK_NGX_Feature NGXFeature() const { return static_cast<NVSDK_NGX_Feature>(feature); }
+    void set_feature(NVSDK_NGX_Feature f) { feature = int(f); }
+    bool is_rr() const { return feature == NVSDK_NGX_Feature_RayReconstruction; }
 };
 
-// One input or output image of a frame, with the layout the caller left it in.
-struct BridgeImage {
-    VkImage image = VK_NULL_HANDLE;
-    VkFormat format = VK_FORMAT_UNDEFINED;
-    VkImageLayout layout = VK_IMAGE_LAYOUT_GENERAL;
-    // Which aspect carries the texels the copies/barriers below operate on: COLOR for every colour
-    // image, DEPTH for vkd3d's depth-stencil images (a D32_SFLOAT_S8_UINT image has no COLOR aspect,
-    // so VK_IMAGE_ASPECT_COLOR_BIT there is a VUID violation, not a no-op - see the depth audit in
-    // d3d_image_resource).  On the copy this decides the texel size as well: the DEPTH aspect of
-    // D32_SFLOAT_S8_UINT is VK_FORMAT_D32_SFLOAT = 4 B/texel, not the combined 8 B/stencil texel.
-    VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
-    unsigned w = 0, h = 0;
-    VkBuffer buf = VK_NULL_HANDLE;   // the chain's staging buffer for this slot
-    const char* name = "";           // the slot's name (Color/MotionVectors/.../Output), for the log
-    unsigned dxgi = 0;               // the DXGI format the D3D12 caller gave, 0 on the Vulkan path
+// BridgeImage = BridgeImage_ (ngx_bridge_shared.h), the shared layout; the NGX TU's name stays.
+struct BridgeImage : BridgeImage_ {
 };
 
 // The depth formats this bridge now decodes, named so both the map below and the aspect choice in
@@ -434,7 +402,7 @@ static bool build_chain(FeatureState* s) {
         return false;
     }
     if (!load_vk_for_device(g_vk_instance, g_vk_phys_dev, g_vk_device)) return false;
-    const std::string root = weights_root();
+    const std::string root = ngxd_weights_root();
     if (root.empty()) {
         ngx_log("%s %ux%u: DLSS5_AMD_WEIGHTS is not set; the packed weights are kept outside the game folder "
                 "on purpose, so the installer has to say where they are", feature_name(s), s->rw, s->rh);
@@ -1156,7 +1124,7 @@ static_assert(DXGI_FORMAT_R32G32_FLOAT == 16, "the in-game MotionVectors DXGI fo
 // typeless D32+S8 container (mingw dxgiformat.h:58, 0x13).
 static_assert(DXGI_FORMAT_R32G8X24_TYPELESS == 19, "the in-game Depth DXGI format, as the log prints it");
 
-static VkFormat dxgi_to_vk(DXGI_FORMAT f) {
+VkFormat ngxd_dxgi_to_vk(DXGI_FORMAT f) {
     switch (f) {
         case DXGI_FORMAT_R16G16B16A16_FLOAT: return VK_FORMAT_R16G16B16A16_SFLOAT;
         case DXGI_FORMAT_R16G16_FLOAT: return VK_FORMAT_R16G16_SFLOAT;
@@ -1201,7 +1169,7 @@ static bool d3d_image_resource(FeatureState* s, ID3D12Resource* res, D3D12_RESOU
     UINT64 handle = 0, offset = 0;
     const bool have = SUCCEEDED(s->interop->GetVulkanResourceInfo(res, &handle, &offset)) && handle != 0;
     o.image = have ? (VkImage)handle : VK_NULL_HANDLE;
-    o.format = dxgi_to_vk(desc.Format);
+    o.format = ngxd_dxgi_to_vk(desc.Format);
     o.w = unsigned(desc.Width);
     o.h = unsigned(desc.Height);
     o.dxgi = unsigned(desc.Format);
@@ -1438,6 +1406,15 @@ static void log_eval_ok(unsigned long long eval_id, const FeatureState* s, size_
 // core already does it (reference-nr-vulkan/linux/src/pe/nr_ngx_core.cpp:460-473).
 struct NVSDK_NGX_FeatureDiscoveryInfo;
 struct NVSDK_NGX_FeatureRequirement;
+
+// The FFX surface calls the same record path (ngx_bridge_shared.h declares it). A thin forwarder
+// keeps record_bridge's static linkage and its use of the NGX TU's FrameDiag/private helpers.
+NVSDK_NGX_Result ngxd_record_bridge(VkCommandBuffer cmd, FeatureState_* s, const ngxd::FrameParams& fp,
+                                    const BridgeImage_* ins, size_t n, const BridgeImage_* out) {
+    return record_bridge(cmd, static_cast<FeatureState*>(s), fp,
+                         reinterpret_cast<const BridgeImage*>(const_cast<BridgeImage_*>(ins)), n,
+                         *reinterpret_cast<const BridgeImage*>(out));
+}
 
 // Exports
 extern "C" {
@@ -1709,7 +1686,7 @@ __declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_D3D12_GetFeatureRequi
 
 // The Vulkan chain needs a VkDevice; on the D3D12 path that is vkd3d-proton's, reached through its
 // interop interface on the same device the game gave us.
-static bool interop_device_for(ID3D12Device* device, ID3D12DXVKInteropDevice** out) {
+bool ngxd_interop_device_for(ID3D12Device* device, ID3D12DXVKInteropDevice** out) {
     if (!device) return false;
     if (FAILED(device->QueryInterface(IID_ID3D12DXVKInteropDevice, reinterpret_cast<void**>(out))) || !*out)
         return false;
@@ -1723,6 +1700,7 @@ static bool interop_device_for(ID3D12Device* device, ID3D12DXVKInteropDevice** o
     g_vk_device = dev;
     return load_vk_for_device(inst, phys, dev);
 }
+
 
 static ID3D12Device* device_of(ID3D12GraphicsCommandList* cmd) {
     if (g_d3d12_device) { g_d3d12_device->AddRef(); return g_d3d12_device; }
@@ -1773,7 +1751,7 @@ __declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_D3D12_CreateFeature(
 
     std::lock_guard<std::mutex> guard(g_bridge_lock);
     ID3D12Device* device = device_of(cmd);
-    const bool got = interop_device_for(device, &s->interop);
+    const bool got = ngxd_interop_device_for(device, &s->interop);
     if (device) device->Release();
     if (!got) {
         ngx_log("D3D12 CreateFeature: no vkd3d-proton interop device, so there is no Vulkan chain to run");
@@ -1990,6 +1968,12 @@ __declspec(dllexport) NVSDK_NGX_Result NGX_MSABI NVSDK_NGX_VULKAN_EvaluateFeatur
 }
 
 } // extern "C"
+
+// The FFX surface's view of the device triple (declared extern "C++" in ngx_bridge_shared.h).
+// Definitions sit OUTSIDE the exports' extern "C" block so the linkage matches the header.
+VkInstance ngxd_vk_instance() { return g_vk_instance; }
+VkPhysicalDevice ngxd_vk_phys_dev() { return g_vk_phys_dev; }
+VkDevice ngxd_vk_device() { return g_vk_device; }
 
 BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
