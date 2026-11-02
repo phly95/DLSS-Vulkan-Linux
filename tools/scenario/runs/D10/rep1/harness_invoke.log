@@ -1,0 +1,33 @@
+  staged /home/deck/DLSS-Vulkan-Linux/build/optiharness/harness (nvngx=_nvngx.dll, ini=tools/scenario/inis/fsr22.ini, shaders=/home/deck/DLSS-Vulkan-Linux/build/shaders, mode=opti, frames=60)
+  Proton probe rc=1: /home/deck/.local/share/Steam/steamapps/common/Proton 10.0/proton
+  Proton: /home/deck/.local/share/Steam/steamapps/common/Proton 10.0/proton
+  game prefix free: /home/deck/.local/share/Steam/steamapps/compatdata/3321460 (default game compatdata)
+  running (04:10:12, timeout 900 s)...
+  opti_client rc=1 (04:10:34); logs in /home/deck/DLSS-Vulkan-Linux/build/optiharness/harness
+
+HARNESS SUMMARY
+  mode=opti expect_fail=0 sl=0 frames=60 nvngx=_nvngx.dll
+  g1 OptiScaler : FAIL   create=0 loaded_from_nvngx=1 running_on_nvidia=1 fsr_fallback=0 bad00000=0
+  g2 port log   : FAIL   no dlss5-amd-ngx.log in /home/deck/DLSS-Vulkan-Linux/build/optiharness/harness
+  g3 non-black  : FAIL   threshold 'every frame nz >= 0.10', viol=4/60, min nz=0.000000
+  g4 timing     : PASS   EVAL_MS n=59 median=0.0894 ms p95=1.2383 ms | GPU_EVAL_MS n=59 median=1.5202 ms p95=2.3627 ms (frames 1..)
+  --- opti_client summary.txt ---
+  mode=opti
+  frames=60
+  render=1280x720
+  output=3840x2160
+  mv=rg32
+  dep=d32s8
+  corpus=
+  expect_fail=0
+  EVAL_MS n=59 median=0.0894 p95=1.2383 min=0.0625 max=1000.9106  (frames 1..)
+  GPU_EVAL_MS n=59 median=1.5202 p95=2.3627 tags=d3d12-timestamp
+  PORT_RECORD_MS present=0 n=0 median=-1.0000  (dlss5-amd-ngx.log 'recorded in N ms')
+  PORT_EVAL ok=0 fail=0
+  OUT_NZ min=0.000000 max=1.000000 threshold=0.10  (frames 1..)
+  GATE eval=PASS
+  GATE nonblack=FAIL
+  GATE timing=PASS
+  GATE port=FAIL
+  RESULT=FAIL
+HARNESS RESULT: FAIL  (opti_client rc=1, exe summary RESULT=FAIL)

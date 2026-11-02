@@ -1,0 +1,18 @@
+mode=opti
+frames=60
+render=3840x2160
+output=3840x2160
+mv=rg32
+dep=d32s8
+corpus=
+expect_fail=0
+EVAL_MS n=59 median=0.0941 p95=1.2071 min=0.0841 max=1002.5308  (frames 1..)
+GPU_EVAL_MS n=59 median=2.4784 p95=2.7535 tags=d3d12-timestamp
+PORT_RECORD_MS present=0 n=0 median=-1.0000  (dlss5-amd-ngx.log 'recorded in N ms')
+PORT_EVAL ok=0 fail=0
+OUT_NZ min=0.000000 max=1.000000 threshold=0.10  (frames 1..)
+GATE eval=PASS
+GATE nonblack=FAIL
+GATE timing=PASS
+GATE port=FAIL
+RESULT=FAIL

@@ -1,0 +1,63 @@
+; tools/optiharness/OptiScaler.harness.ini - installed by run_harness.sh as
+; build/optiharness/harness/OptiScaler.ini (OptiScaler reads its ini from the directory of the
+; loaded dxgi.dll, Config.cpp:45 - the GAME's OptiScaler.ini is never touched).
+;
+; Only the keys that matter are spelled out; every absent section/key keeps its default
+; (Config.h).  The critical ones:
+;
+; [Upscalers] Dx12Upscaler=dlss
+;     forces EVERY in-harness pick through the DLSS provider, i.e. through this repo's
+;     _nvngx.dll.  The game keeps "auto" (its XeSS-black issue 10 was diagnostics having forced
+;     this key to "dlss"; this file is harness-local by construction, so the two can never
+;     interfere).
+; [Libraries] NvngxPath=_nvngx.dll
+;     OptiScaler's NVNGXProxy::InitNVNGX resolution order (proxies/NVNGX_Proxy.h:449): override ->
+;     OptiScaler's own directory -> registry.  The override points at the staged port DLL, so
+;     the log line "Loaded from ... \_nvngx.dll" proves which binary is inside the stack.
+; [Log] LogToFile=true / LogLevel=1
+;     per-frame debug lines with ms timestamps (CPU-side evidence, next to the exe).
+; [Hotfix] CheckForUpdate=false
+;     kills the WinHTTP update thread (dllmain/Config.cpp:564) - nothing phones home here.
+; [CAS] Enabled=false, [Sharpness] Sharpness=0/OverrideSharpness=false
+;     isolates our evaluate: no RCAS/CAS pass rewrites the output we are about to pixel-check
+;     (OptiScaler would run RCAS whenever its effective sharpness > 0, upscalers/dlss/
+;     DLSSFeature_Dx12.cpp:161; [CAS] Enabled=false pins it off regardless of version default).
+; [OutputScaling] Enabled=false - no OutputScaling buffer swap around the evaluate.
+;
+; Deliberately UNSET (defaults are what we need):
+;   [FrameGen] everything         -> FG defaults off
+;   [Menu] OverlayMenu            -> default true; false draws ImGui INTO the output texture
+;                                    after frame 30 and would corrupt the pixel checks
+;   [Hotfix] SkipFirstFrames      -> an unset SkipFirstFrames keeps evaluates from early-returning
+;   [Hotfix] Restore*Signature    -> root-signature restore passes stay off
+;   [ProcessFilter] TargetProcessName / ProcessExclusionList -> default: opti_client.exe is
+;                                    neither the target nor on the exclusion list
+; The exe name opti_client.exe (not a default-excluded name, Config.h:341) is why no
+; [ProcessFilter] override is needed.
+
+[Upscalers]
+Dx12Upscaler=dlss
+
+[DLSS]
+Enabled=true
+
+[Libraries]
+NvngxPath=_nvngx.dll
+
+[Log]
+LogToFile=true
+LogLevel=1
+
+[Hotfix]
+CheckForUpdate=false
+
+[CAS]
+Enabled=false
+MotionSharpnessEnabled=false
+
+[Sharpness]
+OverrideSharpness=false
+Sharpness=0
+
+[OutputScaling]
+Enabled=false

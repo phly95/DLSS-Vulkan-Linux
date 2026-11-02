@@ -1,0 +1,759 @@
+[09:22:27.128394] [W] OptiScaler v0.9.4-final (7534ad0) loaded
+[09:22:27.128406] [W] ---------------------------------
+[09:22:27.128408] [W] OptiScaler is freely downloadable from
+[09:22:27.128409] [W] GitHub : https://github.com/optiscaler/OptiScaler/releases
+[09:22:27.128410] [W] Nexus  : https://www.nexusmods.com/site/mods/986
+[09:22:27.128412] [W] If you paid for these files, you've been scammed!
+[09:22:27.128413] [W] DO NOT USE IN MULTIPLAYER GAMES
+[09:22:27.128414] [I] 
+[09:22:27.128416] [I] LogLevel: 1
+[09:22:27.128417] [I] 
+[09:22:27.128422] [I] Windows version: Windows 10 (10.0.19045)
+[09:22:27.128424] [I] Config parameters:
+[09:22:27.128426] [I] Upscalers.Dx12Upscaler: xess
+[09:22:27.128427] [I] DLSS.Enabled: true
+[09:22:27.128429] [I] Log.LogLevel: 1
+[09:22:27.128430] [I] Log.LogToFile: true
+[09:22:27.128431] [I] Sharpness.OverrideSharpness: false
+[09:22:27.128432] [I] Sharpness.Sharpness: 0
+[09:22:27.128434] [I] CAS.Enabled: false
+[09:22:27.128435] [I] CAS.MotionSharpnessEnabled: false
+[09:22:27.128436] [I] OutputScaling.Enabled: false
+[09:22:27.128437] [I] Hotfix.CheckForUpdate: false
+[09:22:27.128439] [I] Libraries.NvngxPath: _nvngx.dll
+[09:22:27.128440] [I] 
+[09:22:27.128442] [I] Setting DllPath to Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[09:22:27.128443] [I] 
+[09:22:27.128453] [I] 
+[09:22:27.128455] [I] IsRunningOnWine Running on Wine 10.0!
+[09:22:27.128457] [I] 
+[09:22:27.128458] [I] Check for DLSS files
+[09:22:27.128475] [I] Util::FindFilePath nvngx_dlss.dll found at Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[09:22:27.128489] [I] Util::FindFilePath nvngx_dlssd.dll found at Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[09:22:27.129226] [I] 
+[09:22:27.136857] [D] isNvidia Using dxvk-nvapi
+[09:22:27.140039] [D] isNvidia Detected: true
+[09:22:27.140051] [I] Running on Nvidia
+[09:22:27.140053] [I] Enabling DLSS
+[09:22:27.140055] [I] Disabling DxgiSpoofing
+[09:22:27.140057] [I] 
+[09:22:27.140073] [I] CheckQuirks Game's Exe: opti_client.exe
+[09:22:27.140075] [I] CheckQuirks Game Name: 
+[09:22:27.140077] [I] CheckQuirks Game Version: 
+[09:22:27.140078] [I] CheckQuirks Game Engine: Other
+[09:22:27.140273] [I] 
+[09:22:27.141076] [I] CheckWorkingMode OptiScaler working as dxgi.dll, system dll loaded
+[09:22:27.141088] [D] DxgiProxy::Init dxgi.dll loaded at 6FFFFB7D0000
+[09:22:27.141121] [I] Config::CheckUpscalerFiles nvngx.dll found in game folder
+[09:22:27.141137] [I] Util::FindFilePath nvngx_dlss.dll found at Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[09:22:27.141146] [I] Config::CheckUpscalerFiles libxess.dll found in game folder
+[09:22:27.141147] [D] CheckWorkingMode dxgi.dll already in memory
+[09:22:27.141149] [D] DxgiHooks::Hook 
+[09:22:27.141206] [D] KernelHooks::HookBase 
+[09:22:27.141236] [D] CheckWorkingMode Check for d3d12
+[09:22:27.141238] [D] CheckWorkingMode d3d12.dll already in memory
+[09:22:27.141242] [D] D3D12Hooks::Hook 
+[09:22:27.141426] [D] CheckWorkingMode Loading vulkan-1.dll for Linux, result: 6FFFFB7B0000
+[09:22:27.141429] [D] CheckWorkingMode Hooking vulkan-1.dll
+[09:22:27.141686] [I] Vulkan_wDx12::Hook Attaching Vulkan vkQueueSubmit hook
+[09:22:27.141821] [D] Vulkan_wDx12::InitializeStateTrackerFunctionTable State tracker function table initialized
+[09:22:27.143802] [D] KernelHooks::Hook 
+[09:22:27.143849] [I] 
+[09:22:27.143852] [D] FfxApiProxy::InitFfxDx12 Trying to load amd_fidelityfx_loader_dx12.dll
+[09:22:27.144038] [I] Util::LoadProxyLibrary amd_fidelityfx_loader_dx12.dll loaded from Opti dll path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\amd_fidelityfx_loader_dx12.dll
+[09:22:27.144042] [I] FfxApiProxy::InitFfxDx12 Loaded from Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\amd_fidelityfx_loader_dx12.dll
+[09:22:27.144061] [I] 
+[09:22:27.144063] [D] FfxApiProxy::InitFfxDx12_SR Trying to load amd_fidelityfx_upscaler_dx12.dll
+[09:22:27.148411] [I] Util::LoadProxyLibrary amd_fidelityfx_upscaler_dx12.dll loaded from Opti dll path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\amd_fidelityfx_upscaler_dx12.dll
+[09:22:27.149870] [D] FSR4ModelSelection::Hook Hooking model selection, o_createModelSDK: 0
+[09:22:27.149954] [D] FSR4ModelSelection::Hook Hooking model selection, o_createModelSDK2: 6FFFF9BE3AB0
+[09:22:27.149969] [I] FfxApiProxy::InitFfxDx12_SR Loaded from Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\amd_fidelityfx_upscaler_dx12.dll
+[09:22:27.149984] [I] FfxApiProxy::InitFfxDx12_SR LoadResult: true
+[09:22:27.149986] [I] 
+[09:22:27.149988] [D] FfxApiProxy::InitFfxDx12_FG Trying to load amd_fidelityfx_framegeneration_dx12.dll
+[09:22:27.156274] [I] Util::LoadProxyLibrary amd_fidelityfx_framegeneration_dx12.dll loaded from Opti dll path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\amd_fidelityfx_framegeneration_dx12.dll
+[09:22:27.156290] [I] FfxApiProxy::InitFfxDx12_FG Loaded from Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\amd_fidelityfx_framegeneration_dx12.dll
+[09:22:27.156311] [I] FfxApiProxy::InitFfxDx12_FG LoadResult: true
+[09:22:27.156313] [I] 
+[09:22:27.156316] [D] FfxApiProxy::InitFfxDx12_Denoiser Trying to load amd_fidelityfx_denoiser_dx12.dll
+[09:22:27.158729] [I] Util::LoadProxyLibrary amd_fidelityfx_denoiser_dx12.dll loaded from Opti dll path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\amd_fidelityfx_denoiser_dx12.dll
+[09:22:27.158743] [I] FfxApiProxy::InitFfxDx12_Denoiser Loaded from Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\amd_fidelityfx_denoiser_dx12.dll
+[09:22:27.158760] [I] FfxApiProxy::InitFfxDx12_Denoiser LoadResult: true
+[09:22:27.158762] [I] 
+[09:22:27.158764] [D] FfxApiProxy::InitFfxDx12_Radiance Trying to load amd_fidelityfx_radiancecache_dx12.dll
+[09:22:27.158978] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_radiancecache_dx12.dll, returning nullptr!
+[09:22:27.158980] [I] FfxApiProxy::InitFfxDx12_Radiance LoadResult: false
+[09:22:27.158982] [I] FfxApiProxy::InitFfxDx12 LoadResult: true
+[09:22:27.158983] [I] 
+[09:22:27.158985] [D] FfxApiProxy::InitFfxDx12_Radiance Trying to load amd_fidelityfx_radiancecache_dx12.dll
+[09:22:27.159141] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_radiancecache_dx12.dll, returning nullptr!
+[09:22:27.159143] [I] FfxApiProxy::InitFfxDx12_Radiance LoadResult: false
+[09:22:27.159145] [D] XeSSProxy::InitXeSS Trying to load libxess.dll
+[09:22:27.170979] [I] Util::LoadProxyLibrary libxess.dll loaded from Opti dll path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\libxess.dll
+[09:22:27.171006] [I] XeSSProxy::InitXeSS Loaded from Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\libxess.dll
+[09:22:27.171111] [I] XeSSProxy::InitXeSS LoadResult: true
+[09:22:27.171115] [D] XeSSProxy::InitXeSSDx11 Trying to load libxess_dx11.dll
+[09:22:27.171385] [I] Util::LoadProxyLibrary libxess_dx11.dll loaded from Opti dll path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\libxess_dx11.dll
+[09:22:27.171389] [I] XeSSProxy::InitXeSSDx11 Loaded from Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\libxess_dx11.dll
+[09:22:27.171419] [I] XeSSProxy::InitXeSSDx11 LoadResult: true
+[09:22:27.171422] [D] XeFGProxy::InitXeFG Trying to load libxess_fg.dll
+[09:22:27.175322] [I] Util::LoadProxyLibrary libxess_fg.dll loaded from Opti dll path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\libxess_fg.dll
+[09:22:27.175343] [I] XeFGProxy::InitXeFG Loaded from Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\libxess_fg.dll
+[09:22:27.175345] [I] 
+[09:22:27.175350] [I] XeFGProxy::HookXeFG LoadResult: true
+[09:22:27.175353] [D] XeLLProxy::InitXeLL Trying to load libxell.dll
+[09:22:27.175763] [I] Util::LoadProxyLibrary libxell.dll loaded from Opti dll path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\libxell.dll
+[09:22:27.175770] [I] XeLLProxy::InitXeLL Loaded from Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\libxell.dll
+[09:22:27.175773] [I] 
+[09:22:27.175775] [I] XeLLProxy::HookXeLL LoadResult: true
+[09:22:27.175777] [I] NVNGXProxy::InitNVNGX 
+[09:22:27.175783] [D] NVNGXProxy::InitNVNGX Trying to load _nvngx.dll
+[09:22:27.176139] [I] Util::LoadProxyLibrary _nvngx.dll loaded from override path: _nvngx.dll
+[09:22:27.176144] [I] NVNGXProxy::InitNVNGX Loaded from Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\_nvngx.dll
+[09:22:27.176146] [I] NVNGXProxy::InitNVNGX Getting nvngx method addresses
+[09:22:27.176147] [D] HookNgxApi Trying to hook NgxApi
+[09:22:27.176150] [I] HookNgxApi NVSDK_NGX_XXXXXX_GetFeatureRequirements found, hooking!
+[09:22:27.176166] [I] 
+[09:22:27.176168] [D] InitFSR4Update 
+[09:22:27.176349] [I] InitFSR4Update amdxc64.dll loaded
+[09:22:27.176351] [D] InitFSR4Update Hooking AmdExtD3DCreateInterface
+[09:22:27.176361] [I] OverrideNvapiDll not set, setting it to: false
+[09:22:27.176362] [I] 
+[09:22:27.176372] [I] HookFSR2ExeInputs Trying to hook FSR2 methods
+[09:22:27.176378] [D] HookFSR2ExeInputs ffxFsr2ContextCreate_Dx12: 0
+[09:22:27.176380] [D] HookFSR2ExeInputs ffxFsr2ContextDispatch_Dx12: 0
+[09:22:27.176381] [D] HookFSR2ExeInputs ffxFsr20ContextDispatch_Dx12: 0
+[09:22:27.176383] [D] HookFSR2ExeInputs ffxFsr2TinyContextDispatch_Dx12: 0
+[09:22:27.176385] [D] HookFSR2ExeInputs ffxFsr2ContextDestroy_Dx12: 0
+[09:22:27.176386] [D] HookFSR2ExeInputs ffxFsr2GetUpscaleRatioFromQualityMode_Dx12: 0
+[09:22:27.176388] [D] HookFSR2ExeInputs ffxFsr2GetRenderResolutionFromQualityMode_Dx12: 0
+[09:22:27.176399] [I] HookFSR3ExeInputs Trying to hook FSR3 methods
+[09:22:27.176402] [D] HookFSR3ExeInputs ffxFsr3UpscalerContextCreate_Dx12: 0
+[09:22:27.176404] [D] HookFSR3ExeInputs ffxFsr3UpscalerContextDispatch_Dx12: 0
+[09:22:27.176406] [D] HookFSR3ExeInputs ffxFsr3UpscalerContextDestroy_Dx12: 0
+[09:22:27.176407] [D] HookFSR3ExeInputs ffxFsr3UpscalerGetUpscaleRatioFromQualityMode_Dx12: 0
+[09:22:27.176409] [D] HookFSR3ExeInputs ffxFsr3UpscalerGetRenderResolutionFromQualityMode_Dx12: 0
+[09:22:27.176428] [I] 
+[09:22:27.176430] [I] Init done
+[09:22:27.176431] [I] ---------------------------------------------
+[09:22:27.176432] [I] 
+[09:22:27.177119] [D] hkD3D12CreateDevice Adapter: 0, Level: C000, Caller: opti_client.exe
+[09:22:27.177418] [D] D3D12Hooks::HookAgility Hooking D3D12GetInterface from D3D12 Agility SDK
+[09:22:27.177435] [D] hkD3D12GetInterface D3D12GetInterface called: 6FFFFDEECDF0, 6FFFFDEEEC20, Caller: d3d12.dll
+[09:22:27.177439] [D] hkD3D12GetInterface D3D12GetInterface called: 6FFFFDEECE00, 6FFFFDEEEC30, Caller: d3d12.dll
+[09:22:27.177443] [D] hkCreateDXGIFactory1 Caller: d3d12core.dll
+[09:22:27.179071] [D] hkvkGetInstanceProcAddr vkCreateInstance
+[09:22:27.182128] [I] VulkanSpoofing::hkvkCreateInstance Skipping because DXVK/VKD3D is creating a D3D device
+[09:22:27.184291] [D] hkvkCreateInstance State::Instance().VulkanInstance captured: 1689E50
+[09:22:27.184306] [D] hkvkGetInstanceProcAddr vkCreateDevice
+[09:22:27.185125] [W] DxgiSpoofing::AttachToAdapter DxgiSpoofing and DxgiVRAM is disabled, skipping hooking
+[09:22:27.185559] [D] hkvkGetInstanceProcAddr vkCreateInstance
+[09:22:27.186462] [I] VulkanSpoofing::hkvkCreateInstance Skipping because DXVK/VKD3D is creating a D3D device
+[09:22:27.187573] [D] hkvkCreateInstance State::Instance().VulkanInstance captured: 1689EF0
+[09:22:27.187595] [D] hkvkGetInstanceProcAddr vkCreateDevice
+[09:22:27.203296] [I] VulkanSpoofing::hkvkCreateDevice Skipping because DXVK/VKD3D is creating a D3D device
+[09:22:27.206061] [D] hkvkCreateDevice _PD captured: 1689F08
+[09:22:27.206080] [D] hkvkCreateDevice _device captured: CB8670
+[09:22:27.206144] [D] HookDevice Hooking VkDevice
+[09:22:27.207854] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool 1693420 created for queue family 1
+[09:22:27.279562] [D] hkD3D12CreateDevice o_D3D12CreateDevice result: 0
+[09:22:27.279581] [D] hkD3D12CreateDevice Device captured: 1960080
+[09:22:27.279583] [D] HookToDevice Dx12
+[09:22:27.279630] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool 1695D70 created for queue family 0
+[09:22:27.279720] [D] HookToCommandList Hooked RootSignature functions
+[09:22:27.279752] [D] hkD3D12CreateDevice final result: 0
+[09:22:27.279881] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool 16A90B0 created for queue family 0
+[09:22:27.280363] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool 16AC6E0 created for queue family 0
+[09:22:27.285143] [D] UpdateInitPaths Feature Path [0]: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[09:22:27.285152] [D] UpdateInitPaths Feature Path [1]: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[09:22:27.285154] [D] UpdateInitPaths Feature Path [2]: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[09:22:27.285156] [D] UpdateInitPaths Feature Path [3]: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[09:22:27.285158] [I] NVSDK_NGX_D3D12_Init calling NVNGXProxy::D3D12_Init
+[09:22:27.285161] [I] NVSDK_NGX_D3D12_Init calling NVNGXProxy::D3D12_Init result: 1
+[09:22:27.285163] [I] NVSDK_NGX_D3D12_Init_Ext AppId: 322376503
+[09:22:27.285164] [I] NVSDK_NGX_D3D12_Init_Ext SDK: 15
+[09:22:27.285166] [I] NVSDK_NGX_D3D12_Init_Ext InApplicationDataPath .
+[09:22:27.285192] [D] NVSDK_NGX_D3D12_Init was called NVSDK_NGX_D3D12_Init_Ext
+[09:22:27.285194] [I] NVSDK_NGX_D3D12_AllocateParameters calling NVNGXProxy::D3D12_AllocateParameters
+[09:22:27.285197] [I] NVSDK_NGX_D3D12_AllocateParameters calling NVNGXProxy::D3D12_AllocateParameters result: 1, ptr: 8B4CF0
+[09:22:27.285206] [I] NVSDK_NGX_D3D12_CreateFeature HandleId: 1000000
+[09:22:27.285208] [I] NVSDK_NGX_D3D12_CreateFeature Creating new xess upscaler
+[09:22:27.285211] [I] IFeature::SetHandle Handle: 1000000
+[09:22:27.285214] [I] IFeature::SetInitParameters SharpenEnabled flag overrided by user: false
+[09:22:27.285215] [I] IFeature::SetInitParameters Init Flag AutoExposure: false
+[09:22:27.285217] [I] IFeature::SetInitParameters Init Flag DepthInverted: false
+[09:22:27.285219] [I] IFeature::SetInitParameters Init Flag IsHdr: true
+[09:22:27.285220] [I] IFeature::SetInitParameters Init Flag JitteredMV: false
+[09:22:27.285222] [I] IFeature::SetInitParameters Init Flag LowResMV: true
+[09:22:27.285223] [I] IFeature::SetInitParameters Init Flag SharpenEnabled: false
+[09:22:27.285228] [I] IFeature::SetInitParameters Render Resolution: 2954x1662, Display Resolution 3840x2160, Quality: 4
+[09:22:27.285236] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool 16A9350 created for queue family 0
+[09:22:27.285325] [D] hkCreateDXGIFactory1 Caller: libxess.dll
+[09:22:27.285431] [D] hkCreateDXGIFactory1 Caller: libxess.dll
+[09:22:27.285517] [D] hkCreateDXGIFactory1 Caller: libxess.dll
+[09:22:27.285690] [D] XeSSFeature::InitXeSS xessIsOptimalDriver : Success
+[09:22:27.285692] [D] XeSSFeature::InitXeSS xessSetLoggingCallback : Success
+[09:22:27.285694] [D] XeSSFeature::InitXeSS _xessInitFlags: 4
+[09:22:27.285697] [I] XeSSProxy::Version XeSS Version: v2.0.2
+[09:22:27.285912] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool 16CBF60 created for queue family 0
+[09:22:27.286413] [D] XeSSFeature::InitXeSS using _localBufferHeap & _localTextureHeap!
+[09:22:27.286418] [D] XeSSFeature::InitXeSS xessD3D12BuildPipelines!
+[09:22:27.299165] [D] XeSSFeature::InitXeSS using _localPipelines!
+[09:22:27.299188] [D] XeSSFeature::InitXeSS xessD3D12Init!
+[09:22:27.337469] [D] OS_Dx12::OS_Dx12 Output Scaling start!
+[09:22:27.337530] [D] D3D12Hooks::Hook 
+[09:22:27.356365] [D] RCAS_Dx12::RCAS_Dx12 RCAS start!
+[09:22:27.376803] [D] Bias_Dx12::Bias_Dx12 Bias start!
+[09:22:27.423089] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:27.423131] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:27.423134] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:27.423137] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:27.423139] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:27.423141] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:27.423143] [W] XeSSFeatureDx12::Evaluate AutoExposure disabled but ExposureTexture is not exist, it may cause problems!!
+[09:22:27.423480] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:27.833320] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:27.833342] [I] FeatureProvider_Dx12::ChangeFeature changeBackend is true, counter: 1
+[09:22:27.833345] [I] FeatureProvider_Dx12::ChangeFeature changing backend to xess
+[09:22:27.833361] [D] FeatureProvider_Dx12::ChangeFeature sleeping before reset of current feature for 1000ms
+[09:22:29.241895] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:29.241926] [I] FeatureProvider_Dx12::ChangeFeature changeBackend is true, counter: 2
+[09:22:29.241930] [I] FeatureProvider_Dx12::ChangeFeature Creating new xess upscaler
+[09:22:29.241933] [I] IFeature::SetHandle Handle: 1000000
+[09:22:29.241937] [I] IFeature::SetInitParameters SharpenEnabled flag overrided by user: false
+[09:22:29.241940] [I] IFeature::SetInitParameters AutoExposure flag overrided by OptiScaler: true
+[09:22:29.241942] [I] IFeature::SetInitParameters Init Flag AutoExposure: true
+[09:22:29.241944] [I] IFeature::SetInitParameters Init Flag DepthInverted: false
+[09:22:29.241946] [I] IFeature::SetInitParameters Init Flag IsHdr: true
+[09:22:29.241947] [I] IFeature::SetInitParameters Init Flag JitteredMV: false
+[09:22:29.241949] [I] IFeature::SetInitParameters Init Flag LowResMV: true
+[09:22:29.241951] [I] IFeature::SetInitParameters Init Flag SharpenEnabled: false
+[09:22:29.241956] [I] IFeature::SetInitParameters Render Resolution: 2954x1662, Display Resolution 3840x2160, Quality: 4
+[09:22:29.643061] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:29.643092] [I] FeatureProvider_Dx12::ChangeFeature changeBackend is true, counter: 3
+[09:22:29.643106] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool 9FE22B0 created for queue family 0
+[09:22:29.643358] [D] hkCreateDXGIFactory1 Caller: libxess.dll
+[09:22:29.643486] [D] hkCreateDXGIFactory1 Caller: libxess.dll
+[09:22:29.643523] [D] hkCreateDXGIFactory1 Caller: libxess.dll
+[09:22:29.643732] [D] XeSSFeature::InitXeSS xessIsOptimalDriver : Success
+[09:22:29.643735] [D] XeSSFeature::InitXeSS xessSetLoggingCallback : Success
+[09:22:29.643738] [D] XeSSFeature::InitXeSS _xessInitFlags: 256
+[09:22:29.643837] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool 175B770 created for queue family 0
+[09:22:29.644347] [D] XeSSFeature::InitXeSS using _localBufferHeap & _localTextureHeap!
+[09:22:29.644350] [D] XeSSFeature::InitXeSS xessD3D12BuildPipelines!
+[09:22:29.646437] [D] XeSSFeature::InitXeSS using _localPipelines!
+[09:22:29.646460] [D] XeSSFeature::InitXeSS xessD3D12Init!
+[09:22:29.675120] [D] OS_Dx12::OS_Dx12 Output Scaling start!
+[09:22:29.693982] [D] RCAS_Dx12::RCAS_Dx12 RCAS start!
+[09:22:29.713949] [D] Bias_Dx12::Bias_Dx12 Bias start!
+[09:22:29.714436] [I] FeatureProvider_Dx12::ChangeFeature init successful for xess, upscaler changed
+[09:22:30.112588] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:30.112627] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:30.112630] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:30.112633] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:30.112635] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:30.112638] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:30.112640] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:30.112646] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:30.112801] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:30.514013] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:30.514049] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:30.514052] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:30.514056] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:30.514058] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:30.514061] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:30.514063] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:30.514069] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:30.514197] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:30.918321] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:30.918355] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:30.918358] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:30.918362] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:30.918365] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:30.918368] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:30.918370] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:30.918377] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:30.918509] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:31.300794] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:31.300825] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:31.300828] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:31.300832] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:31.300835] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:31.300837] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:31.300839] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:31.300846] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:31.300974] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:31.705989] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:31.706017] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:31.706020] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:31.706024] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:31.706026] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:31.706029] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:31.706031] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:31.706038] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:31.706166] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:32.091751] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:32.091789] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:32.091793] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:32.091797] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:32.091800] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:32.091803] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:32.091817] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:32.091824] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:32.091951] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:32.462582] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:32.462609] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:32.462613] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:32.462617] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:32.462619] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:32.462621] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:32.462623] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:32.462630] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:32.462751] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:32.845531] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:32.845557] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:32.845560] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:32.845564] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:32.845567] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:32.845569] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:32.845572] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:32.845579] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:32.845712] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:33.242121] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:33.242152] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:33.242157] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:33.242162] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:33.242172] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:33.242175] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:33.242179] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:33.242188] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:33.242315] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:33.625109] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:33.625133] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:33.625136] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:33.625140] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:33.625142] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:33.625144] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:33.625147] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:33.625154] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:33.625275] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:34.019567] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:34.019594] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:34.019597] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:34.019600] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:34.019602] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:34.019604] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:34.019606] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:34.019611] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:34.019728] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:34.415190] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:34.415218] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:34.415221] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:34.415225] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:34.415227] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:34.415229] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:34.415231] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:34.415237] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:34.415355] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:34.805893] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:34.805919] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:34.805922] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:34.805926] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:34.805928] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:34.805931] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:34.805933] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:34.805939] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:34.806064] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:35.209715] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:35.209745] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:35.209750] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:35.209755] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:35.209759] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:35.209763] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:35.209767] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:35.209776] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:35.209908] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:35.583421] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:35.583449] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:35.583453] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:35.583458] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:35.583463] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:35.583467] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:35.583471] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:35.583480] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:35.583612] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:36.005576] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:36.005607] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:36.005611] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:36.005617] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:36.005621] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:36.005624] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:36.005628] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:36.005636] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:36.005769] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:36.391599] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:36.391625] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:36.391628] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:36.391632] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:36.391634] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:36.391637] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:36.391639] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:36.391646] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:36.391777] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:36.796169] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:36.796194] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:36.796197] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:36.796200] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:36.796203] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:36.796205] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:36.796207] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:36.796213] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:36.796329] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:37.207203] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:37.207231] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:37.207234] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:37.207238] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:37.207240] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:37.207243] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:37.207245] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:37.207252] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:37.207383] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:37.579626] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:37.579655] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:37.579658] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:37.579662] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:37.579664] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:37.579667] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:37.579670] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:37.579677] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:37.579869] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:37.998895] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:37.998926] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:37.998929] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:37.998933] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:37.998936] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:37.998938] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:37.998940] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:37.998948] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:37.999070] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:38.346746] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:38.346773] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:38.346776] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:38.346785] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:38.346788] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:38.346791] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:38.346793] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:38.346801] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:38.346925] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:38.651525] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:38.651554] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:38.651557] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:38.651561] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:38.651564] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:38.651567] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:38.651570] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:38.651577] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:38.651698] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:38.948830] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:38.948857] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:38.948860] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:38.948863] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:38.948866] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:38.948868] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:38.948871] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:38.948877] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:38.949003] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:39.243845] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:39.243876] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:39.243879] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:39.243883] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:39.243886] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:39.243888] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:39.243891] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:39.243898] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:39.244027] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:39.632472] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:39.632497] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:39.632501] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:39.632504] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:39.632508] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:39.632511] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:39.632513] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:39.632520] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:39.632637] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:39.990417] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:39.990445] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:39.990448] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:39.990451] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:39.990454] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:39.990457] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:39.990459] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:39.990466] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:39.990592] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:40.367922] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:40.367948] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:40.367951] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:40.367954] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:40.367956] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:40.367958] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:40.367961] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:40.367967] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:40.368086] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:40.700760] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:40.700785] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:40.700788] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:40.700791] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:40.700793] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:40.700795] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:40.700797] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:40.700805] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:40.700923] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:40.976333] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:40.976356] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:40.976359] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:40.976362] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:40.976364] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:40.976366] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:40.976368] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:40.976374] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:40.976490] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:41.324685] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:41.324718] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:41.324721] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:41.324725] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:41.324727] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:41.324730] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:41.324732] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:41.324739] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:41.324859] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:41.679239] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:41.679267] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:41.679270] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:41.679274] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:41.679276] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:41.679278] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:41.679281] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:41.679287] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:41.679405] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:41.936236] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:41.936262] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:41.936265] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:41.936269] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:41.936272] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:41.936274] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:41.936277] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:41.936283] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:41.936407] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:42.227646] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:42.227675] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:42.227678] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:42.227682] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:42.227684] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:42.227687] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:42.227689] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:42.227695] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:42.227814] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:42.494328] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:42.494356] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:42.494363] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:42.494367] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:42.494370] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:42.494373] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:42.494375] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:42.494382] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:42.494503] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:42.774574] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:42.774612] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:42.774615] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:42.774619] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:42.774622] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:42.774625] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:42.774627] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:42.774634] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:42.774759] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:43.049727] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:43.049756] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:43.049759] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:43.049763] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:43.049766] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:43.049768] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:43.049771] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:43.049777] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:43.049906] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:43.393834] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:43.393861] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:43.393864] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:43.393868] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:43.393871] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:43.393873] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:43.393875] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:43.393882] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:43.394011] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:43.751514] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:43.751539] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:43.751542] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:43.751545] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:43.751548] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:43.751551] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:43.751553] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:43.751560] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:43.751684] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:44.088742] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:44.088771] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:44.088774] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:44.088778] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:44.088781] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:44.088784] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:44.088787] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:44.088793] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:44.088946] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:44.434754] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:44.434782] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:44.434786] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:44.434790] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:44.434792] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:44.434795] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:44.434797] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:44.434816] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:44.434950] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:44.700656] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:44.700681] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:44.700684] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:44.700687] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:44.700690] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:44.700693] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:44.700695] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:44.700702] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:44.700835] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:45.044279] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:45.044309] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:45.044313] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:45.044317] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:45.044320] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:45.044323] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:45.044325] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:45.044332] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:45.044449] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:45.391503] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:45.391530] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:45.391533] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:45.391537] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:45.391540] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:45.391543] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:45.391546] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:45.391553] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:45.391671] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:45.738523] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:45.738549] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:45.738552] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:45.738555] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:45.738558] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:45.738560] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:45.738563] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:45.738573] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:45.738696] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:46.090033] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:46.090059] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:46.090062] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:46.090065] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:46.090067] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:46.090069] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:46.090071] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:46.090077] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:46.090195] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:46.427964] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:46.427989] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:46.427992] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:46.427995] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:46.427998] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:46.428000] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:46.428002] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:46.428007] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:46.428127] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:46.773929] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:46.773958] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:46.773973] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:46.773977] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:46.773980] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:46.773983] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:46.773985] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:46.773997] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:46.774120] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:47.130465] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:47.130492] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:47.130495] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:47.130499] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:47.130501] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:47.130504] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:47.130506] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:47.130512] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:47.130631] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:47.466837] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:47.466864] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:47.466867] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:47.466870] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:47.466873] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:47.466875] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:47.466882] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:47.466889] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:47.467010] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:47.814853] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:47.814879] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:47.814882] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:47.814885] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:47.814888] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:47.814892] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:47.814895] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:47.814902] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:47.815021] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:48.159622] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:48.159648] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:48.159651] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:48.159655] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:48.159658] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:48.159661] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:48.159663] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:48.159674] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:48.159791] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:48.513467] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:48.513492] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:48.513495] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:48.513499] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:48.513502] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:48.513505] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:48.513507] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:48.513514] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:48.513638] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:48.859915] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:48.859943] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:48.859946] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:48.859950] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:48.859953] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:48.859955] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:48.859963] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:48.859970] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:48.860098] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:49.195905] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:49.195932] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:49.195935] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:49.195939] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:49.195941] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:49.195944] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:49.195946] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:49.195952] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:49.196079] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:49.539874] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[09:22:49.539900] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2954x1662
+[09:22:49.539903] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:22:49.539906] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:22:49.539909] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:22:49.539911] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:22:49.539913] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:22:49.539920] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:22:49.540042] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:22:49.929623] [I] NVSDK_NGX_D3D12_ReleaseFeature releasing feature with id 1000000
+[09:22:49.932165] [I] NVSDK_NGX_D3D12_DestroyParameters calling NVNGXProxy::D3D12_DestroyParameters
+[09:22:49.932191] [I] NVSDK_NGX_D3D12_DestroyParameters calling NVNGXProxy::D3D12_DestroyParameters result: 1
+[09:22:49.943059] [I] 
+[09:22:49.943073] [I] DLL_PROCESS_DETACH
+[09:22:49.943080] [I] Unloading OptiScaler

@@ -1,0 +1,36 @@
+; tools/scenario/inis/fsr22.ini — D1 cell ini (owner: tools/scenario).
+; Single difference from tools/optiharness/OptiScaler.harness.ini: [Upscalers] Dx12Upscaler=fsr22.
+; Staged via `run_harness.sh --ini tools/scenario/inis/fsr22.ini` (N1, commit 3795535); OptiScaler
+; reads the staged copy only (Config.cpp:45), the GAME's ini is never read or written.
+;;
+; fsr22: a direct non-DLSS provider (FeatureProvider_Dx12.cpp:34-37). G-IDENT asserts the log
+; line `Creating new fsr22 upscaler` AND that nothing fell back - FeatureProvider_Dx12.cpp:69-73
+; silently substitutes fsr21 when a provider fails to construct, so identity is never read
+; off a non-black output alone (D1-GATES G-IDENT).
+
+[Upscalers]
+Dx12Upscaler=fsr22
+
+[DLSS]
+Enabled=true
+
+[Libraries]
+NvngxPath=_nvngx.dll
+
+[Log]
+LogToFile=true
+LogLevel=1
+
+[Hotfix]
+CheckForUpdate=false
+
+[CAS]
+Enabled=false
+MotionSharpnessEnabled=false
+
+[Sharpness]
+OverrideSharpness=false
+Sharpness=0
+
+[OutputScaling]
+Enabled=false

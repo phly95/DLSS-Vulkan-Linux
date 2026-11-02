@@ -1,0 +1,58 @@
+[opti_client] mode=opti frames=12 1920x1080 -> 3840x2160 mv=rg32 dep=d32s8
+[opti_client] exports: Init_Ext=1 GetCapabilityParameters=1 Shutdown1=1
+[opti_client] CreateFeature = 0x00000001 handle=0000000000cd8d90
+EVAL_MS 0 12.0407
+GPU_EVAL_MS 0 3.8330
+OUT_NZ 0 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 1 6.9368
+GPU_EVAL_MS 1 3.7809
+OUT_NZ 1 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 2 7.4191
+GPU_EVAL_MS 2 3.7652
+OUT_NZ 2 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 3 6.5099
+GPU_EVAL_MS 3 3.8930
+OUT_NZ 3 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 4 4.7034
+GPU_EVAL_MS 4 3.8626
+OUT_NZ 4 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 5 5.2607
+GPU_EVAL_MS 5 3.7822
+OUT_NZ 5 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 6 7.4958
+GPU_EVAL_MS 6 3.8726
+OUT_NZ 6 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 7 7.0823
+GPU_EVAL_MS 7 3.8200
+OUT_NZ 7 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 8 5.5332
+GPU_EVAL_MS 8 3.7736
+OUT_NZ 8 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 9 4.9664
+GPU_EVAL_MS 9 3.7562
+OUT_NZ 9 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 10 4.6923
+GPU_EVAL_MS 10 3.8545
+OUT_NZ 10 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 11 5.8767
+GPU_EVAL_MS 11 3.7995
+OUT_NZ 11 nz=1.000000 min=0 max=1 eval_ok=1
+HARNESS SUMMARY
+mode=opti
+frames=12
+render=1920x1080
+output=3840x2160
+mv=rg32
+dep=d32s8
+corpus=
+expect_fail=0
+EVAL_MS n=11 median=5.8767 p95=7.4958 min=4.6923 max=7.4958  (frames 1..)
+GPU_EVAL_MS n=11 median=3.7995 p95=3.8930 tags=d3d12-timestamp
+PORT_RECORD_MS present=1 n=12 median=0.0000  (dlss5-amd-ngx.log 'recorded in N ms')
+PORT_EVAL ok=12 fail=0
+OUT_NZ min=1.000000 max=1.000000 threshold=0.10  (frames 1..)
+GATE eval=PASS
+GATE nonblack=PASS
+GATE timing=PASS
+GATE port=PASS
+RESULT=PASS

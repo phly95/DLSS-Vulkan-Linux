@@ -33,8 +33,8 @@
 // (the gfx1201 fragment map: component c of lane l is element (8*(l/16)+c, l%16)).
 //
 // The MV outputs are bit-identical to the first port: for raw y < H, prev_mvec1 = the min-depth
-// read, mv_nondil = the centre read, each stored as f16(3.0*(mvoff +
-// g_mv[read])) (3.0 is Enc0Args+0xa4/0xa8, mvoff +0xbc).
+// read, mv_nondil = the centre read, each stored as f16(mv15*(mvoff + g_mv[read])) where mv15 is
+// Enc0Args+0xb4 (= W15/W on the fixture the literal 3.0 came from, W15/oW with mvhi), mvoff +0xbc.
 //
 // Features 0..19 (model features()/dq), one dq() (dithered E4M3 quantizer, dither =
 // enc0_w[0:4096] as 2048 u16, fc from push +0xdc) per logical feature:
@@ -95,6 +95,20 @@ layout(push_constant) uniform Enc0Args {
     float F20y;
     float F28x;                                 // +0x94 the previous frame's jitter
     float F28y;
+    // +0x9c..+0xa8 and +0xb4/+0xb8: the level-15 ratios. srref computes them from the geometry
+    // (.f2(0x9c, fW/f15w, fH/f15h).put(0xa4, f15w/fW)... .f2(0xb4, F34x/mrx, F34y/mry)); they were
+    // baked into this shader as 3.0 / 1/3, which is only their value on the 256x144 -> 512x288
+    // fixture (W15/W = 3 exactly, i.e. render 1920x1080 -> 3840x2160). At 1280x720 -> 1920x1080
+    // (2.25) and 1280x720 -> 3840x2160 (4.5) every history position and MV store was scaled 1.33x /
+    // 0.67x too far, and with mvhi the MVs are output-sized so the store scale is W15/oW - all of
+    // it measured as a frame-1 temporal collapse (V4 parity 41-46 dB, GT flat while the oracle
+    // climbs). F34x/F34y (the app's MV.Scale) are NOT folded in: S6 already applied them at gather.
+    layout(offset = 156) float fW_f15w;          // +0x9c = W/W15
+    float fH_f15h;                               // +0xa0 = H/H15
+    float f15w_fW;                               // +0xa4 = W15/W   (render MV -> level 15)
+    float f15h_fH;                               // +0xa8 = H15/H
+    layout(offset = 180) float mv15x;            // +0xb4 = W15/oW with mvhi, else W15/W
+    float mv15y;                                 // +0xb8
     layout(offset = 188) float mvoffx;           // +0xbc mv_offset_kernel (0 for unjittered MVs)
     float mvoffy;
     layout(offset = 216) uint resetv;            // +0xd8 the kernel never reads it (model note)
@@ -257,10 +271,14 @@ MVF mvf(int x, int row, int row0, uint tile_x) {
     f.ct = vec2(mvoffx, mvoffy) + vec2(float(m0.x), float(m0.y));
     f.mn = vec2(mvoffx, mvoffy) + vec2(float(mnm.x), float(mnm.y));
     f.mx = vec2(mvoffx, mvoffy) + vec2(float(mxm.x), float(mxm.y));
-    // read A: floor(2*((p+0.5) - F20)) clamped, NaN -> 0 (the 0x1bac chain); not tile-local, so
-    // this one stays a global read.
-    float fax = floor(2.0 * ((float(x) + 0.5) - F20x));
-    float fay = floor(2.0 * ((float(row) + 0.5) - F20y));
+    // read A: floor(oW/W*((p+0.5) - F20)) clamped, NaN -> 0 (the 0x1bac chain); not tile-local, so
+    // this one stays a global read.  oW/W is Enc0Args+0x10c (2 on the fixture) and cannot be pushed
+    // (the struct runs past maxPushConstantsSize), so oW is recovered from W15 = (oW*3+1)>>1,
+    // whose inverse (2*W15)/3 is exact for every oW.  Nothing consumes f.A any more - the oracle's
+    // mv_nondil overwrites those registers before sample 3 (model 4) and feature 15 is unguarded -
+    // the read is kept as the chain's own description of the launch.
+    float fax = floor(((float((2 * W15) / 3)) / float(W)) * ((float(x) + 0.5) - F20x));
+    float fay = floor(((float((2 * H15) / 3)) / float(H)) * ((float(row) + 0.5) - F20y));
     int ax = (fax == fax) ? clamp(int(fax), 0, W - 1) : 0;
     int ay = (fay == fay) ? clamp(int(fay), 0, H - 1) : 0;
     f.A = vec2(mvoffx, mvoffy) + vec2(float(g_mv[uint(ay * W + ax)].x),
@@ -376,23 +394,30 @@ float reset_feat(MVF f, float xx, float yy) {
     float ipy = ((w00 * float(m00.y) + w01 * float(m01.y))
                + w10 * float(m10.y)) + w11 * float(m11.y);
     float k = KK / float(H);
-    float dx = f.mn.x - ipx * (1.0 / 3.0);
-    float dy = f.mn.y - ipy * (1.0 / 3.0);
+    float dx = f.mn.x - ipx * fW_f15w;
+    float dy = f.mn.y - ipy * fH_f15h;
     float axv = k * dx;
     float ayv = k * dy;
     float S = axv * axv + ayv * ayv;
     float rt = sqrt(S);
-    float down = uintBitsToFloat(floatBitsToUint(rt) - 1u);
+    // S == 0 -> bits(0.0) - 1 = NaN, selected by `r10 <= 0`, reaching the fp8 store as -448 and
+    // collapsing the network to its constant output on every exactly-zero-MV pixel (see
+    // sr_enc0L_in.comp's identical line: still objects rendered black, oracle fine on the same
+    // corpus). The model value is ln(1+sqrt(0)) = 0, which is what the oracle's quantizer yields
+    // for the NaN; rt > 0 takes exactly the old expression.
+    float down = (rt == 0.0) ? 0.0 : uintBitsToFloat(floatBitsToUint(rt) - 1u);
     float up = uintBitsToFloat(floatBitsToUint(rt) + 1u);
     float r10 = S - up * rt;
     float root = (r10 > 0.0) ? up : ((r10 <= 0.0) ? down : rt);
     float v = 1.0 + root;
     v = log2(v) * LN2;
     v = v * SC;
-    float gx = 3.0 * xx + 3.0 * f.A.x;
-    float gy = 3.0 * yy + 3.0 * f.A.y;
-    bool valid = (gx >= 0.0) && (gx <= float(W15)) && (gy >= 0.0) && (gy <= float(H15));
-    return valid ? v : 0.0;
+    // No position guard: model sr_enc0_model.py 5 - "NO position guard: masking it with the
+    // sample-3 bounds costs exactly the OOB pixels (97.83% -> 100.0000% without it)", and preset L
+    // already returns it unguarded (sr_enc0L_in.comp, "L's k/SC, no position mask"). The mask that
+    // used to be here was built from the baked-in 3.0, so at W15/W = 2.25 it zeroed feature 15 for
+    // the right quarter of the frame from frame 1 on.
+    return v;
 }
 
 // One axis of the hidden warp (model _axis_hidden): one fused multiply-add t = C*(1/W15) + F28/W,
@@ -500,9 +525,9 @@ void main() {
         if (px < uint(W) && py < uint(H)) {
             uint idx0 = py * uint(W) + px;
             // the f16 conversion IS the model's rh() here: v_cvt_f16_f32 rounds RNE.
-            out_prev_mvec[idx0] = f16vec2(3.0 * (mvoffx + m.mn.x), 3.0 * (mvoffy + m.mn.y));
+            out_prev_mvec[idx0] = f16vec2(mv15x * (mvoffx + m.mn.x), mv15y * (mvoffy + m.mn.y));
             // mv_ero removed (dead store; the mx tournament value above is still used for dhist sample 2)
-            out_mv_nondil[idx0] = f16vec2(3.0 * (mvoffx + m.ct.x), 3.0 * (mvoffy + m.ct.y));
+            out_mv_nondil[idx0] = f16vec2(mv15x * (mvoffx + m.ct.x), mv15y * (mvoffy + m.ct.y));
         }
 
         // one dither word for the pixel's twenty features (model dq: idx = fc, y, x)
@@ -526,22 +551,26 @@ void main() {
 
         // 3..14: four dhist samples x R,G,B. Samples 0..2 ride the min/centre/max MV reads with the
         // 3*((p+0.5) - F20) base; sample 3 has no -F20 term.
-        float base_x = 3.0 * (xx - F20x);
-        float base_y = 3.0 * (yy - F20y);
-        vec3 s0 = dhsamp3(vec2(base_x + 3.0 * m.mn.x, base_y + 3.0 * m.mn.y));
+        float base_x = f15w_fW * (xx - F20x);
+        float base_y = f15h_fH * (yy - F20y);
+        vec3 s0 = dhsamp3(vec2(base_x + mv15x * m.mn.x, base_y + mv15y * m.mn.y));
         STFEAT(3u, s0.x); STFEAT(4u, s0.y); STFEAT(5u, s0.z);
-        vec3 s1 = dhsamp3(vec2(base_x + 3.0 * m.ct.x, base_y + 3.0 * m.ct.y));
+        vec3 s1 = dhsamp3(vec2(base_x + mv15x * m.ct.x, base_y + mv15y * m.ct.y));
         STFEAT(6u, s1.x); STFEAT(7u, s1.y); STFEAT(8u, s1.z);
-        vec3 s2 = dhsamp3(vec2(base_x + 3.0 * m.mx.x, base_y + 3.0 * m.mx.y));
+        vec3 s2 = dhsamp3(vec2(base_x + mv15x * m.mx.x, base_y + mv15y * m.mx.y));
         STFEAT(9u, s2.x); STFEAT(10u, s2.y); STFEAT(11u, s2.z);
-        vec3 s3 = dhsamp3(vec2(3.0 * xx + 3.0 * m.A.x, 3.0 * yy + 3.0 * m.A.y));
+        // Sample 3 keeps the model's "no -F20 term" base and the CENTRE read again (model 4: the
+        // A read at 0x1bac is overwritten by mv_nondil before sample3's fma - measured 100.0000%
+        // for the centre term vs 32.8% for the 2x-scaled reading - and sr_enc0L_in.comp's P3 has
+        // always used m.ct). The A read itself is the oracle's dead one.
+        vec3 s3 = dhsamp3(vec2(f15w_fW * xx + mv15x * m.ct.x, f15h_fH * yy + mv15y * m.ct.y));
         STFEAT(12u, s3.x); STFEAT(13u, s3.y); STFEAT(14u, s3.z);
 
         // 15: reset
         STFEAT(15u, reset_feat(m, xx, yy));
 
         // 16..19: the hidden warp at the sample-0 position
-        vec2 P0 = vec2(base_x + 3.0 * m.mn.x, base_y + 3.0 * m.mn.y);
+        vec2 P0 = vec2(base_x + mv15x * m.mn.x, base_y + mv15y * m.mn.y);
         vec2 hx = axis_hid(P0.x, W, 1.0 / float(W15), F28x / float(W));
         vec2 hy = axis_hid(P0.y, H, 1.0 / float(H15), F28y / float(H));
         int hix = int(hx.x), hiy = int(hy.x);

@@ -40,6 +40,17 @@ struct FrameParams {
     int normals_unorm = 0;  // RR: UNORM normals (xyz = 2v - 1)
     int mvhi = 0;      // motion vectors are at output resolution
     int ldr = 0;       // LDR input
+    // D5 (H3 triage, 2026-10-31): "MV.Scale" as the app sets it.  S5 read the canonical keys into
+    // ONE field; S6 (2026-10-31 night, in-game session 22:32) measured what the game actually
+    // writes: MV.Scale.X = 1280.0000 == the MV plane width and MV.Scale.Y = -720.0000 == the
+    // NEGATIVE plane height - the classic UV-normalized-MV signature (1.0 = full plane, Y axis
+    // mirrored; measured gameplay MVs max|v| 8.25e-5 raw == 0.1 px if fed un-scaled).  Per axis:
+    // SL writes X = width, Y = -(height), and the reference guard is DlssNr_Pipeline_Dx12.cpp:
+    // 123-128 (non-finite || 0 -> 1.0).  The chain CONSUMES these at the SR gather decode
+    // (sr_gather*.comp: pixel_uv_to_plane_px = mv * scale), so pixel-unit app MVs keep working by
+    // default: (1.0, 1.0) is bit-identical to the legacy un-scaled path.
+    float mv_scale_x = 1.0f;
+    float mv_scale_y = 1.0f;
     float exposure = 1.0f;
     float pre_exposure = 1.0f;
     int reset = 0;     // drop the temporal history

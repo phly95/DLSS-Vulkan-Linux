@@ -1,0 +1,36 @@
+; tools/scenario/inis/dlssd.ini — D1 cell ini (owner: tools/scenario).
+; Single difference from tools/optiharness/OptiScaler.harness.ini: [Upscalers] Dx12Upscaler=dlssd.
+; Staged via `run_harness.sh --ini tools/scenario/inis/dlssd.ini` (N1, commit 3795535); OptiScaler
+; reads the staged copy only (Config.cpp:45), the GAME's ini is never read or written.
+;
+; dlssd = OptiScaler's DLSS-D (Ray Reconstruction) backend: FeatureProvider_Dx12.cpp:52 builds
+; DLSSDFeatureDx12, which creates NVSDK_NGX_Feature_RayReconstruction (=13,
+; tools/verify/ngx_client/ngx_abi.h:31) at upscalers/dlssd/DLSSDFeature_Dx12.cpp:52. That is D1's
+; RR=on level ("Open" mapping question recorded in D1-DESIGN §2 F3).
+
+[Upscalers]
+Dx12Upscaler=dlssd
+
+[DLSS]
+Enabled=true
+
+[Libraries]
+NvngxPath=_nvngx.dll
+
+[Log]
+LogToFile=true
+LogLevel=1
+
+[Hotfix]
+CheckForUpdate=false
+
+[CAS]
+Enabled=false
+MotionSharpnessEnabled=false
+
+[Sharpness]
+OverrideSharpness=false
+Sharpness=0
+
+[OutputScaling]
+Enabled=false

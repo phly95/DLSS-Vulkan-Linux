@@ -40,11 +40,31 @@ if [[ -f "$ROOT/src/pe/nvngx.cpp" ]]; then
     if command -v x86_64-w64-mingw32-g++ >/dev/null; then
         # The DLL links no Vulkan: with VK_NO_PROTOTYPES the frame chain calls the entry points that
         # NVSDK_NGX_VULKAN_Init / vkd3d-proton hand over (src/vk/vkfuncs.h), not libvulkan.
+        #
+        # R1 (H-1', 2026-10-31): a PE version resource is not cosmetic - Streamline's NGXLoadCoreLibrary
+        # probes `<appdir>\nvngx.dll` and, when the file carries no VS_VERSION_INFO, reads it and
+        # refuses to LoadLibrary it (measured: strace 25 reads / +loaddll no load, cells L12-L14),
+        # which is the whole `Failed to initialize NGX` + `0xbad00002` chain.  Compiled separately
+        # (windres -O coff) and linked in as a normal object.
+        RES=""
+        if command -v x86_64-w64-mingw32-windres >/dev/null; then
+            mkdir -p "$ROOT/build/pe"
+            x86_64-w64-mingw32-windres -O coff "$ROOT/src/pe/nvngx_version.rc" \
+                -o "$ROOT/build/pe/nvngx_version.res" && RES="$ROOT/build/pe/nvngx_version.res"
+        fi
         x86_64-w64-mingw32-g++ -std=c++17 -shared -O2 -DVK_NO_PROTOTYPES -DDLSS5_AMD_OUT_F16=$OUT_F16 \
             -I"$ROOT/reference-nr-vulkan/toolchain/Vulkan-Headers/include" \
-            "$ROOT/src/vk/pipeline.cpp" "$ROOT/src/pe/nvngx.cpp" -o "$ROOT/build/package/_nvngx.dll" \
+            "$ROOT/src/vk/pipeline.cpp" "$ROOT/src/pe/nvngx.cpp" $RES -o "$ROOT/build/package/_nvngx.dll" \
             -ld3d12 -ldxgi -lole32 -static -static-libgcc -static-libstdc++
     fi
+fi
+
+# FFX_SKELETON=1 (optional): also syntax-check the FFX front-end skeleton with mingw into
+# build/package/dlss5-amd-ffx.dll.  Default (unset) = untouched default behaviour.
+if [[ "${FFX_SKELETON:-0}" == "1" ]] && [[ -f "$ROOT/src/ffx/ffx_front.cpp" ]] \
+   && command -v x86_64-w64-mingw32-g++ >/dev/null; then
+    x86_64-w64-mingw32-g++ -std=c++17 -shared -O2 "$ROOT/src/ffx/ffx_front.cpp" \
+        -o "$ROOT/build/package/dlss5-amd-ffx.dll" -static -static-libgcc -static-libstdc++
 fi
 
 if command -v g++ >/dev/null; then

@@ -1,0 +1,1267 @@
+[opti_client] sl.interposer loaded at 00006ffffd790000, 6 exports resolved
+[opti_client] mode=opti frames=60 2560x1440 -> 3840x2160 mv=rg32 dep=d32s8
+[opti_client] exports: Init_Ext=1 GetCapabilityParameters=1 Shutdown1=1
+[sl-cb][info] [09-37-59][streamline][info][tid:300][0s:059ms:125us]pluginManager.cpp:430[setHostSDKVersion] Streamline v2.14.1.98614dad6 - built on Fri Aug 28 13:38:13 2026 - host SDK v2.14.1
+[sl-cb][warn] [09-37-59][streamline][warn][tid:300][0s:062ms:324us]ota.cpp:743[readServerManifest] Failed to open manifest file at: C:\ProgramData\NVIDIA/NGX/models/nvngx_config.txt
+[sl-cb][info] [09-37-59][streamline][info][tid:300][0s:077ms:760us]ota.cpp:832[getNVDAArchitecture] Found NVIDIA GPUs, [000000000021DF40]: 1
+[sl-cb][info] [09-37-59][streamline][info][tid:300][0s:080ms:163us]ota.cpp:838[getNVDAArchitecture] Found GPU 0, arch=0x130
+[sl-cb][info] [09-37-59][streamline][info][tid:300][0s:082ms:017us]ota.cpp:908[checkForOTA] Requesting optional updates!
+[sl-cb][error] [09-37-59][streamline][error][tid:300][0s:083ms:877us]ota.cpp:236[invokeNGXUpdater] NGX Updater not available. OTA downloads are disabled.
+[sl-cb][info] [09-37-59][streamline][info][tid:300][0s:086ms:224us]pluginManager.cpp:545[findPlugins] Looking for plugins in Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\ ...
+[sl-cb][info] [09-37-59][streamline][info][tid:300][0s:088ms:439us]pluginManager.cpp:1048[loadPlugins] eLoadDownloadedPlugins flag not passed to preferences, OTA'd plugins will not be loaded!
+[sl-cb][info] [09-37-59][streamline][info][tid:300][0s:097ms:358us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[sl-cb][info] [09-37-59][streamline][info][tid:300][0s:099ms:168us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[sl-cb][info] [09-37-59][streamline][info][tid:300][0s:100ms:660us]commonInterface.cpp:165[getSystemCaps] Enumerating up to 8 adapters but only one of them can be used to create a device - no mGPU support in this SDK
+[sl-cb][info] [09-37-59][streamline][info][tid:300][0s:102ms:739us]commonInterface.cpp:287[getSystemCaps] >-----------------------------------------
+[sl-cb][info] [09-37-59][streamline][info][tid:300][0s:104ms:412us]commonInterface.cpp:290[getSystemCaps] NVIDIA driver 999.99
+[sl-cb][info] [09-37-59][streamline][info][tid:300][0s:105ms:668us]commonInterface.cpp:315[getSystemCaps] Adapter 0 architecture 0x130 implementation 0x2 revision 0xffffffff - bit 0x1 - LUID 0.1010
+[sl-cb][info] [09-37-59][streamline][info][tid:300][0s:107ms:764us]commonInterface.cpp:321[getSystemCaps] -----------------------------------------<
+[sl-cb][info] [09-37-59][streamline][info][tid:300][0s:109ms:241us]commonEntry.cpp:2039[getOSVersionAndUpdateTimerResolution] Preferred high resolution timer resolution (5000) is unsupported, trying 10000 [100 ns units] instead.
+[sl-cb][info] [09-37-59][streamline][info][tid:300][0s:111ms:421us]commonEntry.cpp:2045[getOSVersionAndUpdateTimerResolution] Changed high resolution timer resolution to 10000 [100 ns units].
+[sl-cb][info] [09-37-59][streamline][info][tid:300][0s:113ms:448us]commonEntry.cpp:2124[updateEmbeddedJSON] Detected Windows OS version 10.0.19045
+[sl-cb][info] [09-37-59][streamline][info][tid:300][0s:127ms:912us]pluginManager.cpp:907[mapPlugins] Loaded plugin 'sl.common' - version 2.14.1.98614dad6 PRODUCTION - id 4294967295 - priority 0 - adapter mask 0x1 - interposer 'no'
+[sl-cb][info] [09-37-59][streamline][info][tid:300][0s:130ms:112us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[sl-cb][info] [09-37-59][streamline][info][tid:300][0s:131ms:957us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[sl-cb][warn] [09-37-59][streamline][warn][tid:300][0s:133ms:502us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.deepdvc' since it is was not requested by the host
+[sl-cb][info] [09-37-59][streamline][info][tid:300][0s:135ms:181us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[sl-cb][info] [09-37-59][streamline][info][tid:300][0s:136ms:850us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[sl-cb][info] [09-37-59][streamline][info][tid:300][0s:138ms:533us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeDepth' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDirectSR`
+[sl-cb][info] [09-37-59][streamline][info][tid:300][0s:141ms:017us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeMotionVectors' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDirectSR`
+[sl-cb][info] [09-37-59][streamline][info][tid:300][0s:143ms:553us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeScalingInputColor' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDirectSR`
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:146ms:510us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeScalingOutputColor' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDirectSR`
+[sl-cb][warn] [09-38-00][streamline][warn][tid:300][0s:149ms:145us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.directsr' since it is was not requested by the host
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:150ms:889us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:152ms:787us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[sl-cb][error] [09-38-00][streamline][error][tid:300][0s:154ms:204us]commonEntry.cpp:1093[getNGXFeatureRequirements] ngxResult failed 0xbad00002
+[sl-cb][warn] [09-38-00][streamline][warn][tid:300][0s:156ms:376us]dlssEntry.cpp:208[updateEmbeddedJSON] Failed to obtain DLSS min spec requirements from NGX, using SL defaults
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:159ms:047us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeDepth' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDLSS`
+SL slInit result=0 (eOk) sdk=0x2000e0001fedc (v2.14.1) appid=101640911 feats=5 paths=1
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:161ms:678us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeMotionVectors' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDLSS`
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:165ms:270us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeScalingInputColor' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDLSS`
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:167ms:751us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeScalingOutputColor' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDLSS`
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:170ms:258us]pluginManager.cpp:907[mapPlugins] Loaded plugin 'sl.dlss' - version 2.14.1.98614dad6 PRODUCTION - id 0 - priority 100 - adapter mask 0x1 - interposer 'no'
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:172ms:479us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:174ms:190us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[sl-cb][error] [09-38-00][streamline][error][tid:300][0s:175ms:639us]commonEntry.cpp:1093[getNGXFeatureRequirements] ngxResult failed 0xbad00002
+[sl-cb][warn] [09-38-00][streamline][warn][tid:300][0s:177ms:004us]dlss_dEntry.cpp:210[updateEmbeddedJSON] DLSSD feature is not supported. Please check if you have a valid nvngx_dlssd.dll or your driver is supporting DLSSD.
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:179ms:115us]pluginManager.cpp:907[mapPlugins] Loaded plugin 'sl.dlss_d' - version 2.14.1.98614dad6 PRODUCTION - id 1001 - priority 100 - adapter mask 0x0 - interposer 'no'
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:181ms:418us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:183ms:062us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[sl-cb][error] [09-38-00][streamline][error][tid:300][0s:184ms:456us]commonEntry.cpp:1093[getNGXFeatureRequirements] ngxResult failed 0xbad00002
+[sl-cb][warn] [09-38-00][streamline][warn][tid:300][0s:185ms:839us]dlss_gEntry.cpp:143[updateEmbeddedJSON] Failed to obtain DLSS-G min spec requirements from NGX, using SL defaults
+[sl-cb][warn] [09-38-00][streamline][warn][tid:300][0s:187ms:545us]dlss_gEntry.cpp:345[updateEmbeddedJSON] Disabling DLSS-G since it is not supported on current hardware
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:189ms:209us]pluginManager.cpp:907[mapPlugins] Loaded plugin 'sl.dlss_g' - version 2.14.1.98614dad6 PRODUCTION - id 1000 - priority 1000 - adapter mask 0x0 - interposer 'no'
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:191ms:416us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:193ms:749us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:195ms:224us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeScalingInputColor' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureNIS`
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:197ms:739us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeScalingOutputColor' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureNIS`
+[sl-cb][warn] [09-38-00][streamline][warn][tid:300][0s:200ms:218us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.nis' since it is was not requested by the host
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:201ms:916us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:203ms:601us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[sl-cb][warn] [09-38-00][streamline][warn][tid:300][0s:205ms:099us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.nvperf' since it is was not requested by the host
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:206ms:729us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:208ms:334us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:209ms:741us]pluginManager.cpp:907[mapPlugins] Loaded plugin 'sl.pcl' - version 2.14.1.98614dad6 PRODUCTION - id 4 - priority 2 - adapter mask 0x1 - interposer 'no'
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:211ms:816us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:213ms:499us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:214ms:944us]pluginManager.cpp:907[mapPlugins] Loaded plugin 'sl.reflex' - version 2.14.1.98614dad6 PRODUCTION - id 3 - priority 100 - adapter mask 0x1 - interposer 'no'
+[sl-cb][warn] [09-38-00][streamline][warn][tid:300][0s:217ms:153us]pluginManager.cpp:1090[loadPlugins] Ignoring plugin 'sl.dlss_d' since it is not supported on this platform
+[sl-cb][warn] [09-38-00][streamline][warn][tid:300][0s:218ms:841us]pluginManager.cpp:1090[loadPlugins] Ignoring plugin 'sl.dlss_g' since it is not supported on this platform
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:220ms:501us]pluginManager.cpp:1190[loadPlugins] Plugin execution order based on priority:
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:221ms:866us]pluginManager.cpp:1193[loadPlugins] P0 - sl.common
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:222ms:955us]pluginManager.cpp:1193[loadPlugins] P2 - sl.pcl
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:224ms:049us]pluginManager.cpp:1193[loadPlugins] P100 - sl.dlss
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:225ms:147us]pluginManager.cpp:1193[loadPlugins] P100 - sl.reflex
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:259ms:248us]pluginManager.cpp:1393[initializePlugins] Initializing plugins - api 0.0.1 - application ID 101640911
+SL slSetD3DDevice result=0 (eOk)
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:261ms:129us]d3d12.cpp:1339[createKernel] Creating DXBC kernel copy_to_buffer.cs:main hash 12564409127886710297
+SLDLSS slIsFeatureSupported(kFeatureDLSS) result=32 (eErrorFeatureNotSupported) adapter=@(default)
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:263ms:003us]generic.cpp:112[initNsightActivity] NSight SDK activity not detected (6)!
+SLDLSS slIsFeatureLoaded(kFeatureDLSS) result=31 (eErrorFeatureMissing) loaded=0
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:265ms:333us]commonEntry.cpp:1568[slOnPluginStartup] At least one plugin requires NGX, trying to initialize ...
+SLDLSS slGetFeatureRequirements(kFeatureDLSS) result=0 (eOk) flags=0x00000007 threads=0 viewports=4 tags=4 driverDetected=999.99.0 driverRequired=512.15.0 osDetected=10.0.19045 osRequired=10.0.0
+[sl-cb][warn] [09-38-00][streamline][warn][tid:300][0s:267ms:688us]commonEntry.cpp:1748[slOnPluginStartup] Failed to initialize NGX, any SL feature requiring NGX will be unloaded and disabled
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:271ms:431us]pluginManager.cpp:1499[mapPluginCallbacks] Callback sl.common:slSetData:0x0
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:272ms:769us]pluginManager.cpp:1500[mapPluginCallbacks] Callback sl.common:slGetData:0x0
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:274ms:086us]pluginManager.cpp:1501[mapPluginCallbacks] Callback sl.common:slAllocateResources:0x0
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:275ms:601us]pluginManager.cpp:1502[mapPluginCallbacks] Callback sl.common:slFreeResources:0x0
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:277ms:058us]pluginManager.cpp:1503[mapPluginCallbacks] Callback sl.common:slEvaluateFeature:0x6fffefdda0c0
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:278ms:658us]pluginManager.cpp:1504[mapPluginCallbacks] Callback sl.common:slSetTag:0x6fffefdd8ba0
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:280ms:110us]pluginManager.cpp:1505[mapPluginCallbacks] Callback sl.common:slSetTagForFrame:0x6fffefdd8d10
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:281ms:583us]pluginManager.cpp:1506[mapPluginCallbacks] Callback sl.common:slSetConsts:0x6fffefdd9ba0
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:283ms:007us]pluginManager.cpp:1266[processPluginHooks] Hook sl.common:slHookVkPresent:before - skipped
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:284ms:455us]pluginManager.cpp:1266[processPluginHooks] Hook sl.common:slHookVkAfterPresent:after - skipped
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:286ms:664us]pluginManager.cpp:1266[processPluginHooks] Hook sl.common:slHookVkCmdBindPipeline:after - skipped
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:289ms:391us]pluginManager.cpp:1266[processPluginHooks] Hook sl.common:slHookVkCmdBindDescriptorSets:after - skipped
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:292ms:788us]pluginManager.cpp:1266[processPluginHooks] Hook sl.common:slHookVkBeginCommandBuffer:after - skipped
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:295ms:747us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookCreateSwapChain:before - OK
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:298ms:144us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookCreateSwapChainForHwnd:before - OK
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:300ms:547us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookCreateSwapChainForCoreWindow:before - OK
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:303ms:029us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookResizeSwapChainPre:before - OK
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:305ms:125us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookPresent:before - OK
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:307ms:040us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookAfterPresent:after - OK
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:310ms:024us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookPresent1:before - OK
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:312ms:018us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookAfterPresent:after - OK
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:313ms:889us]pluginManager.cpp:1499[mapPluginCallbacks] Callback sl.pcl:slSetData:0x6fffefbbb850
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:315ms:378us]pluginManager.cpp:1500[mapPluginCallbacks] Callback sl.pcl:slGetData:0x6fffefbbb860
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:316ms:900us]pluginManager.cpp:1501[mapPluginCallbacks] Callback sl.pcl:slAllocateResources:0x0
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:318ms:396us]pluginManager.cpp:1502[mapPluginCallbacks] Callback sl.pcl:slFreeResources:0x0
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:319ms:839us]pluginManager.cpp:1503[mapPluginCallbacks] Callback sl.pcl:slEvaluateFeature:0x0
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:321ms:255us]pluginManager.cpp:1504[mapPluginCallbacks] Callback sl.pcl:slSetTag:0x0
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:322ms:569us]pluginManager.cpp:1505[mapPluginCallbacks] Callback sl.pcl:slSetTagForFrame:0x0
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:323ms:957us]pluginManager.cpp:1506[mapPluginCallbacks] Callback sl.pcl:slSetConsts:0x0
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:325ms:300us]pluginManager.cpp:1251[processPluginHooks] Plugin 'sl.pcl' has no registered hooks
+[sl-cb][error] [09-38-00][streamline][error][tid:300][0s:327ms:039us]dlssEntry.cpp:923[slOnPluginStartup] Missing NGX context - DLSSContext cannot run
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:328ms:614us]pluginManager.cpp:1499[mapPluginCallbacks] Callback sl.reflex:slSetData:0x6fffefb4bae0
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:330ms:156us]pluginManager.cpp:1500[mapPluginCallbacks] Callback sl.reflex:slGetData:0x6fffefb4c450
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:331ms:682us]pluginManager.cpp:1501[mapPluginCallbacks] Callback sl.reflex:slAllocateResources:0x0
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:333ms:150us]pluginManager.cpp:1502[mapPluginCallbacks] Callback sl.reflex:slFreeResources:0x0
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:334ms:555us]pluginManager.cpp:1503[mapPluginCallbacks] Callback sl.reflex:slEvaluateFeature:0x0
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:335ms:983us]pluginManager.cpp:1504[mapPluginCallbacks] Callback sl.reflex:slSetTag:0x0
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:337ms:329us]pluginManager.cpp:1505[mapPluginCallbacks] Callback sl.reflex:slSetTagForFrame:0x0
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:338ms:746us]pluginManager.cpp:1506[mapPluginCallbacks] Callback sl.reflex:slSetConsts:0x0
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:340ms:118us]pluginManager.cpp:1266[processPluginHooks] Hook sl.reflex:slHookVkCreateSwapchainKHRBefore:before - skipped
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:341ms:768us]pluginManager.cpp:1266[processPluginHooks] Hook sl.reflex:slHookVkCreateSwapchainKHRAfter:after - skipped
+[sl-cb][info] [09-38-00][streamline][info][tid:300][0s:343ms:402us]pluginManager.cpp:1266[processPluginHooks] Hook sl.reflex:slHookVkDestroySwapchainKHRBefore:before - skipped
+[sl-cb][error] [09-38-00][streamline][error][tid:300][0s:345ms:207us]sl.cpp:179[slValidateFeatureContext] 'kFeatureDLSS' context is missing.
+[opti_client] CreateFeature = 0x00000001 handle=00000000017e80c0
+EVAL_MS 0 0.4189
+GPU_EVAL_MS 0 0.0072
+OUT_NZ 0 nz=0.000000 min=0 max=0 eval_ok=1
+EVAL_MS 1 1004.2704
+GPU_EVAL_MS 1 0.0015
+OUT_NZ 1 nz=0.000000 min=0 max=0 eval_ok=1
+EVAL_MS 2 0.0680
+GPU_EVAL_MS 2 0.0018
+OUT_NZ 2 nz=0.000000 min=0 max=0 eval_ok=1
+EVAL_MS 3 71.2838
+GPU_EVAL_MS 3 0.0016
+OUT_NZ 3 nz=0.000000 min=0 max=0 eval_ok=1
+EVAL_MS 4 0.2256
+GPU_EVAL_MS 4 4.4923
+OUT_NZ 4 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 5 0.1844
+GPU_EVAL_MS 5 4.4012
+OUT_NZ 5 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 6 0.1722
+GPU_EVAL_MS 6 3.8979
+OUT_NZ 6 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 7 0.1818
+GPU_EVAL_MS 7 4.5408
+OUT_NZ 7 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 8 0.1808
+GPU_EVAL_MS 8 3.9658
+OUT_NZ 8 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 9 0.1853
+GPU_EVAL_MS 9 4.3320
+OUT_NZ 9 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 10 0.1835
+GPU_EVAL_MS 10 3.4880
+OUT_NZ 10 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 11 0.1751
+GPU_EVAL_MS 11 4.0992
+OUT_NZ 11 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 12 0.1998
+GPU_EVAL_MS 12 4.0746
+OUT_NZ 12 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 13 0.1905
+GPU_EVAL_MS 13 3.8322
+OUT_NZ 13 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 14 0.1861
+GPU_EVAL_MS 14 3.8729
+OUT_NZ 14 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 15 0.1772
+GPU_EVAL_MS 15 3.8518
+OUT_NZ 15 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 16 0.1985
+GPU_EVAL_MS 16 3.8938
+OUT_NZ 16 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 17 0.1814
+GPU_EVAL_MS 17 4.4394
+OUT_NZ 17 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 18 0.1867
+GPU_EVAL_MS 18 3.2229
+OUT_NZ 18 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 19 0.1801
+GPU_EVAL_MS 19 4.6005
+OUT_NZ 19 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 20 0.1856
+GPU_EVAL_MS 20 3.8660
+OUT_NZ 20 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 21 0.1938
+GPU_EVAL_MS 21 4.4801
+OUT_NZ 21 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 22 0.1745
+GPU_EVAL_MS 22 3.8856
+OUT_NZ 22 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 23 0.1771
+GPU_EVAL_MS 23 3.4554
+OUT_NZ 23 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 24 0.1759
+GPU_EVAL_MS 24 3.8514
+OUT_NZ 24 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 25 0.1813
+GPU_EVAL_MS 25 3.8695
+OUT_NZ 25 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 26 0.1882
+GPU_EVAL_MS 26 3.2698
+OUT_NZ 26 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 27 0.1952
+GPU_EVAL_MS 27 4.6257
+OUT_NZ 27 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 28 0.1991
+GPU_EVAL_MS 28 3.8567
+OUT_NZ 28 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 29 0.1926
+GPU_EVAL_MS 29 3.8372
+OUT_NZ 29 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 30 0.1648
+GPU_EVAL_MS 30 3.8250
+OUT_NZ 30 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 31 0.1801
+GPU_EVAL_MS 31 3.8316
+OUT_NZ 31 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 32 0.1813
+GPU_EVAL_MS 32 3.8530
+OUT_NZ 32 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 33 0.1842
+GPU_EVAL_MS 33 3.8248
+OUT_NZ 33 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 34 0.1830
+GPU_EVAL_MS 34 3.3785
+OUT_NZ 34 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 35 0.1667
+GPU_EVAL_MS 35 3.7950
+OUT_NZ 35 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 36 0.1793
+GPU_EVAL_MS 36 3.7868
+OUT_NZ 36 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 37 0.1775
+GPU_EVAL_MS 37 3.7732
+OUT_NZ 37 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 38 0.1763
+GPU_EVAL_MS 38 3.7844
+OUT_NZ 38 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 39 0.1693
+GPU_EVAL_MS 39 3.7731
+OUT_NZ 39 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 40 0.1880
+GPU_EVAL_MS 40 3.7887
+OUT_NZ 40 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 41 0.1767
+GPU_EVAL_MS 41 3.7741
+OUT_NZ 41 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 42 0.2025
+GPU_EVAL_MS 42 3.7766
+OUT_NZ 42 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 43 0.1799
+GPU_EVAL_MS 43 3.8126
+OUT_NZ 43 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 44 0.1902
+GPU_EVAL_MS 44 3.7979
+OUT_NZ 44 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 45 0.1845
+GPU_EVAL_MS 45 3.8979
+OUT_NZ 45 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 46 0.1890
+GPU_EVAL_MS 46 3.9126
+OUT_NZ 46 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 47 0.1879
+GPU_EVAL_MS 47 4.0579
+OUT_NZ 47 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 48 0.2001
+GPU_EVAL_MS 48 4.1208
+OUT_NZ 48 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 49 0.1858
+GPU_EVAL_MS 49 3.7440
+OUT_NZ 49 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 50 0.1775
+GPU_EVAL_MS 50 3.7777
+OUT_NZ 50 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 51 0.1801
+GPU_EVAL_MS 51 3.8077
+OUT_NZ 51 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 52 0.1718
+GPU_EVAL_MS 52 3.9930
+OUT_NZ 52 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 53 0.1859
+GPU_EVAL_MS 53 3.7790
+OUT_NZ 53 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 54 0.1842
+GPU_EVAL_MS 54 3.0515
+OUT_NZ 54 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 55 0.1943
+GPU_EVAL_MS 55 3.7827
+OUT_NZ 55 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 56 0.1814
+GPU_EVAL_MS 56 3.1203
+OUT_NZ 56 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 57 0.1722
+GPU_EVAL_MS 57 3.7840
+OUT_NZ 57 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 58 0.1877
+GPU_EVAL_MS 58 3.7849
+OUT_NZ 58 nz=1.000000 min=0 max=1 eval_ok=1
+EVAL_MS 59 0.1765
+GPU_EVAL_MS 59 3.2374
+OUT_NZ 59 nz=1.000000 min=0 max=1 eval_ok=1
+[sl-cb][info] [09-38-14][streamline][info][tid:300][14s:175ms:530us]pluginManager.cpp:1202[unloadPlugins] Unloading all plugins ...
+[sl-cb][info] [09-38-14][streamline][info][tid:300][14s:178ms:206us]plugin.cpp:344[onShutdown] Shutting down plugin sl.reflex
+[sl-cb][info] [09-38-14][streamline][info][tid:300][14s:180ms:602us]plugin.cpp:344[onShutdown] Shutting down plugin sl.pcl
+[sl-cb][info] [09-38-14][streamline][info][tid:300][14s:182ms:914us]plugin.cpp:344[onShutdown] Shutting down plugin sl.common
+[sl-cb][info] [09-38-14][streamline][info][tid:300][14s:185ms:275us]d3d12.cpp:1375[destroyKernel] Destroying kernel copy_to_buffer.cs
+[sl-cb][info] [09-38-14][streamline][info][tid:300][14s:187ms:624us]generic.cpp:360[shutdown] Delayed destroy resource list count 0
+SL slShutdown result=0 (eOk)
+HARNESS SUMMARY
+mode=opti
+frames=60
+render=2560x1440
+output=3840x2160
+mv=rg32
+dep=d32s8
+corpus=
+expect_fail=0
+EVAL_MS n=59 median=0.1835 p95=0.2256 min=0.0680 max=1004.2704  (frames 1..)
+GPU_EVAL_MS n=59 median=3.8250 p95=4.5408 tags=d3d12-timestamp
+PORT_RECORD_MS present=0 n=0 median=-1.0000  (dlss5-amd-ngx.log 'recorded in N ms')
+PORT_EVAL ok=0 fail=0
+OUT_NZ min=0.000000 max=1.000000 threshold=0.10  (frames 1..)
+GATE eval=PASS
+GATE nonblack=FAIL
+GATE timing=PASS
+GATE port=FAIL
+RESULT=FAIL
+--- optiscaler echo ---
+[09:37:59.867308] [W] OptiScaler v0.9.4-final (7534ad0) loaded
+[09:37:59.867322] [W] ---------------------------------
+[09:37:59.867326] [W] OptiScaler is freely downloadable from
+[09:37:59.867328] [W] GitHub : https://github.com/optiscaler/OptiScaler/releases
+[09:37:59.867330] [W] Nexus  : https://www.nexusmods.com/site/mods/986
+[09:37:59.867332] [W] If you paid for these files, you've been scammed!
+[09:37:59.867334] [W] DO NOT USE IN MULTIPLAYER GAMES
+[09:37:59.867336] [I] 
+[09:37:59.867338] [I] LogLevel: 1
+[09:37:59.867340] [I] 
+[09:37:59.867345] [I] Windows version: Windows 10 (10.0.19045)
+[09:37:59.867348] [I] Config parameters:
+[09:37:59.867350] [I] Upscalers.Dx12Upscaler: xess
+[09:37:59.867352] [I] DLSS.Enabled: true
+[09:37:59.867354] [I] Log.LogLevel: 1
+[09:37:59.867355] [I] Log.LogToFile: true
+[09:37:59.867357] [I] Sharpness.OverrideSharpness: false
+[09:37:59.867359] [I] Sharpness.Sharpness: 0
+[09:37:59.867361] [I] CAS.Enabled: false
+[09:37:59.867363] [I] CAS.MotionSharpnessEnabled: false
+[09:37:59.867364] [I] OutputScaling.Enabled: false
+[09:37:59.867366] [I] Hotfix.CheckForUpdate: false
+[09:37:59.867368] [I] Libraries.NvngxPath: _nvngx.dll
+[09:37:59.867370] [I] 
+[09:37:59.867372] [I] Setting DllPath to Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[09:37:59.867374] [I] 
+[09:37:59.867384] [I] 
+[09:37:59.867389] [I] IsRunningOnWine Running on Wine 10.0!
+[09:37:59.867390] [I] 
+[09:37:59.867392] [I] Check for DLSS files
+[09:37:59.867409] [I] Util::FindFilePath nvngx_dlss.dll found at Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[09:37:59.867424] [I] Util::FindFilePath nvngx_dlssd.dll found at Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[09:37:59.868184] [I] 
+[09:37:59.875737] [D] isNvidia Using dxvk-nvapi
+[09:37:59.879012] [D] isNvidia Detected: true
+[09:37:59.879024] [I] Running on Nvidia
+[09:37:59.879026] [I] Enabling DLSS
+[09:37:59.879029] [I] Disabling DxgiSpoofing
+[09:37:59.879030] [I] 
+[09:37:59.879046] [I] CheckQuirks Game's Exe: opti_client.exe
+[09:37:59.879049] [I] CheckQuirks Game Name: 
+[09:37:59.879050] [I] CheckQuirks Game Version: 
+[09:37:59.879052] [I] CheckQuirks Game Engine: Other
+[09:37:59.879232] [I] 
+[09:37:59.879990] [I] CheckWorkingMode OptiScaler working as dxgi.dll, system dll loaded
+[09:37:59.880001] [D] DxgiProxy::Init dxgi.dll loaded at 6FFFFB710000
+[09:37:59.880031] [I] Config::CheckUpscalerFiles nvngx.dll found in game folder
+[09:37:59.880047] [I] Util::FindFilePath nvngx_dlss.dll found at Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[09:37:59.880055] [I] Config::CheckUpscalerFiles libxess.dll found in game folder
+[09:37:59.880058] [D] CheckWorkingMode dxgi.dll already in memory
+[09:37:59.880060] [D] DxgiHooks::Hook 
+[09:37:59.880103] [D] KernelHooks::HookBase 
+[09:37:59.880135] [D] CheckWorkingMode Check for d3d12
+[09:37:59.880138] [D] CheckWorkingMode d3d12.dll already in memory
+[09:37:59.880141] [D] D3D12Hooks::Hook 
+[09:37:59.880313] [D] CheckWorkingMode Loading vulkan-1.dll for Linux, result: 6FFFFB6F0000
+[09:37:59.880316] [D] CheckWorkingMode Hooking vulkan-1.dll
+[09:37:59.880566] [I] Vulkan_wDx12::Hook Attaching Vulkan vkQueueSubmit hook
+[09:37:59.880695] [D] Vulkan_wDx12::InitializeStateTrackerFunctionTable State tracker function table initialized
+[09:37:59.880729] [D] LibraryLoadHooks::CheckModulesInMemory sl.interposer.dll already in memory
+[09:37:59.880743] [I] StreamlineHooks::hookInterposer Streamline version: 2.14.1
+[09:37:59.882668] [D] CheckWorkingMode sl.interposer.dll already in memory
+[09:37:59.882722] [D] KernelHooks::Hook 
+[09:37:59.882758] [I] 
+[09:37:59.882761] [D] FfxApiProxy::InitFfxDx12 Trying to load amd_fidelityfx_loader_dx12.dll
+[09:37:59.882950] [I] Util::LoadProxyLibrary amd_fidelityfx_loader_dx12.dll loaded from Opti dll path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\amd_fidelityfx_loader_dx12.dll
+[09:37:59.882955] [I] FfxApiProxy::InitFfxDx12 Loaded from Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\amd_fidelityfx_loader_dx12.dll
+[09:37:59.882979] [I] 
+[09:37:59.882981] [D] FfxApiProxy::InitFfxDx12_SR Trying to load amd_fidelityfx_upscaler_dx12.dll
+[09:37:59.886971] [I] Util::LoadProxyLibrary amd_fidelityfx_upscaler_dx12.dll loaded from Opti dll path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\amd_fidelityfx_upscaler_dx12.dll
+[09:37:59.888461] [D] FSR4ModelSelection::Hook Hooking model selection, o_createModelSDK: 0
+[09:37:59.888542] [D] FSR4ModelSelection::Hook Hooking model selection, o_createModelSDK2: 6FFFF9B23AB0
+[09:37:59.888559] [I] FfxApiProxy::InitFfxDx12_SR Loaded from Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\amd_fidelityfx_upscaler_dx12.dll
+[09:37:59.888573] [I] FfxApiProxy::InitFfxDx12_SR LoadResult: true
+[09:37:59.888576] [I] 
+[09:37:59.888578] [D] FfxApiProxy::InitFfxDx12_FG Trying to load amd_fidelityfx_framegeneration_dx12.dll
+[09:37:59.894713] [I] Util::LoadProxyLibrary amd_fidelityfx_framegeneration_dx12.dll loaded from Opti dll path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\amd_fidelityfx_framegeneration_dx12.dll
+[09:37:59.894729] [I] FfxApiProxy::InitFfxDx12_FG Loaded from Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\amd_fidelityfx_framegeneration_dx12.dll
+[09:37:59.894749] [I] FfxApiProxy::InitFfxDx12_FG LoadResult: true
+[09:37:59.894751] [I] 
+[09:37:59.894754] [D] FfxApiProxy::InitFfxDx12_Denoiser Trying to load amd_fidelityfx_denoiser_dx12.dll
+[09:37:59.896909] [I] Util::LoadProxyLibrary amd_fidelityfx_denoiser_dx12.dll loaded from Opti dll path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\amd_fidelityfx_denoiser_dx12.dll
+[09:37:59.896923] [I] FfxApiProxy::InitFfxDx12_Denoiser Loaded from Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\amd_fidelityfx_denoiser_dx12.dll
+[09:37:59.896941] [I] FfxApiProxy::InitFfxDx12_Denoiser LoadResult: true
+[09:37:59.896945] [I] 
+[09:37:59.896948] [D] FfxApiProxy::InitFfxDx12_Radiance Trying to load amd_fidelityfx_radiancecache_dx12.dll
+[09:37:59.897156] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_radiancecache_dx12.dll, returning nullptr!
+[09:37:59.897158] [I] FfxApiProxy::InitFfxDx12_Radiance LoadResult: false
+[09:37:59.897160] [I] FfxApiProxy::InitFfxDx12 LoadResult: true
+[09:37:59.897162] [I] 
+[09:37:59.897164] [D] FfxApiProxy::InitFfxDx12_Radiance Trying to load amd_fidelityfx_radiancecache_dx12.dll
+[09:37:59.897319] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_radiancecache_dx12.dll, returning nullptr!
+[09:37:59.897321] [I] FfxApiProxy::InitFfxDx12_Radiance LoadResult: false
+[09:37:59.897323] [D] XeSSProxy::InitXeSS Trying to load libxess.dll
+[09:37:59.908919] [I] Util::LoadProxyLibrary libxess.dll loaded from Opti dll path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\libxess.dll
+[09:37:59.908942] [I] XeSSProxy::InitXeSS Loaded from Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\libxess.dll
+[09:37:59.909042] [I] XeSSProxy::InitXeSS LoadResult: true
+[09:37:59.909046] [D] XeSSProxy::InitXeSSDx11 Trying to load libxess_dx11.dll
+[09:37:59.909322] [I] Util::LoadProxyLibrary libxess_dx11.dll loaded from Opti dll path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\libxess_dx11.dll
+[09:37:59.909326] [I] XeSSProxy::InitXeSSDx11 Loaded from Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\libxess_dx11.dll
+[09:37:59.909356] [I] XeSSProxy::InitXeSSDx11 LoadResult: true
+[09:37:59.909359] [D] XeFGProxy::InitXeFG Trying to load libxess_fg.dll
+[09:37:59.913219] [I] Util::LoadProxyLibrary libxess_fg.dll loaded from Opti dll path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\libxess_fg.dll
+[09:37:59.913243] [I] XeFGProxy::InitXeFG Loaded from Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\libxess_fg.dll
+[09:37:59.913245] [I] 
+[09:37:59.913250] [I] XeFGProxy::HookXeFG LoadResult: true
+[09:37:59.913253] [D] XeLLProxy::InitXeLL Trying to load libxell.dll
+[09:37:59.913678] [I] Util::LoadProxyLibrary libxell.dll loaded from Opti dll path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\libxell.dll
+[09:37:59.913689] [I] XeLLProxy::InitXeLL Loaded from Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\libxell.dll
+[09:37:59.913691] [I] 
+[09:37:59.913694] [I] XeLLProxy::HookXeLL LoadResult: true
+[09:37:59.913696] [I] NVNGXProxy::InitNVNGX 
+[09:37:59.913699] [D] NVNGXProxy::InitNVNGX Trying to load _nvngx.dll
+[09:37:59.914130] [I] Util::LoadProxyLibrary _nvngx.dll loaded from override path: _nvngx.dll
+[09:37:59.914139] [I] NVNGXProxy::InitNVNGX Loaded from Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\_nvngx.dll
+[09:37:59.914141] [I] NVNGXProxy::InitNVNGX Getting nvngx method addresses
+[09:37:59.914143] [D] HookNgxApi Trying to hook NgxApi
+[09:37:59.914145] [I] HookNgxApi NVSDK_NGX_XXXXXX_GetFeatureRequirements found, hooking!
+[09:37:59.914162] [I] 
+[09:37:59.914164] [D] InitFSR4Update 
+[09:37:59.914363] [I] InitFSR4Update amdxc64.dll loaded
+[09:37:59.914366] [D] InitFSR4Update Hooking AmdExtD3DCreateInterface
+[09:37:59.914376] [I] OverrideNvapiDll not set, setting it to: false
+[09:37:59.914378] [I] 
+[09:37:59.914388] [I] HookFSR2ExeInputs Trying to hook FSR2 methods
+[09:37:59.914393] [D] HookFSR2ExeInputs ffxFsr2ContextCreate_Dx12: 0
+[09:37:59.914395] [D] HookFSR2ExeInputs ffxFsr2ContextDispatch_Dx12: 0
+[09:37:59.914397] [D] HookFSR2ExeInputs ffxFsr20ContextDispatch_Dx12: 0
+[09:37:59.914399] [D] HookFSR2ExeInputs ffxFsr2TinyContextDispatch_Dx12: 0
+[09:37:59.914401] [D] HookFSR2ExeInputs ffxFsr2ContextDestroy_Dx12: 0
+[09:37:59.914403] [D] HookFSR2ExeInputs ffxFsr2GetUpscaleRatioFromQualityMode_Dx12: 0
+[09:37:59.914405] [D] HookFSR2ExeInputs ffxFsr2GetRenderResolutionFromQualityMode_Dx12: 0
+[09:37:59.914416] [I] HookFSR3ExeInputs Trying to hook FSR3 methods
+[09:37:59.914420] [D] HookFSR3ExeInputs ffxFsr3UpscalerContextCreate_Dx12: 0
+[09:37:59.914422] [D] HookFSR3ExeInputs ffxFsr3UpscalerContextDispatch_Dx12: 0
+[09:37:59.914424] [D] HookFSR3ExeInputs ffxFsr3UpscalerContextDestroy_Dx12: 0
+[09:37:59.914426] [D] HookFSR3ExeInputs ffxFsr3UpscalerGetUpscaleRatioFromQualityMode_Dx12: 0
+[09:37:59.914429] [D] HookFSR3ExeInputs ffxFsr3UpscalerGetRenderResolutionFromQualityMode_Dx12: 0
+[09:37:59.914447] [I] 
+[09:37:59.914449] [I] Init done
+[09:37:59.914450] [I] ---------------------------------------------
+[09:37:59.914452] [I] 
+[09:37:59.915890] [I] StreamlineHooks::streamlineLogCallback [09-37-59][streamline][info][tid:300][0s:059ms:125us]pluginManager.cpp:430[setHostSDKVersion] Streamline v2.14.1.98614dad6 - built on Fri Aug 28 13:38:13 2026 - host SDK v2.14.1
+[09:37:59.916824] [I] LibraryLoadHooks::LoadLibraryCheckW nvapi64.dll call!
+[09:37:59.917768] [D] NvApiHooks::Hook Trying to hook NvApi
+[09:37:59.917781] [D] NvApiHooks::Hook OriginalNvAPI_QueryInterface = 6FFFF0439890
+[09:37:59.917783] [I] NvApiHooks::Hook NvAPI_QueryInterface found, hooking!
+[09:37:59.917785] [D] fakenvapi::Init Trying to get fakenvapi-specific functions
+[09:37:59.919079] [W] StreamlineHooks::streamlineLogCallback [09-37-59][streamline][warn][tid:300][0s:062ms:324us]ota.cpp:743[readServerManifest] Failed to open manifest file at: C:\ProgramData\NVIDIA/NGX/models/nvngx_config.txt
+[09:37:59.924167] [I] fakenvapi::Init Failed to initialize fakenvapi
+[09:37:59.924211] [D] ReflexHooks::hookReflex Inited Reflex hooks
+[09:37:59.924224] [D] hkCreateDXGIFactory1 Caller: nvapi64.dll
+[09:37:59.925870] [D] hkvkGetInstanceProcAddr vkCreateInstance
+[09:37:59.929021] [I] VulkanSpoofing::hkvkCreateInstance vkInstanceExtensions is empty, enumerating instance extensions
+[09:37:59.929661] [D] VulkanSpoofing::hkvkCreateInstance   VK_KHR_device_group_creation
+[09:37:59.929665] [D] VulkanSpoofing::hkvkCreateInstance   VK_KHR_external_fence_capabilities
+[09:37:59.929667] [D] VulkanSpoofing::hkvkCreateInstance   VK_KHR_external_memory_capabilities
+[09:37:59.929669] [D] VulkanSpoofing::hkvkCreateInstance   VK_KHR_external_semaphore_capabilities
+[09:37:59.929671] [D] VulkanSpoofing::hkvkCreateInstance   VK_KHR_get_physical_device_properties2
+[09:37:59.929673] [D] VulkanSpoofing::hkvkCreateInstance   VK_KHR_get_surface_capabilities2
+[09:37:59.929679] [D] VulkanSpoofing::hkvkCreateInstance   VK_KHR_surface
+[09:37:59.929681] [D] VulkanSpoofing::hkvkCreateInstance   VK_KHR_win32_surface
+[09:37:59.929683] [D] VulkanSpoofing::hkvkCreateInstance   VK_EXT_debug_report
+[09:37:59.929685] [D] VulkanSpoofing::hkvkCreateInstance   VK_EXT_debug_utils
+[09:37:59.929686] [D] VulkanSpoofing::hkvkCreateInstance   VK_EXT_surface_maintenance1
+[09:37:59.929688] [D] VulkanSpoofing::hkvkCreateInstance   VK_EXT_swapchain_colorspace
+[09:37:59.929690] [D] VulkanSpoofing::hkvkCreateInstance   VK_KHR_portability_enumeration
+[09:37:59.929692] [D] VulkanSpoofing::hkvkCreateInstance   VK_EXT_layer_settings
+[09:37:59.929694] [D] VulkanSpoofing::hkvkCreateInstance ApplicationName: opti_client.exe
+[09:37:59.929697] [D] VulkanSpoofing::hkvkCreateInstance Extensions (4):
+[09:37:59.929699] [D] VulkanSpoofing::hkvkCreateInstance   VK_EXT_surface_maintenance1
+[09:37:59.929702] [D] VulkanSpoofing::hkvkCreateInstance   VK_KHR_get_surface_capabilities2
+[09:37:59.929704] [D] VulkanSpoofing::hkvkCreateInstance   VK_KHR_surface
+[09:37:59.929706] [D] VulkanSpoofing::hkvkCreateInstance   VK_KHR_win32_surface
+[09:37:59.929707] [I] VulkanSpoofing::hkvkCreateInstance Adding NVNGX Vulkan extensions
+[09:37:59.929710] [D] VulkanSpoofing::hkvkCreateInstance   Adding VK_KHR_get_physical_device_properties2
+[09:37:59.929712] [D] VulkanSpoofing::hkvkCreateInstance   Adding VK_KHR_external_memory_capabilities
+[09:37:59.929714] [D] VulkanSpoofing::hkvkCreateInstance   Adding VK_KHR_external_semaphore_capabilities
+[09:37:59.929715] [I] VulkanSpoofing::hkvkCreateInstance Adding FFX Vulkan extensions
+[09:37:59.929718] [D] VulkanSpoofing::hkvkCreateInstance   Adding VK_EXT_debug_utils
+[09:37:59.929719] [I] VulkanSpoofing::hkvkCreateInstance Adding Vulkan w/Dx12 extensions
+[09:37:59.929721] [D] VulkanSpoofing::hkvkCreateInstance   Adding VK_KHR_external_memory_capabilities
+[09:37:59.929723] [D] VulkanSpoofing::hkvkCreateInstance   Adding VK_KHR_external_semaphore_capabilities
+[09:37:59.929725] [D] VulkanSpoofing::hkvkCreateInstance Layer count: 0
+[09:37:59.932251] [D] hkvkCreateInstance State::Instance().VulkanInstance captured: 168C0A0
+[09:37:59.932263] [D] hkvkGetInstanceProcAddr vkCreateDevice
+[09:37:59.933916] [W] DxgiSpoofing::AttachToAdapter DxgiSpoofing and DxgiVRAM is disabled, skipping hooking
+[09:37:59.934459] [D] NvApiHooks::hkNvAPI_GPU_GetArchInfo Original arch: 130 impl: 2 rev: FFFFFFFF!
+[09:37:59.934513] [I] StreamlineHooks::streamlineLogCallback [09-37-59][streamline][info][tid:300][0s:077ms:760us]ota.cpp:832[getNVDAArchitecture] Found NVIDIA GPUs, [000000000021DF40]: 1
+[09:37:59.936913] [I] StreamlineHooks::streamlineLogCallback [09-37-59][streamline][info][tid:300][0s:080ms:163us]ota.cpp:838[getNVDAArchitecture] Found GPU 0, arch=0x130
+[09:37:59.938765] [I] StreamlineHooks::streamlineLogCallback [09-37-59][streamline][info][tid:300][0s:082ms:017us]ota.cpp:908[checkForOTA] Requesting optional updates!
+[09:37:59.940625] [E] StreamlineHooks::streamlineLogCallback [09-37-59][streamline][error][tid:300][0s:083ms:877us]ota.cpp:236[invokeNGXUpdater] NGX Updater not available. OTA downloads are disabled.
+[09:37:59.942973] [I] StreamlineHooks::streamlineLogCallback [09-37-59][streamline][info][tid:300][0s:086ms:224us]pluginManager.cpp:545[findPlugins] Looking for plugins in Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\ ...
+[09:37:59.945189] [I] StreamlineHooks::streamlineLogCallback [09-37-59][streamline][info][tid:300][0s:088ms:439us]pluginManager.cpp:1048[loadPlugins] eLoadDownloadedPlugins flag not passed to preferences, OTA'd plugins will not be loaded!
+[09:37:59.954109] [I] StreamlineHooks::streamlineLogCallback [09-37-59][streamline][info][tid:300][0s:097ms:358us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[09:37:59.955277] [D] hkCreateDXGIFactory Caller: sl.common.dll
+[09:37:59.955919] [I] StreamlineHooks::streamlineLogCallback [09-37-59][streamline][info][tid:300][0s:099ms:168us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[09:37:59.956086] [I] LibraryLoadHooks::LoadLibraryCheckW nvapi64.dll call!
+[09:37:59.956136] [D] NvApiHooks::hkNvAPI_GPU_GetArchInfo Original arch: 130 impl: 2 rev: FFFFFFFF!
+[09:37:59.957406] [I] StreamlineHooks::streamlineLogCallback [09-37-59][streamline][info][tid:300][0s:100ms:660us]commonInterface.cpp:165[getSystemCaps] Enumerating up to 8 adapters but only one of them can be used to create a device - no mGPU support in this SDK
+[09:37:59.959484] [I] StreamlineHooks::streamlineLogCallback [09-37-59][streamline][info][tid:300][0s:102ms:739us]commonInterface.cpp:287[getSystemCaps] >-----------------------------------------
+[09:37:59.961157] [I] StreamlineHooks::streamlineLogCallback [09-37-59][streamline][info][tid:300][0s:104ms:412us]commonInterface.cpp:290[getSystemCaps] NVIDIA driver 999.99
+[09:37:59.962413] [I] StreamlineHooks::streamlineLogCallback [09-37-59][streamline][info][tid:300][0s:105ms:668us]commonInterface.cpp:315[getSystemCaps] Adapter 0 architecture 0x130 implementation 0x2 revision 0xffffffff - bit 0x1 - LUID 0.1010
+[09:37:59.964509] [I] StreamlineHooks::streamlineLogCallback [09-37-59][streamline][info][tid:300][0s:107ms:764us]commonInterface.cpp:321[getSystemCaps] -----------------------------------------<
+[09:37:59.965986] [I] StreamlineHooks::streamlineLogCallback [09-37-59][streamline][info][tid:300][0s:109ms:241us]commonEntry.cpp:2039[getOSVersionAndUpdateTimerResolution] Preferred high resolution timer resolution (5000) is unsupported, trying 10000 [100 ns units] instead.
+[09:37:59.968166] [I] StreamlineHooks::streamlineLogCallback [09-37-59][streamline][info][tid:300][0s:111ms:421us]commonEntry.cpp:2045[getOSVersionAndUpdateTimerResolution] Changed high resolution timer resolution to 10000 [100 ns units].
+[09:37:59.968565] [D] StreamlineHooks::hkdlss_slGetPluginFunction slOnPluginLoad
+[09:37:59.968575] [D] StreamlineHooks::hkdlss_slGetPluginFunction slIsSupported
+[09:37:59.970193] [I] StreamlineHooks::streamlineLogCallback [09-37-59][streamline][info][tid:300][0s:113ms:448us]commonEntry.cpp:2124[updateEmbeddedJSON] Detected Windows OS version 10.0.19045
+[09:37:59.984662] [I] StreamlineHooks::streamlineLogCallback [09-37-59][streamline][info][tid:300][0s:127ms:912us]pluginManager.cpp:907[mapPlugins] Loaded plugin 'sl.common' - version 2.14.1.98614dad6 PRODUCTION - id 4294967295 - priority 0 - adapter mask 0x1 - interposer 'no'
+[09:37:59.986860] [I] StreamlineHooks::streamlineLogCallback [09-37-59][streamline][info][tid:300][0s:130ms:112us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[09:37:59.988702] [I] StreamlineHooks::streamlineLogCallback [09-37-59][streamline][info][tid:300][0s:131ms:957us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[09:37:59.990253] [W] StreamlineHooks::streamlineLogCallback [09-37-59][streamline][warn][tid:300][0s:133ms:502us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.deepdvc' since it is was not requested by the host
+[09:37:59.991927] [I] StreamlineHooks::streamlineLogCallback [09-37-59][streamline][info][tid:300][0s:135ms:181us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[09:37:59.993595] [I] StreamlineHooks::streamlineLogCallback [09-37-59][streamline][info][tid:300][0s:136ms:850us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[09:37:59.995279] [I] StreamlineHooks::streamlineLogCallback [09-37-59][streamline][info][tid:300][0s:138ms:533us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeDepth' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDirectSR`
+[09:37:59.997764] [I] StreamlineHooks::streamlineLogCallback [09-37-59][streamline][info][tid:300][0s:141ms:017us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeMotionVectors' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDirectSR`
+[09:38:00.000299] [I] StreamlineHooks::streamlineLogCallback [09-37-59][streamline][info][tid:300][0s:143ms:553us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeScalingInputColor' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDirectSR`
+[09:38:00.003256] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:146ms:510us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeScalingOutputColor' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDirectSR`
+[09:38:00.005894] [W] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][warn][tid:300][0s:149ms:145us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.directsr' since it is was not requested by the host
+[09:38:00.007634] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:150ms:889us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[09:38:00.009533] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:152ms:787us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[09:38:00.010950] [E] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][error][tid:300][0s:154ms:204us]commonEntry.cpp:1093[getNGXFeatureRequirements] ngxResult failed 0xbad00002
+[09:38:00.013122] [W] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][warn][tid:300][0s:156ms:376us]dlssEntry.cpp:208[updateEmbeddedJSON] Failed to obtain DLSS min spec requirements from NGX, using SL defaults
+[09:38:00.015793] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:159ms:047us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeDepth' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDLSS`
+[09:38:00.018424] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:161ms:678us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeMotionVectors' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDLSS`
+[09:38:00.019212] [D] hkD3D12CreateDevice Adapter: 0, Level: C000, Caller: opti_client.exe
+[09:38:00.019517] [D] D3D12Hooks::HookAgility Hooking D3D12GetInterface from D3D12 Agility SDK
+[09:38:00.019544] [D] hkD3D12GetInterface D3D12GetInterface called: 6FFFFDEECDF0, 6FFFFDEEEC20, Caller: d3d12.dll
+[09:38:00.019548] [D] hkD3D12GetInterface D3D12GetInterface called: 6FFFFDEECE00, 6FFFFDEEEC30, Caller: d3d12.dll
+[09:38:00.019553] [D] hkCreateDXGIFactory1 Caller: d3d12core.dll
+[09:38:00.020038] [D] hkvkGetInstanceProcAddr vkCreateInstance
+[09:38:00.020988] [I] VulkanSpoofing::hkvkCreateInstance Skipping because DXVK/VKD3D is creating a D3D device
+[09:38:00.022019] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:165ms:270us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeScalingInputColor' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDLSS`
+[09:38:00.022175] [D] hkvkCreateInstance State::Instance().VulkanInstance captured: 1747D50
+[09:38:00.022203] [D] hkvkGetInstanceProcAddr vkCreateDevice
+[09:38:00.024499] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:167ms:751us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeScalingOutputColor' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureDLSS`
+[09:38:00.027006] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:170ms:258us]pluginManager.cpp:907[mapPlugins] Loaded plugin 'sl.dlss' - version 2.14.1.98614dad6 PRODUCTION - id 0 - priority 100 - adapter mask 0x1 - interposer 'no'
+[09:38:00.029227] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:172ms:479us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[09:38:00.030936] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:174ms:190us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[09:38:00.032385] [E] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][error][tid:300][0s:175ms:639us]commonEntry.cpp:1093[getNGXFeatureRequirements] ngxResult failed 0xbad00002
+[09:38:00.033750] [W] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][warn][tid:300][0s:177ms:004us]dlss_dEntry.cpp:210[updateEmbeddedJSON] DLSSD feature is not supported. Please check if you have a valid nvngx_dlssd.dll or your driver is supporting DLSSD.
+[09:38:00.035861] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:179ms:115us]pluginManager.cpp:907[mapPlugins] Loaded plugin 'sl.dlss_d' - version 2.14.1.98614dad6 PRODUCTION - id 1001 - priority 100 - adapter mask 0x0 - interposer 'no'
+[09:38:00.037946] [I] VulkanSpoofing::hkvkCreateDevice Skipping because DXVK/VKD3D is creating a D3D device
+[09:38:00.038168] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:181ms:418us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[09:38:00.039809] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:183ms:062us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[09:38:00.041201] [E] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][error][tid:300][0s:184ms:456us]commonEntry.cpp:1093[getNGXFeatureRequirements] ngxResult failed 0xbad00002
+[09:38:00.042407] [D] hkvkCreateDevice _PD captured: 1747D68
+[09:38:00.042422] [D] hkvkCreateDevice _device captured: 16BB610
+[09:38:00.042502] [D] HookDevice Hooking VkDevice
+[09:38:00.042585] [W] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][warn][tid:300][0s:185ms:839us]dlss_gEntry.cpp:143[updateEmbeddedJSON] Failed to obtain DLSS-G min spec requirements from NGX, using SL defaults
+[09:38:00.044291] [W] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][warn][tid:300][0s:187ms:545us]dlss_gEntry.cpp:345[updateEmbeddedJSON] Disabling DLSS-G since it is not supported on current hardware
+[09:38:00.045170] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool 175BC10 created for queue family 1
+[09:38:00.045954] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:189ms:209us]pluginManager.cpp:907[mapPlugins] Loaded plugin 'sl.dlss_g' - version 2.14.1.98614dad6 PRODUCTION - id 1000 - priority 1000 - adapter mask 0x0 - interposer 'no'
+[09:38:00.048164] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:191ms:416us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[09:38:00.050497] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:193ms:749us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[09:38:00.051972] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:195ms:224us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeScalingInputColor' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureNIS`
+[09:38:00.054488] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:197ms:739us]commonEntry.cpp:1457[updateCommonEmbeddedJSONConfig] Registering required tag 'kBufferTypeScalingOutputColor' life-cycle 'ResourceLifecycle::eValidUntilEvaluate' for feature `kFeatureNIS`
+[09:38:00.056965] [W] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][warn][tid:300][0s:200ms:218us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.nis' since it is was not requested by the host
+[09:38:00.058662] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:201ms:916us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[09:38:00.060347] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:203ms:601us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[09:38:00.061845] [W] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][warn][tid:300][0s:205ms:099us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.nvperf' since it is was not requested by the host
+[09:38:00.063475] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:206ms:729us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[09:38:00.065080] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:208ms:334us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[09:38:00.066487] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:209ms:741us]pluginManager.cpp:907[mapPlugins] Loaded plugin 'sl.pcl' - version 2.14.1.98614dad6 PRODUCTION - id 4 - priority 2 - adapter mask 0x1 - interposer 'no'
+[09:38:00.068562] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:211ms:816us]plugin.cpp:94[isAppDenylisted] Plugin path: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[09:38:00.070247] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:213ms:499us]plugin.cpp:110[isAppDenylisted] Plugin is not from OTA - denylist does not apply
+[09:38:00.071690] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:214ms:944us]pluginManager.cpp:907[mapPlugins] Loaded plugin 'sl.reflex' - version 2.14.1.98614dad6 PRODUCTION - id 3 - priority 100 - adapter mask 0x1 - interposer 'no'
+[09:38:00.073900] [W] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][warn][tid:300][0s:217ms:153us]pluginManager.cpp:1090[loadPlugins] Ignoring plugin 'sl.dlss_d' since it is not supported on this platform
+[09:38:00.075587] [W] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][warn][tid:300][0s:218ms:841us]pluginManager.cpp:1090[loadPlugins] Ignoring plugin 'sl.dlss_g' since it is not supported on this platform
+[09:38:00.077259] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:220ms:501us]pluginManager.cpp:1190[loadPlugins] Plugin execution order based on priority:
+[09:38:00.078614] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:221ms:866us]pluginManager.cpp:1193[loadPlugins] P0 - sl.common
+[09:38:00.079702] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:222ms:955us]pluginManager.cpp:1193[loadPlugins] P2 - sl.pcl
+[09:38:00.080796] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:224ms:049us]pluginManager.cpp:1193[loadPlugins] P100 - sl.dlss
+[09:38:00.081895] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:225ms:147us]pluginManager.cpp:1193[loadPlugins] P100 - sl.reflex
+[09:38:00.115645] [D] hkD3D12CreateDevice o_D3D12CreateDevice result: 0
+[09:38:00.115671] [D] hkD3D12CreateDevice Device captured: 1E90080
+[09:38:00.115674] [D] HookToDevice Dx12
+[09:38:00.115723] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool 177BDA0 created for queue family 0
+[09:38:00.115830] [D] HookToCommandList Hooked RootSignature functions
+[09:38:00.115872] [D] hkD3D12CreateDevice final result: 0
+[09:38:00.116090] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:259ms:248us]pluginManager.cpp:1393[initializePlugins] Initializing plugins - api 0.0.1 - application ID 101640911
+[09:38:00.117111] [D] StreamlineHooks::hkdlss_slGetPluginFunction slOnPluginStartup
+[09:38:00.117119] [D] StreamlineHooks::hkdlss_slGetPluginFunction slOnPluginShutdown
+[09:38:00.117122] [D] StreamlineHooks::hkdlss_slGetPluginFunction slOnPluginsInitialized
+[09:38:00.117880] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:261ms:129us]d3d12.cpp:1339[createKernel] Creating DXBC kernel copy_to_buffer.cs:main hash 12564409127886710297
+[09:38:00.119751] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:263ms:003us]generic.cpp:112[initNsightActivity] NSight SDK activity not detected (6)!
+[09:38:00.122081] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:265ms:333us]commonEntry.cpp:1568[slOnPluginStartup] At least one plugin requires NGX, trying to initialize ...
+[09:38:00.124436] [W] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][warn][tid:300][0s:267ms:688us]commonEntry.cpp:1748[slOnPluginStartup] Failed to initialize NGX, any SL feature requiring NGX will be unloaded and disabled
+[09:38:00.126361] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool 17E7EB0 created for queue family 0
+[09:38:00.126918] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool 17EBE40 created for queue family 0
+[09:38:00.128178] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:271ms:431us]pluginManager.cpp:1499[mapPluginCallbacks] Callback sl.common:slSetData:0x0
+[09:38:00.129517] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:272ms:769us]pluginManager.cpp:1500[mapPluginCallbacks] Callback sl.common:slGetData:0x0
+[09:38:00.130834] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:274ms:086us]pluginManager.cpp:1501[mapPluginCallbacks] Callback sl.common:slAllocateResources:0x0
+[09:38:00.132172] [D] UpdateInitPaths Feature Path [0]: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[09:38:00.132180] [D] UpdateInitPaths Feature Path [1]: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[09:38:00.132182] [D] UpdateInitPaths Feature Path [2]: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[09:38:00.132185] [D] UpdateInitPaths Feature Path [3]: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[09:38:00.132187] [I] NVSDK_NGX_D3D12_Init calling NVNGXProxy::D3D12_Init
+[09:38:00.132191] [I] NVSDK_NGX_D3D12_Init calling NVNGXProxy::D3D12_Init result: 1
+[09:38:00.132194] [I] NVSDK_NGX_D3D12_Init_Ext AppId: 322376503
+[09:38:00.132196] [I] NVSDK_NGX_D3D12_Init_Ext SDK: 15
+[09:38:00.132198] [I] NVSDK_NGX_D3D12_Init_Ext InApplicationDataPath .
+[09:38:00.132226] [D] NVSDK_NGX_D3D12_Init was called NVSDK_NGX_D3D12_Init_Ext
+[09:38:00.132229] [I] NVSDK_NGX_D3D12_AllocateParameters calling NVNGXProxy::D3D12_AllocateParameters
+[09:38:00.132232] [I] NVSDK_NGX_D3D12_AllocateParameters calling NVNGXProxy::D3D12_AllocateParameters result: 1, ptr: 8CE530
+[09:38:00.132242] [I] NVSDK_NGX_D3D12_CreateFeature HandleId: 1000000
+[09:38:00.132245] [I] NVSDK_NGX_D3D12_CreateFeature Creating new xess upscaler
+[09:38:00.132248] [I] IFeature::SetHandle Handle: 1000000
+[09:38:00.132251] [I] IFeature::SetInitParameters SharpenEnabled flag overrided by user: false
+[09:38:00.132254] [I] IFeature::SetInitParameters Init Flag AutoExposure: false
+[09:38:00.132255] [I] IFeature::SetInitParameters Init Flag DepthInverted: false
+[09:38:00.132258] [I] IFeature::SetInitParameters Init Flag IsHdr: true
+[09:38:00.132260] [I] IFeature::SetInitParameters Init Flag JitteredMV: false
+[09:38:00.132263] [I] IFeature::SetInitParameters Init Flag LowResMV: true
+[09:38:00.132265] [I] IFeature::SetInitParameters Init Flag SharpenEnabled: false
+[09:38:00.132269] [I] IFeature::SetInitParameters Render Resolution: 2560x1440, Display Resolution 3840x2160, Quality: 2
+[09:38:00.132276] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool 17E8150 created for queue family 0
+[09:38:00.132348] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:275ms:601us]pluginManager.cpp:1502[mapPluginCallbacks] Callback sl.common:slFreeResources:0x0
+[09:38:00.132415] [D] hkCreateDXGIFactory1 Caller: libxess.dll
+[09:38:00.132494] [D] hkCreateDXGIFactory1 Caller: libxess.dll
+[09:38:00.132549] [D] hkCreateDXGIFactory1 Caller: libxess.dll
+[09:38:00.132732] [D] XeSSFeature::InitXeSS xessIsOptimalDriver : Success
+[09:38:00.132735] [D] XeSSFeature::InitXeSS xessSetLoggingCallback : Success
+[09:38:00.132738] [D] XeSSFeature::InitXeSS _xessInitFlags: 4
+[09:38:00.132740] [I] XeSSProxy::Version XeSS Version: v2.0.2
+[09:38:00.132875] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool 1813950 created for queue family 0
+[09:38:00.133451] [D] XeSSFeature::InitXeSS using _localBufferHeap & _localTextureHeap!
+[09:38:00.133457] [D] XeSSFeature::InitXeSS xessD3D12BuildPipelines!
+[09:38:00.133806] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:277ms:058us]pluginManager.cpp:1503[mapPluginCallbacks] Callback sl.common:slEvaluateFeature:0x6fffefdda0c0
+[09:38:00.135406] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:278ms:658us]pluginManager.cpp:1504[mapPluginCallbacks] Callback sl.common:slSetTag:0x6fffefdd8ba0
+[09:38:00.136858] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:280ms:110us]pluginManager.cpp:1505[mapPluginCallbacks] Callback sl.common:slSetTagForFrame:0x6fffefdd8d10
+[09:38:00.138331] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:281ms:583us]pluginManager.cpp:1506[mapPluginCallbacks] Callback sl.common:slSetConsts:0x6fffefdd9ba0
+[09:38:00.139754] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:283ms:007us]pluginManager.cpp:1266[processPluginHooks] Hook sl.common:slHookVkPresent:before - skipped
+[09:38:00.141202] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:284ms:455us]pluginManager.cpp:1266[processPluginHooks] Hook sl.common:slHookVkAfterPresent:after - skipped
+[09:38:00.143421] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:286ms:664us]pluginManager.cpp:1266[processPluginHooks] Hook sl.common:slHookVkCmdBindPipeline:after - skipped
+[09:38:00.143823] [D] XeSSFeature::InitXeSS using _localPipelines!
+[09:38:00.143841] [D] XeSSFeature::InitXeSS xessD3D12Init!
+[09:38:00.146146] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:289ms:391us]pluginManager.cpp:1266[processPluginHooks] Hook sl.common:slHookVkCmdBindDescriptorSets:after - skipped
+[09:38:00.149545] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:292ms:788us]pluginManager.cpp:1266[processPluginHooks] Hook sl.common:slHookVkBeginCommandBuffer:after - skipped
+[09:38:00.152502] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:295ms:747us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookCreateSwapChain:before - OK
+[09:38:00.154895] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:298ms:144us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookCreateSwapChainForHwnd:before - OK
+[09:38:00.157299] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:300ms:547us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookCreateSwapChainForCoreWindow:before - OK
+[09:38:00.159785] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:303ms:029us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookResizeSwapChainPre:before - OK
+[09:38:00.161878] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:305ms:125us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookPresent:before - OK
+[09:38:00.163793] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:307ms:040us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookAfterPresent:after - OK
+[09:38:00.166777] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:310ms:024us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookPresent1:before - OK
+[09:38:00.168774] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:312ms:018us]pluginManager.cpp:1290[processPluginHooks] Hook sl.common:slHookAfterPresent:after - OK
+[09:38:00.170643] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:313ms:889us]pluginManager.cpp:1499[mapPluginCallbacks] Callback sl.pcl:slSetData:0x6fffefbbb850
+[09:38:00.172126] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:315ms:378us]pluginManager.cpp:1500[mapPluginCallbacks] Callback sl.pcl:slGetData:0x6fffefbbb860
+[09:38:00.173648] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:316ms:900us]pluginManager.cpp:1501[mapPluginCallbacks] Callback sl.pcl:slAllocateResources:0x0
+[09:38:00.175143] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:318ms:396us]pluginManager.cpp:1502[mapPluginCallbacks] Callback sl.pcl:slFreeResources:0x0
+[09:38:00.176586] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:319ms:839us]pluginManager.cpp:1503[mapPluginCallbacks] Callback sl.pcl:slEvaluateFeature:0x0
+[09:38:00.178002] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:321ms:255us]pluginManager.cpp:1504[mapPluginCallbacks] Callback sl.pcl:slSetTag:0x0
+[09:38:00.179317] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:322ms:569us]pluginManager.cpp:1505[mapPluginCallbacks] Callback sl.pcl:slSetTagForFrame:0x0
+[09:38:00.180704] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:323ms:957us]pluginManager.cpp:1506[mapPluginCallbacks] Callback sl.pcl:slSetConsts:0x0
+[09:38:00.182047] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:325ms:300us]pluginManager.cpp:1251[processPluginHooks] Plugin 'sl.pcl' has no registered hooks
+[09:38:00.183787] [E] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][error][tid:300][0s:327ms:039us]dlssEntry.cpp:923[slOnPluginStartup] Missing NGX context - DLSSContext cannot run
+[09:38:00.184732] [D] OS_Dx12::OS_Dx12 Output Scaling start!
+[09:38:00.184788] [D] D3D12Hooks::Hook 
+[09:38:00.185366] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:328ms:614us]pluginManager.cpp:1499[mapPluginCallbacks] Callback sl.reflex:slSetData:0x6fffefb4bae0
+[09:38:00.186903] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:330ms:156us]pluginManager.cpp:1500[mapPluginCallbacks] Callback sl.reflex:slGetData:0x6fffefb4c450
+[09:38:00.188429] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:331ms:682us]pluginManager.cpp:1501[mapPluginCallbacks] Callback sl.reflex:slAllocateResources:0x0
+[09:38:00.189897] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:333ms:150us]pluginManager.cpp:1502[mapPluginCallbacks] Callback sl.reflex:slFreeResources:0x0
+[09:38:00.191302] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:334ms:555us]pluginManager.cpp:1503[mapPluginCallbacks] Callback sl.reflex:slEvaluateFeature:0x0
+[09:38:00.192730] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:335ms:983us]pluginManager.cpp:1504[mapPluginCallbacks] Callback sl.reflex:slSetTag:0x0
+[09:38:00.194076] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:337ms:329us]pluginManager.cpp:1505[mapPluginCallbacks] Callback sl.reflex:slSetTagForFrame:0x0
+[09:38:00.195493] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:338ms:746us]pluginManager.cpp:1506[mapPluginCallbacks] Callback sl.reflex:slSetConsts:0x0
+[09:38:00.196866] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:340ms:118us]pluginManager.cpp:1266[processPluginHooks] Hook sl.reflex:slHookVkCreateSwapchainKHRBefore:before - skipped
+[09:38:00.198515] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:341ms:768us]pluginManager.cpp:1266[processPluginHooks] Hook sl.reflex:slHookVkCreateSwapchainKHRAfter:after - skipped
+[09:38:00.200150] [I] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][info][tid:300][0s:343ms:402us]pluginManager.cpp:1266[processPluginHooks] Hook sl.reflex:slHookVkDestroySwapchainKHRBefore:before - skipped
+[09:38:00.201959] [E] StreamlineHooks::streamlineLogCallback [09-38-00][streamline][error][tid:300][0s:345ms:207us]sl.cpp:179[slValidateFeatureContext] 'kFeatureDLSS' context is missing.
+[09:38:00.203376] [D] RCAS_Dx12::RCAS_Dx12 RCAS start!
+[09:38:00.223221] [D] Bias_Dx12::Bias_Dx12 Bias start!
+[09:38:00.260373] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:00.260424] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:00.260429] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:00.260432] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:00.260435] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:00.260438] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:00.260440] [W] XeSSFeatureDx12::Evaluate AutoExposure disabled but ExposureTexture is not exist, it may cause problems!!
+[09:38:00.260777] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:00.485565] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:00.485584] [I] FeatureProvider_Dx12::ChangeFeature changeBackend is true, counter: 1
+[09:38:00.485588] [I] FeatureProvider_Dx12::ChangeFeature changing backend to xess
+[09:38:00.485606] [D] FeatureProvider_Dx12::ChangeFeature sleeping before reset of current feature for 1000ms
+[09:38:01.740402] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:01.740425] [I] FeatureProvider_Dx12::ChangeFeature changeBackend is true, counter: 2
+[09:38:01.740429] [I] FeatureProvider_Dx12::ChangeFeature Creating new xess upscaler
+[09:38:01.740433] [I] IFeature::SetHandle Handle: 1000000
+[09:38:01.740437] [I] IFeature::SetInitParameters SharpenEnabled flag overrided by user: false
+[09:38:01.740440] [I] IFeature::SetInitParameters AutoExposure flag overrided by OptiScaler: true
+[09:38:01.740443] [I] IFeature::SetInitParameters Init Flag AutoExposure: true
+[09:38:01.740445] [I] IFeature::SetInitParameters Init Flag DepthInverted: false
+[09:38:01.740448] [I] IFeature::SetInitParameters Init Flag IsHdr: true
+[09:38:01.740450] [I] IFeature::SetInitParameters Init Flag JitteredMV: false
+[09:38:01.740452] [I] IFeature::SetInitParameters Init Flag LowResMV: true
+[09:38:01.740455] [I] IFeature::SetInitParameters Init Flag SharpenEnabled: false
+[09:38:01.740459] [I] IFeature::SetInitParameters Render Resolution: 2560x1440, Display Resolution 3840x2160, Quality: 2
+[09:38:01.963751] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:01.963773] [I] FeatureProvider_Dx12::ChangeFeature changeBackend is true, counter: 3
+[09:38:01.963786] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool 968E690 created for queue family 0
+[09:38:01.964014] [D] hkCreateDXGIFactory1 Caller: libxess.dll
+[09:38:01.964105] [D] hkCreateDXGIFactory1 Caller: libxess.dll
+[09:38:01.964139] [D] hkCreateDXGIFactory1 Caller: libxess.dll
+[09:38:01.964311] [D] XeSSFeature::InitXeSS xessIsOptimalDriver : Success
+[09:38:01.964314] [D] XeSSFeature::InitXeSS xessSetLoggingCallback : Success
+[09:38:01.964317] [D] XeSSFeature::InitXeSS _xessInitFlags: 256
+[09:38:01.965004] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool 1805F70 created for queue family 0
+[09:38:01.965138] [D] XeSSFeature::InitXeSS using _localBufferHeap & _localTextureHeap!
+[09:38:01.965147] [D] XeSSFeature::InitXeSS xessD3D12BuildPipelines!
+[09:38:01.967023] [D] XeSSFeature::InitXeSS using _localPipelines!
+[09:38:01.967040] [D] XeSSFeature::InitXeSS xessD3D12Init!
+[09:38:01.996025] [D] OS_Dx12::OS_Dx12 Output Scaling start!
+[09:38:02.014776] [D] RCAS_Dx12::RCAS_Dx12 RCAS start!
+[09:38:02.034543] [D] Bias_Dx12::Bias_Dx12 Bias start!
+[09:38:02.035016] [I] FeatureProvider_Dx12::ChangeFeature init successful for xess, upscaler changed
+[09:38:02.296215] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:02.296242] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:02.296245] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:02.296248] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:02.296263] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:02.296266] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:02.296268] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:02.296274] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:02.296431] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:02.608871] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:02.608899] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:02.608903] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:02.608906] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:02.608909] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:02.608911] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:02.608914] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:02.608920] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:02.609046] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:02.935611] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:02.935636] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:02.935639] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:02.935643] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:02.935645] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:02.935647] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:02.935650] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:02.935656] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:02.935774] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:03.264637] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:03.264666] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:03.264669] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:03.264673] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:03.264676] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:03.264678] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:03.264681] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:03.264687] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:03.264809] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:03.574506] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:03.574534] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:03.574537] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:03.574541] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:03.574544] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:03.574546] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:03.574549] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:03.574555] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:03.574678] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:03.897357] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:03.897385] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:03.897388] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:03.897392] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:03.897394] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:03.897398] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:03.897401] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:03.897407] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:03.897533] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:04.213341] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:04.213370] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:04.213379] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:04.213382] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:04.213385] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:04.213387] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:04.213389] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:04.213395] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:04.213515] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:04.527208] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:04.527234] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:04.527237] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:04.527240] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:04.527242] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:04.527245] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:04.527247] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:04.527253] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:04.527373] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:04.769154] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:04.769179] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:04.769182] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:04.769186] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:04.769200] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:04.769202] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:04.769209] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:04.769215] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:04.769343] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:05.093529] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:05.093557] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:05.093560] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:05.093564] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:05.093567] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:05.093569] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:05.093572] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:05.093579] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:05.093709] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:05.423890] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:05.423917] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:05.423920] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:05.423924] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:05.423927] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:05.423929] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:05.423933] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:05.423939] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:05.424066] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:05.749260] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:05.749286] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:05.749289] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:05.749293] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:05.749297] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:05.749300] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:05.749302] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:05.749309] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:05.749427] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:06.069838] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:06.069867] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:06.069870] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:06.069874] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:06.069876] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:06.069879] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:06.069882] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:06.069894] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:06.070026] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:06.377571] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:06.377597] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:06.377600] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:06.377604] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:06.377606] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:06.377609] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:06.377611] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:06.377617] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:06.377742] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:06.619890] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:06.619916] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:06.619920] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:06.619923] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:06.619926] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:06.619929] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:06.619932] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:06.619939] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:06.620067] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:06.934306] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:06.934334] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:06.934337] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:06.934341] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:06.934344] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:06.934346] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:06.934349] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:06.934357] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:06.934476] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:07.258859] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:07.258885] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:07.258889] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:07.258893] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:07.258895] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:07.258898] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:07.258900] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:07.258907] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:07.259035] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:07.579748] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:07.579776] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:07.579779] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:07.579783] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:07.579785] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:07.579788] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:07.579790] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:07.579797] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:07.579932] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:07.818795] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:07.818822] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:07.818825] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:07.818828] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:07.818831] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:07.818833] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:07.818835] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:07.818841] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:07.818960] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:08.058538] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:08.058570] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:08.058574] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:08.058577] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:08.058580] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:08.058582] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:08.058584] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:08.058590] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:08.058706] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:08.287057] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:08.287081] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:08.287084] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:08.287088] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:08.287091] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:08.287094] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:08.287096] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:08.287103] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:08.287223] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:08.526178] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:08.526210] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:08.526213] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:08.526217] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:08.526220] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:08.526223] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:08.526225] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:08.526232] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:08.526350] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:08.763917] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:08.763944] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:08.763947] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:08.763951] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:08.763954] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:08.763956] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:08.763959] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:08.763965] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:08.764095] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:09.000270] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:09.000312] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:09.000316] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:09.000319] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:09.000322] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:09.000325] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:09.000327] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:09.000334] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:09.000454] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:09.242648] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:09.242685] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:09.242689] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:09.242693] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:09.242695] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:09.242698] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:09.242700] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:09.242706] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:09.242838] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:09.379042] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:09.379069] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:09.379072] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:09.379075] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:09.379078] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:09.379080] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:09.379088] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:09.379094] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:09.379226] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:09.512596] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:09.512616] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:09.512619] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:09.512622] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:09.512625] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:09.512627] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:09.512629] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:09.512635] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:09.512752] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:09.646449] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:09.646475] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:09.646478] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:09.646482] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:09.646484] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:09.646487] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:09.646491] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:09.646497] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:09.646620] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:09.780345] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:09.780370] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:09.780373] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:09.780377] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:09.780380] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:09.780382] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:09.780384] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:09.780391] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:09.780516] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:09.914037] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:09.914061] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:09.914065] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:09.914068] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:09.914071] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:09.914073] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:09.914075] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:09.914081] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:09.914212] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:10.047983] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:10.048010] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:10.048013] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:10.048017] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:10.048019] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:10.048022] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:10.048024] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:10.048030] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:10.048156] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:10.181175] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:10.181197] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:10.181200] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:10.181204] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:10.181206] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:10.181209] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:10.181211] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:10.181217] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:10.181333] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:10.315079] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:10.315107] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:10.315110] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:10.315114] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:10.315116] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:10.315118] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:10.315121] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:10.315127] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:10.315249] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:10.449529] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:10.449554] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:10.449558] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:10.449561] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:10.449564] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:10.449566] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:10.449568] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:10.449575] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:10.449697] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:10.583304] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:10.583330] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:10.583334] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:10.583337] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:10.583340] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:10.583342] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:10.583345] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:10.583351] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:10.583471] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:10.717053] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:10.717077] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:10.717080] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:10.717083] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:10.717085] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:10.717087] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:10.717089] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:10.717094] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:10.717213] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:10.851834] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:10.851861] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:10.851865] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:10.851868] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:10.851871] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:10.851873] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:10.851875] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:10.851882] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:10.852012] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:10.986260] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:10.986285] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:10.986289] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:10.986293] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:10.986295] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:10.986298] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:10.986301] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:10.986307] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:10.986427] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:11.128358] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:11.128395] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:11.128399] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:11.128402] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:11.128405] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:11.128413] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:11.128416] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:11.128423] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:11.128551] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:11.264850] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:11.264879] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:11.264882] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:11.264886] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:11.264888] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:11.264893] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:11.264896] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:11.264902] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:11.265020] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:11.490185] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:11.490210] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:11.490214] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:11.490219] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:11.490221] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:11.490224] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:11.490227] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:11.490234] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:11.490365] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:11.725208] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:11.725233] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:11.725237] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:11.725241] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:11.725244] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:11.725247] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:11.725250] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:11.725257] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:11.725382] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:11.973347] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:11.973383] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:11.973387] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:11.973391] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:11.973394] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:11.973396] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:11.973399] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:11.973406] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:11.973527] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:12.206836] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:12.206865] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:12.206869] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:12.206873] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:12.206877] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:12.206881] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:12.206884] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:12.206893] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:12.207014] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:12.426907] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:12.426935] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:12.426939] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:12.426943] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:12.426946] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:12.426949] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:12.426952] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:12.426959] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:12.427089] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:12.563196] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:12.563224] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:12.563228] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:12.563232] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:12.563235] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:12.563238] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:12.563240] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:12.563247] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:12.563371] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:12.699437] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:12.699465] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:12.699468] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:12.699472] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:12.699474] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:12.699477] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:12.699480] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:12.699486] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:12.699605] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:12.834404] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:12.834431] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:12.834434] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:12.834437] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:12.834440] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:12.834443] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:12.834445] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:12.834451] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:12.834575] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:12.969100] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:12.969126] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:12.969129] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:12.969133] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:12.969135] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:12.969137] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:12.969140] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:12.969146] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:12.969263] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:13.104077] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:13.104104] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:13.104107] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:13.104110] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:13.104113] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:13.104116] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:13.104118] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:13.104125] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:13.104253] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:13.239184] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:13.239210] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:13.239213] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:13.239217] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:13.239220] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:13.239222] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:13.239225] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:13.239231] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:13.239359] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:13.373220] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:13.373251] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:13.373255] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:13.373258] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:13.373266] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:13.373269] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:13.373272] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:13.373278] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:13.373405] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:13.508381] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:13.508408] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:13.508411] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:13.508415] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:13.508418] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:13.508420] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:13.508423] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:13.508429] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:13.508553] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:13.643162] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:13.643188] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:13.643191] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:13.643194] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:13.643197] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:13.643199] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:13.643201] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:13.643206] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:13.643324] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:13.778260] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:13.778289] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:13.778292] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:13.778297] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:13.778299] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:13.778302] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:13.778304] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:13.778311] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:13.778438] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:13.914291] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 4300A80
+[09:38:13.914319] [D] XeSSFeatureDx12::Evaluate Input Resolution: 2560x1440
+[09:38:13.914322] [D] XeSSFeatureDx12::Evaluate Color exist..
+[09:38:13.914326] [D] XeSSFeatureDx12::Evaluate MotionVectors exist..
+[09:38:13.914328] [D] XeSSFeatureDx12::Evaluate Output exist..
+[09:38:13.914331] [D] XeSSFeatureDx12::Evaluate Depth exist..
+[09:38:13.914333] [D] XeSSFeatureDx12::Evaluate AutoExposure enabled!
+[09:38:13.914340] [D] XeSSFeatureDx12::Evaluate Executing!!
+[09:38:13.914458] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[09:38:14.029675] [I] NVSDK_NGX_D3D12_ReleaseFeature releasing feature with id 1000000
+[09:38:14.032268] [I] NVSDK_NGX_D3D12_DestroyParameters calling NVNGXProxy::D3D12_DestroyParameters
+[09:38:14.032296] [I] NVSDK_NGX_D3D12_DestroyParameters calling NVNGXProxy::D3D12_DestroyParameters result: 1
+[09:38:14.032417] [I] StreamlineHooks::streamlineLogCallback [09-38-14][streamline][info][tid:300][14s:175ms:530us]pluginManager.cpp:1202[unloadPlugins] Unloading all plugins ...
+[09:38:14.035091] [I] StreamlineHooks::streamlineLogCallback [09-38-14][streamline][info][tid:300][14s:178ms:206us]plugin.cpp:344[onShutdown] Shutting down plugin sl.reflex
+[09:38:14.037485] [I] StreamlineHooks::streamlineLogCallback [09-38-14][streamline][info][tid:300][14s:180ms:602us]plugin.cpp:344[onShutdown] Shutting down plugin sl.pcl
+[09:38:14.039795] [I] StreamlineHooks::streamlineLogCallback [09-38-14][streamline][info][tid:300][14s:182ms:914us]plugin.cpp:344[onShutdown] Shutting down plugin sl.common
+[09:38:14.042156] [I] StreamlineHooks::streamlineLogCallback [09-38-14][streamline][info][tid:300][14s:185ms:275us]d3d12.cpp:1375[destroyKernel] Destroying kernel copy_to_buffer.cs
+[09:38:14.044507] [I] StreamlineHooks::streamlineLogCallback [09-38-14][streamline][info][tid:300][14s:187ms:624us]generic.cpp:360[shutdown] Delayed destroy resource list count 0
+[09:38:14.066219] [I] 
+[09:38:14.066237] [I] DLL_PROCESS_DETACH
+[09:38:14.066240] [I] Unloading OptiScaler

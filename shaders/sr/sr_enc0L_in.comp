@@ -39,9 +39,9 @@
 // mirror2(c-2, W), model coords()/mirror()).
 // Two jobs share the thread:
 //  * the three MV outputs (model mv_outputs): the 3x3 depth tournament at (xref, yref) with the
-//    reset select, stored for level-0 y in [0,H) and x in [0,W) as f16(3.0*(mvoff + g_mv[read]))
+//    reset select, stored for level-0 y in [0,H) and x in [0,W) as f16(mv15*(mvoff + g_mv[read]))
 //    - prev_mvec[p^1] = reset ? max : min, mv_ero = reset ? min : max, mv_nondil = centre.
-//    3.0 is Enc0Args+0xb4/0xb8 (mv_scale, exactly 3.0 in f32), mvoff is +0xbc (0 unjittered).
+//    mv15 is Enc0Args+0xb4/0xb8 (3.0 in f32 on the fixture the literal came from), mvoff +0xbc.
 //  * l0_in: the 20 logical features (model features()), each through dq() (the dithered e4m3
 //    quantizer, dither = enc0_w[0:4096] as 2048 u16, fc from push +0xdc, index phase
 //    |coord-2| & 15), stored P-permuted: byte j of the pixel's 32 holds logical feature P(j)
@@ -110,6 +110,16 @@ layout(push_constant) uniform Enc0Args {
     float F20y;
     float F28x;                                 // +0x94 the previous frame's jitter
     float F28y;
+    // The level-15 ratios srref pushes (+0x9c..+0xa8 geometry, +0xb4/+0xb8 the MV scale): they were
+    // baked in as 3.0 / 1/3, their value only where W15/W == 3 (render 1920x1080 -> 3840x2160).
+    // See sr_enc0.comp's block for the measured effect; F34x/F34y are already folded into g_mv at
+    // gather (S6), so +0xb4 here is 1/mrx with the mv_scale factor left out.
+    layout(offset = 156) float fW_f15w;          // +0x9c = W/W15
+    float fH_f15h;                               // +0xa0 = H/H15
+    float f15w_fW;                               // +0xa4 = W15/W   (render MV -> level 15)
+    float f15h_fH;                               // +0xa8 = H15/H
+    layout(offset = 180) float mv15x;            // +0xb4 = W15/oW with mvhi, else W15/W
+    float mv15y;                                 // +0xb8
     layout(offset = 188) float mvoffx;          // +0xbc mv_offset_kernel (0 unjittered)
     float mvoffy;
     layout(offset = 208) float SC;              // +0xd0 L: 0.08225896209478378
@@ -340,13 +350,21 @@ float reset_feat(MVF f, float xx, float yy) {
                + w10 * float(m10.x)) + w11 * float(m11.x);
     float ipy = ((w00 * float(m00.y) + w01 * float(m01.y))
                + w10 * float(m10.y)) + w11 * float(m11.y);
-    float dx = f.mn.x - ipx * (1.0 / 3.0);
-    float dy = f.mn.y - ipy * (1.0 / 3.0);
+    float dx = f.mn.x - ipx * fW_f15w;
+    float dy = f.mn.y - ipy * fH_f15h;
     float axv = resetk * dx;
     float ayv = resetk * dy;
     float S = axv * axv + ayv * ayv;
     float rt = sqrt(S);
-    float down = uintBitsToFloat(floatBitsToUint(rt) - 1u);
+    // S == 0 (a pixel whose MV is EXACTLY zero against an exactly-zero prev_mvec - i.e. every
+    // still pixel) makes bits(rt) - 1 = 0xFFFFFFFF = NaN, and `r10 <= 0` then SELECTS it: the NaN
+    // survives to the fp8 store, whose RADV clamp maps it to -448 (max(NaN,-448) = -448), and that
+    // single -448 feature drives the whole network to its constant output (measured: every mv==0
+    // pixel becomes 6.37769699e-06, flat, frame after frame, while srref on the same corpus reaches
+    // 41 dB). The oracle's own quantizer maps NaN to 0 (tools/sr/sr_enc0L_model.py q8r_code:
+    // `np.where(np.isnan(x), 0, x)`), and the model value here IS 0 (ln(1+sqrt(0)) = 0), so pin the
+    // nextafter-down term to 0 for rt == 0. For rt > 0 this line is bit-identical to before.
+    float down = (rt == 0.0) ? 0.0 : uintBitsToFloat(floatBitsToUint(rt) - 1u);
     float up = uintBitsToFloat(floatBitsToUint(rt) + 1u);
     float r10 = S - up * rt;
     float root = (r10 > 0.0) ? up : ((r10 <= 0.0) ? down : rt);
@@ -479,9 +497,9 @@ void main() {
         vec2 prev = (resetv != 0u) ? m.mx : m.mn;
         vec2 ero  = (resetv != 0u) ? m.mn : m.mx;
         // the f16 conversion IS the model's rh(): v_cvt_f16_f32 rounds RNE
-        out_prev_mvec[oi] = f16vec2(3.0 * prev.x, 3.0 * prev.y);
-        out_mv_ero[oi]    = f16vec2(3.0 * ero.x, 3.0 * ero.y);
-        out_mv_nondil[oi] = f16vec2(3.0 * m.ct.x, 3.0 * m.ct.y);
+        out_prev_mvec[oi] = f16vec2(mv15x * prev.x, mv15y * prev.y);
+        out_mv_ero[oi]    = f16vec2(mv15x * ero.x, mv15y * ero.y);
+        out_mv_nondil[oi] = f16vec2(mv15x * m.ct.x, mv15y * m.ct.y);
     }
 
     // ---- l0_in: the 20 logical features, dq'd, stored P-permuted ----
@@ -503,12 +521,12 @@ void main() {
     // 3*((p+0.5) - F20) base; sample 3 has no -F20 term and uses the centre read again. A sample
     // whose position word leaves [0,W15]x[0,H15] is not computed and keeps the colour feature
     // (model oob_mask).
-    float base_x = 3.0 * (xx - F20x);
-    float base_y = 3.0 * (yy - F20y);
-    vec2 P0 = vec2(base_x + 3.0 * m.mn.x, base_y + 3.0 * m.mn.y);
-    vec2 P1 = vec2(base_x + 3.0 * m.ct.x, base_y + 3.0 * m.ct.y);
-    vec2 P2 = vec2(base_x + 3.0 * m.mx.x, base_y + 3.0 * m.mx.y);
-    vec2 P3 = vec2(3.0 * xx + 3.0 * m.ct.x, 3.0 * yy + 3.0 * m.ct.y);
+    float base_x = f15w_fW * (xx - F20x);
+    float base_y = f15h_fH * (yy - F20y);
+    vec2 P0 = vec2(base_x + mv15x * m.mn.x, base_y + mv15y * m.mn.y);
+    vec2 P1 = vec2(base_x + mv15x * m.ct.x, base_y + mv15y * m.ct.y);
+    vec2 P2 = vec2(base_x + mv15x * m.mx.x, base_y + mv15y * m.mx.y);
+    vec2 P3 = vec2(f15w_fW * xx + mv15x * m.ct.x, f15h_fH * yy + mv15y * m.ct.y);
 
 #ifdef NR_OPERAND_F16
     uint feat[20];

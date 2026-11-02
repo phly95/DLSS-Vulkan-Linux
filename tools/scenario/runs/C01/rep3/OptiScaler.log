@@ -1,0 +1,917 @@
+[03:57:10.216960] [W] OptiScaler v0.9.4-final (7534ad0) loaded
+[03:57:10.216972] [W] ---------------------------------
+[03:57:10.216974] [W] OptiScaler is freely downloadable from
+[03:57:10.216976] [W] GitHub : https://github.com/optiscaler/OptiScaler/releases
+[03:57:10.216977] [W] Nexus  : https://www.nexusmods.com/site/mods/986
+[03:57:10.216978] [W] If you paid for these files, you've been scammed!
+[03:57:10.216980] [W] DO NOT USE IN MULTIPLAYER GAMES
+[03:57:10.216981] [I] 
+[03:57:10.216983] [I] LogLevel: 1
+[03:57:10.216984] [I] 
+[03:57:10.216988] [I] Windows version: Windows 10 (10.0.19045)
+[03:57:10.216990] [I] Config parameters:
+[03:57:10.216992] [I] Upscalers.Dx12Upscaler: xess
+[03:57:10.216993] [I] DLSS.Enabled: true
+[03:57:10.216994] [I] Log.LogLevel: 1
+[03:57:10.216996] [I] Log.LogToFile: true
+[03:57:10.216997] [I] Sharpness.OverrideSharpness: false
+[03:57:10.216998] [I] Sharpness.Sharpness: 0
+[03:57:10.216999] [I] CAS.Enabled: false
+[03:57:10.217001] [I] CAS.MotionSharpnessEnabled: false
+[03:57:10.217002] [I] OutputScaling.Enabled: false
+[03:57:10.217003] [I] Hotfix.CheckForUpdate: false
+[03:57:10.217005] [I] Libraries.NvngxPath: _nvngx.dll
+[03:57:10.217006] [I] 
+[03:57:10.217008] [I] Setting DllPath to Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[03:57:10.217009] [I] 
+[03:57:10.217019] [I] 
+[03:57:10.217021] [I] IsRunningOnWine Running on Wine 10.0!
+[03:57:10.217023] [I] 
+[03:57:10.217024] [I] Check for DLSS files
+[03:57:10.217041] [I] Util::FindFilePath nvngx_dlss.dll found at Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[03:57:10.217055] [I] Util::FindFilePath nvngx_dlssd.dll found at Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[03:57:10.217725] [I] 
+[03:57:10.225313] [D] isNvidia Using dxvk-nvapi
+[03:57:10.228849] [D] isNvidia Detected: true
+[03:57:10.228864] [I] Running on Nvidia
+[03:57:10.228866] [I] Enabling DLSS
+[03:57:10.228868] [I] Disabling DxgiSpoofing
+[03:57:10.228870] [I] 
+[03:57:10.228885] [I] CheckQuirks Game's Exe: opti_client.exe
+[03:57:10.228887] [I] CheckQuirks Game Name: 
+[03:57:10.228888] [I] CheckQuirks Game Version: 
+[03:57:10.228890] [I] CheckQuirks Game Engine: Other
+[03:57:10.229049] [I] 
+[03:57:10.229835] [I] CheckWorkingMode OptiScaler working as dxgi.dll, system dll loaded
+[03:57:10.229847] [D] DxgiProxy::Init dxgi.dll loaded at 6FFFFB7D0000
+[03:57:10.229874] [I] Config::CheckUpscalerFiles nvngx.dll found in game folder
+[03:57:10.229889] [I] Util::FindFilePath nvngx_dlss.dll found at Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[03:57:10.229905] [W] Config::CheckUpscalerFiles libxess.dll not found!
+[03:57:10.229907] [D] CheckWorkingMode dxgi.dll already in memory
+[03:57:10.229909] [D] DxgiHooks::Hook 
+[03:57:10.229956] [D] KernelHooks::HookBase 
+[03:57:10.229989] [D] CheckWorkingMode Check for d3d12
+[03:57:10.229992] [D] CheckWorkingMode d3d12.dll already in memory
+[03:57:10.229995] [D] D3D12Hooks::Hook 
+[03:57:10.230197] [D] CheckWorkingMode Loading vulkan-1.dll for Linux, result: 6FFFFB7B0000
+[03:57:10.230200] [D] CheckWorkingMode Hooking vulkan-1.dll
+[03:57:10.230469] [I] Vulkan_wDx12::Hook Attaching Vulkan vkQueueSubmit hook
+[03:57:10.230597] [D] Vulkan_wDx12::InitializeStateTrackerFunctionTable State tracker function table initialized
+[03:57:10.232639] [D] KernelHooks::Hook 
+[03:57:10.232686] [I] 
+[03:57:10.232689] [D] FfxApiProxy::InitFfxDx12 Trying to load amd_fidelityfx_loader_dx12.dll
+[03:57:10.232880] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_loader_dx12.dll, returning nullptr!
+[03:57:10.232882] [D] FfxApiProxy::InitFfxDx12 Trying to load amd_fidelityfx_dx12.dll
+[03:57:10.233031] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_dx12.dll, returning nullptr!
+[03:57:10.233033] [I] 
+[03:57:10.233034] [D] FfxApiProxy::InitFfxDx12_SR Trying to load amd_fidelityfx_upscaler_dx12.dll
+[03:57:10.233185] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_upscaler_dx12.dll, returning nullptr!
+[03:57:10.233187] [I] FfxApiProxy::InitFfxDx12_SR LoadResult: false
+[03:57:10.233193] [I] 
+[03:57:10.233195] [D] FfxApiProxy::InitFfxDx12_FG Trying to load amd_fidelityfx_framegeneration_dx12.dll
+[03:57:10.233351] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_framegeneration_dx12.dll, returning nullptr!
+[03:57:10.233353] [I] FfxApiProxy::InitFfxDx12_FG LoadResult: false
+[03:57:10.233355] [I] 
+[03:57:10.233356] [D] FfxApiProxy::InitFfxDx12_Denoiser Trying to load amd_fidelityfx_denoiser_dx12.dll
+[03:57:10.233505] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_denoiser_dx12.dll, returning nullptr!
+[03:57:10.233507] [I] FfxApiProxy::InitFfxDx12_Denoiser LoadResult: false
+[03:57:10.233508] [I] 
+[03:57:10.233510] [D] FfxApiProxy::InitFfxDx12_Radiance Trying to load amd_fidelityfx_radiancecache_dx12.dll
+[03:57:10.233660] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_radiancecache_dx12.dll, returning nullptr!
+[03:57:10.233662] [I] FfxApiProxy::InitFfxDx12_Radiance LoadResult: false
+[03:57:10.233663] [I] FfxApiProxy::InitFfxDx12 LoadResult: false
+[03:57:10.233665] [I] 
+[03:57:10.233667] [D] FfxApiProxy::InitFfxDx12_SR Trying to load amd_fidelityfx_upscaler_dx12.dll
+[03:57:10.233817] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_upscaler_dx12.dll, returning nullptr!
+[03:57:10.233819] [I] FfxApiProxy::InitFfxDx12_SR LoadResult: false
+[03:57:10.233820] [I] 
+[03:57:10.233822] [D] FfxApiProxy::InitFfxDx12_FG Trying to load amd_fidelityfx_framegeneration_dx12.dll
+[03:57:10.233976] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_framegeneration_dx12.dll, returning nullptr!
+[03:57:10.233978] [I] FfxApiProxy::InitFfxDx12_FG LoadResult: false
+[03:57:10.233979] [I] 
+[03:57:10.233981] [D] FfxApiProxy::InitFfxDx12_Denoiser Trying to load amd_fidelityfx_denoiser_dx12.dll
+[03:57:10.234125] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_denoiser_dx12.dll, returning nullptr!
+[03:57:10.234127] [I] FfxApiProxy::InitFfxDx12_Denoiser LoadResult: false
+[03:57:10.234128] [I] 
+[03:57:10.234130] [D] FfxApiProxy::InitFfxDx12_Radiance Trying to load amd_fidelityfx_radiancecache_dx12.dll
+[03:57:10.234277] [W] Util::LoadProxyLibrary Can't find amd_fidelityfx_radiancecache_dx12.dll, returning nullptr!
+[03:57:10.234279] [I] FfxApiProxy::InitFfxDx12_Radiance LoadResult: false
+[03:57:10.234281] [D] XeSSProxy::InitXeSS Trying to load libxess.dll
+[03:57:10.234986] [W] Util::LoadProxyLibrary Can't find libxess.dll, returning nullptr!
+[03:57:10.234989] [I] XeSSProxy::InitXeSS LoadResult: false
+[03:57:10.234991] [D] XeSSProxy::InitXeSSDx11 Trying to load libxess_dx11.dll
+[03:57:10.235135] [W] Util::LoadProxyLibrary Can't find libxess_dx11.dll, returning nullptr!
+[03:57:10.235137] [I] XeSSProxy::InitXeSSDx11 LoadResult: false
+[03:57:10.235139] [D] XeFGProxy::InitXeFG Trying to load libxess_fg.dll
+[03:57:10.235279] [W] Util::LoadProxyLibrary Can't find libxess_fg.dll, returning nullptr!
+[03:57:10.235281] [D] XeLLProxy::InitXeLL Trying to load libxell.dll
+[03:57:10.235957] [W] Util::LoadProxyLibrary Can't find libxell.dll, returning nullptr!
+[03:57:10.235959] [I] NVNGXProxy::InitNVNGX 
+[03:57:10.235961] [D] NVNGXProxy::InitNVNGX Trying to load _nvngx.dll
+[03:57:10.236374] [I] Util::LoadProxyLibrary _nvngx.dll loaded from override path: _nvngx.dll
+[03:57:10.236379] [I] NVNGXProxy::InitNVNGX Loaded from Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\_nvngx.dll
+[03:57:10.236381] [I] NVNGXProxy::InitNVNGX Getting nvngx method addresses
+[03:57:10.236382] [D] HookNgxApi Trying to hook NgxApi
+[03:57:10.236384] [I] HookNgxApi NVSDK_NGX_XXXXXX_GetFeatureRequirements found, hooking!
+[03:57:10.236400] [I] 
+[03:57:10.236401] [D] InitFSR4Update 
+[03:57:10.236584] [I] InitFSR4Update amdxc64.dll loaded
+[03:57:10.236587] [D] InitFSR4Update Hooking AmdExtD3DCreateInterface
+[03:57:10.236597] [I] OverrideNvapiDll not set, setting it to: false
+[03:57:10.236598] [I] 
+[03:57:10.236608] [I] HookFSR2ExeInputs Trying to hook FSR2 methods
+[03:57:10.236613] [D] HookFSR2ExeInputs ffxFsr2ContextCreate_Dx12: 0
+[03:57:10.236615] [D] HookFSR2ExeInputs ffxFsr2ContextDispatch_Dx12: 0
+[03:57:10.236619] [D] HookFSR2ExeInputs ffxFsr20ContextDispatch_Dx12: 0
+[03:57:10.236621] [D] HookFSR2ExeInputs ffxFsr2TinyContextDispatch_Dx12: 0
+[03:57:10.236622] [D] HookFSR2ExeInputs ffxFsr2ContextDestroy_Dx12: 0
+[03:57:10.236624] [D] HookFSR2ExeInputs ffxFsr2GetUpscaleRatioFromQualityMode_Dx12: 0
+[03:57:10.236626] [D] HookFSR2ExeInputs ffxFsr2GetRenderResolutionFromQualityMode_Dx12: 0
+[03:57:10.236636] [I] HookFSR3ExeInputs Trying to hook FSR3 methods
+[03:57:10.236640] [D] HookFSR3ExeInputs ffxFsr3UpscalerContextCreate_Dx12: 0
+[03:57:10.236642] [D] HookFSR3ExeInputs ffxFsr3UpscalerContextDispatch_Dx12: 0
+[03:57:10.236644] [D] HookFSR3ExeInputs ffxFsr3UpscalerContextDestroy_Dx12: 0
+[03:57:10.236645] [D] HookFSR3ExeInputs ffxFsr3UpscalerGetUpscaleRatioFromQualityMode_Dx12: 0
+[03:57:10.236647] [D] HookFSR3ExeInputs ffxFsr3UpscalerGetRenderResolutionFromQualityMode_Dx12: 0
+[03:57:10.236667] [I] 
+[03:57:10.236669] [I] Init done
+[03:57:10.236670] [I] ---------------------------------------------
+[03:57:10.236672] [I] 
+[03:57:10.237742] [D] hkD3D12CreateDevice Adapter: 0, Level: C000, Caller: opti_client.exe
+[03:57:10.238095] [D] D3D12Hooks::HookAgility Hooking D3D12GetInterface from D3D12 Agility SDK
+[03:57:10.238115] [D] hkD3D12GetInterface D3D12GetInterface called: 6FFFFDEECDF0, 6FFFFDEEEC20, Caller: d3d12.dll
+[03:57:10.238119] [D] hkD3D12GetInterface D3D12GetInterface called: 6FFFFDEECE00, 6FFFFDEEEC30, Caller: d3d12.dll
+[03:57:10.238123] [D] hkCreateDXGIFactory1 Caller: d3d12core.dll
+[03:57:10.239744] [D] hkvkGetInstanceProcAddr vkCreateInstance
+[03:57:10.242768] [I] VulkanSpoofing::hkvkCreateInstance Skipping because DXVK/VKD3D is creating a D3D device
+[03:57:10.244722] [D] hkvkCreateInstance State::Instance().VulkanInstance captured: CB8F70
+[03:57:10.244737] [D] hkvkGetInstanceProcAddr vkCreateDevice
+[03:57:10.245597] [W] DxgiSpoofing::AttachToAdapter DxgiSpoofing and DxgiVRAM is disabled, skipping hooking
+[03:57:10.246080] [D] hkvkGetInstanceProcAddr vkCreateInstance
+[03:57:10.246965] [I] VulkanSpoofing::hkvkCreateInstance Skipping because DXVK/VKD3D is creating a D3D device
+[03:57:10.248094] [D] hkvkCreateInstance State::Instance().VulkanInstance captured: CB9010
+[03:57:10.248118] [D] hkvkGetInstanceProcAddr vkCreateDevice
+[03:57:10.264131] [I] VulkanSpoofing::hkvkCreateDevice Skipping because DXVK/VKD3D is creating a D3D device
+[03:57:10.266880] [D] hkvkCreateDevice _PD captured: CB9028
+[03:57:10.266896] [D] hkvkCreateDevice _device captured: CB8670
+[03:57:10.266955] [D] HookDevice Hooking VkDevice
+[03:57:10.268664] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool CC0280 created for queue family 1
+[03:57:10.341596] [D] hkD3D12CreateDevice o_D3D12CreateDevice result: 0
+[03:57:10.341613] [D] hkD3D12CreateDevice Device captured: 1530080
+[03:57:10.341616] [D] HookToDevice Dx12
+[03:57:10.341661] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool CC53A0 created for queue family 0
+[03:57:10.341742] [D] HookToCommandList Hooked RootSignature functions
+[03:57:10.341772] [D] hkD3D12CreateDevice final result: 0
+[03:57:10.341883] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool CC5400 created for queue family 0
+[03:57:10.342510] [D] Vulkan_wDx12::hk_vkCreateCommandPool Command pool CD9E10 created for queue family 0
+[03:57:10.347135] [D] UpdateInitPaths Feature Path [0]: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[03:57:10.347147] [D] UpdateInitPaths Feature Path [1]: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness\
+[03:57:10.347150] [D] UpdateInitPaths Feature Path [2]: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[03:57:10.347151] [D] UpdateInitPaths Feature Path [3]: Z:\home\deck\DLSS-Vulkan-Linux\build\optiharness\harness
+[03:57:10.347153] [I] NVSDK_NGX_D3D12_Init calling NVNGXProxy::D3D12_Init
+[03:57:10.347157] [I] NVSDK_NGX_D3D12_Init calling NVNGXProxy::D3D12_Init result: 1
+[03:57:10.347159] [I] NVSDK_NGX_D3D12_Init_Ext AppId: 322376503
+[03:57:10.347161] [I] NVSDK_NGX_D3D12_Init_Ext SDK: 15
+[03:57:10.347163] [I] NVSDK_NGX_D3D12_Init_Ext InApplicationDataPath .
+[03:57:10.347194] [D] NVSDK_NGX_D3D12_Init was called NVSDK_NGX_D3D12_Init_Ext
+[03:57:10.347196] [I] NVSDK_NGX_D3D12_AllocateParameters calling NVNGXProxy::D3D12_AllocateParameters
+[03:57:10.347199] [I] NVSDK_NGX_D3D12_AllocateParameters calling NVNGXProxy::D3D12_AllocateParameters result: 1, ptr: 8B4CF0
+[03:57:10.347209] [I] NVSDK_NGX_D3D12_CreateFeature HandleId: 1000000
+[03:57:10.347211] [I] NVSDK_NGX_D3D12_CreateFeature Creating new xess upscaler
+[03:57:10.347214] [I] IFeature::SetHandle Handle: 1000000
+[03:57:10.347217] [I] IFeature::SetInitParameters SharpenEnabled flag overrided by user: false
+[03:57:10.347219] [I] IFeature::SetInitParameters Init Flag AutoExposure: false
+[03:57:10.347220] [I] IFeature::SetInitParameters Init Flag DepthInverted: false
+[03:57:10.347222] [I] IFeature::SetInitParameters Init Flag IsHdr: true
+[03:57:10.347224] [I] IFeature::SetInitParameters Init Flag JitteredMV: false
+[03:57:10.347225] [I] IFeature::SetInitParameters Init Flag LowResMV: true
+[03:57:10.347227] [I] IFeature::SetInitParameters Init Flag SharpenEnabled: false
+[03:57:10.347231] [I] IFeature::SetInitParameters Render Resolution: 2560x1440, Display Resolution 3840x2160, Quality: 2
+[03:57:10.347233] [D] XeSSProxy::InitXeSS Trying to load libxess.dll
+[03:57:10.347960] [W] Util::LoadProxyLibrary Can't find libxess.dll, returning nullptr!
+[03:57:10.347963] [I] XeSSProxy::InitXeSS LoadResult: false
+[03:57:10.347984] [I] IFeature::SetHandle Handle: 1000000
+[03:57:10.347987] [I] IFeature::SetInitParameters SharpenEnabled flag overrided by user: false
+[03:57:10.347989] [I] IFeature::SetInitParameters Init Flag AutoExposure: false
+[03:57:10.347990] [I] IFeature::SetInitParameters Init Flag DepthInverted: false
+[03:57:10.347992] [I] IFeature::SetInitParameters Init Flag IsHdr: true
+[03:57:10.347994] [I] IFeature::SetInitParameters Init Flag JitteredMV: false
+[03:57:10.347995] [I] IFeature::SetInitParameters Init Flag LowResMV: true
+[03:57:10.347997] [I] IFeature::SetInitParameters Init Flag SharpenEnabled: false
+[03:57:10.348000] [I] IFeature::SetInitParameters Render Resolution: 2560x1440, Display Resolution 3840x2160, Quality: 2
+[03:57:10.348052] [D] FSR2FeatureDx12_212::InitFSR2 ffxFsr2ContextCreate!
+[03:57:10.389067] [D] OS_Dx12::OS_Dx12 Output Scaling start!
+[03:57:10.389135] [D] D3D12Hooks::Hook 
+[03:57:10.408596] [D] RCAS_Dx12::RCAS_Dx12 RCAS start!
+[03:57:10.428891] [D] Bias_Dx12::Bias_Dx12 Bias start!
+[03:57:10.469259] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:10.469294] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.4375x-0.4375
+[03:57:10.469299] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:10.469301] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:10.469304] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:10.469306] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:10.469307] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:10.469309] [D] FSR2FeatureDx12_212::Evaluate AutoExposure disabled but ExposureTexture is not exist, it may cause problems!!
+[03:57:10.469639] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:10.605913] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:10.605939] [I] FeatureProvider_Dx12::ChangeFeature changeBackend is true, counter: 1
+[03:57:10.605943] [I] FeatureProvider_Dx12::ChangeFeature changing backend to fsr21
+[03:57:10.605959] [D] FeatureProvider_Dx12::ChangeFeature sleeping before reset of current feature for 1000ms
+[03:57:11.779827] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:11.779854] [I] FeatureProvider_Dx12::ChangeFeature changeBackend is true, counter: 2
+[03:57:11.779858] [I] FeatureProvider_Dx12::ChangeFeature Creating new fsr21 upscaler
+[03:57:11.779866] [I] IFeature::SetHandle Handle: 1000000
+[03:57:11.779871] [I] IFeature::SetInitParameters SharpenEnabled flag overrided by user: false
+[03:57:11.779873] [I] IFeature::SetInitParameters AutoExposure flag overrided by OptiScaler: true
+[03:57:11.779882] [I] IFeature::SetInitParameters Init Flag AutoExposure: true
+[03:57:11.779884] [I] IFeature::SetInitParameters Init Flag DepthInverted: false
+[03:57:11.779886] [I] IFeature::SetInitParameters Init Flag IsHdr: true
+[03:57:11.779888] [I] IFeature::SetInitParameters Init Flag JitteredMV: false
+[03:57:11.779896] [I] IFeature::SetInitParameters Init Flag LowResMV: true
+[03:57:11.779898] [I] IFeature::SetInitParameters Init Flag SharpenEnabled: false
+[03:57:11.779903] [I] IFeature::SetInitParameters Render Resolution: 2560x1440, Display Resolution 3840x2160, Quality: 2
+[03:57:11.904957] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:11.904978] [I] FeatureProvider_Dx12::ChangeFeature changeBackend is true, counter: 3
+[03:57:11.905040] [D] FSR2FeatureDx12_212::InitFSR2 ffxFsr2ContextCreate!
+[03:57:11.940082] [D] OS_Dx12::OS_Dx12 Output Scaling start!
+[03:57:11.958441] [D] RCAS_Dx12::RCAS_Dx12 RCAS start!
+[03:57:11.978121] [D] Bias_Dx12::Bias_Dx12 Bias start!
+[03:57:11.978568] [I] FeatureProvider_Dx12::ChangeFeature init successful for fsr21, upscaler changed
+[03:57:12.171741] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:12.171767] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: 0.0625x0.0625
+[03:57:12.171771] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:12.171775] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:12.171778] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:12.171780] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:12.171782] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:12.171785] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:12.171789] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:12.171792] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 391.8825
+[03:57:12.171795] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:12.172927] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:12.404508] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:12.404532] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.3125x0.4375
+[03:57:12.404536] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:12.404539] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:12.404542] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:12.404544] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:12.404547] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:12.404548] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:12.404552] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:12.404556] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 232.7616
+[03:57:12.404558] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:12.404595] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:12.643242] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:12.643268] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: 0.3125x-0.1875
+[03:57:12.643273] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:12.643276] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:12.643279] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:12.643281] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:12.643283] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:12.643285] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:12.643288] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:12.643293] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 238.7345
+[03:57:12.643296] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:12.643337] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:12.875946] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:12.875970] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.0625x0.1875
+[03:57:12.875975] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:12.875983] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:12.875998] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:12.876000] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:12.876002] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:12.876004] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:12.876008] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:12.876011] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 232.7163
+[03:57:12.876013] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:12.876054] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:13.111526] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:13.111552] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.4375x-0.4375
+[03:57:13.111556] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:13.111559] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:13.111562] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:13.111564] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:13.111566] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:13.111568] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:13.111584] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:13.111588] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 235.5742
+[03:57:13.111590] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:13.111626] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:13.336781] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:13.336810] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: 0.1875x-0.0625
+[03:57:13.336816] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:13.336821] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:13.336825] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:13.336828] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:13.336832] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:13.336848] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:13.336853] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:13.336859] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 225.2697
+[03:57:13.336863] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:13.336903] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:13.578392] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:13.578416] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.1875x0.3125
+[03:57:13.578421] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:13.578423] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:13.578426] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:13.578429] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:13.578431] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:13.578433] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:13.578436] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:13.578440] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 241.5784
+[03:57:13.578442] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:13.578480] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:13.810552] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:13.810577] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: 0.4375x-0.3125
+[03:57:13.810582] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:13.810584] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:13.810587] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:13.810589] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:13.810591] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:13.810593] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:13.810597] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:13.810601] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 232.1588
+[03:57:13.810607] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:13.810661] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:14.040495] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:14.040519] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: 0.0625x0.0625
+[03:57:14.040523] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:14.040526] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:14.040529] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:14.040530] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:14.040532] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:14.040534] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:14.040537] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:14.040540] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 229.9376
+[03:57:14.040543] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:14.040577] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:14.288085] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:14.288112] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.3125x0.4375
+[03:57:14.288118] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:14.288122] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:14.288127] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:14.288131] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:14.288134] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:14.288137] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:14.288143] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:14.288148] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 247.6052
+[03:57:14.288151] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:14.288198] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:14.517091] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:14.517121] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: 0.3125x-0.1875
+[03:57:14.517126] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:14.517129] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:14.517132] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:14.517135] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:14.517137] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:14.517139] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:14.517142] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:14.517146] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 228.9957
+[03:57:14.517148] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:14.517187] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:14.750958] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:14.750983] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.0625x0.1875
+[03:57:14.750988] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:14.750991] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:14.750994] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:14.750996] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:14.750998] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:14.751000] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:14.751003] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:14.751007] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 233.8589
+[03:57:14.751009] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:14.751045] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:14.974377] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:14.974407] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.4375x-0.4375
+[03:57:14.974412] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:14.974415] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:14.974419] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:14.974428] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:14.974430] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:14.974432] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:14.974436] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:14.974440] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 223.4314
+[03:57:14.974443] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:14.974483] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:15.108072] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:15.108100] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: 0.1875x-0.0625
+[03:57:15.108107] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:15.108111] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:15.108115] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:15.108119] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:15.108123] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:15.108126] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:15.108131] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:15.108137] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 133.6953
+[03:57:15.108140] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:15.108183] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:15.247777] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:15.247803] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.1875x0.3125
+[03:57:15.247809] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:15.247813] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:15.247817] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:15.247821] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:15.247824] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:15.247828] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:15.247832] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:15.247835] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 139.6976
+[03:57:15.247838] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:15.247876] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:15.383708] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:15.383737] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: 0.4375x-0.3125
+[03:57:15.383742] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:15.383745] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:15.383748] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:15.383750] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:15.383763] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:15.383765] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:15.383769] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:15.383772] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 135.9353
+[03:57:15.383774] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:15.383813] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:15.520522] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:15.520548] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: 0.0625x0.0625
+[03:57:15.520554] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:15.520558] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:15.520562] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:15.520566] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:15.520569] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:15.520573] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:15.520578] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:15.520584] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 136.8102
+[03:57:15.520587] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:15.520628] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:15.653805] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:15.653832] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.3125x0.4375
+[03:57:15.653839] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:15.653843] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:15.653847] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:15.653851] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:15.653854] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:15.653857] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:15.653863] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:15.653869] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 133.2838
+[03:57:15.653872] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:15.653915] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:15.785985] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:15.786012] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: 0.3125x-0.1875
+[03:57:15.786019] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:15.786022] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:15.786027] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:15.786031] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:15.786035] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:15.786038] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:15.786043] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:15.786049] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 132.1793
+[03:57:15.786053] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:15.786094] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:15.918813] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:15.918839] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.0625x0.1875
+[03:57:15.918843] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:15.918846] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:15.918848] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:15.918850] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:15.918852] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:15.918854] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:15.918857] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:15.918860] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 132.81
+[03:57:15.918862] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:15.918897] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:16.055321] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:16.059651] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.4375x-0.4375
+[03:57:16.059661] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:16.059663] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:16.059666] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:16.059669] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:16.059671] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:16.059672] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:16.059675] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:16.059679] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 140.8173
+[03:57:16.059681] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:16.059717] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:16.198792] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:16.198823] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: 0.1875x-0.0625
+[03:57:16.198828] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:16.198831] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:16.198833] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:16.198836] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:16.198838] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:16.198846] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:16.198850] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:16.198853] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 139.1734
+[03:57:16.198855] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:16.198894] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:16.344719] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:16.344748] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.1875x0.3125
+[03:57:16.344753] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:16.344756] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:16.344759] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:16.344762] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:16.344764] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:16.344766] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:16.344770] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:16.344774] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 145.9189
+[03:57:16.344776] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:16.344817] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:16.483668] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:16.483698] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: 0.4375x-0.3125
+[03:57:16.483702] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:16.483705] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:16.483707] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:16.483709] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:16.483711] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:16.483713] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:16.483715] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:16.483719] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 138.9437
+[03:57:16.483720] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:16.483757] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:16.623437] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:16.623465] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: 0.0625x0.0625
+[03:57:16.623469] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:16.623471] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:16.623473] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:16.623476] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:16.623478] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:16.623479] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:16.623482] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:16.623485] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 139.7655
+[03:57:16.623487] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:16.623523] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:16.756554] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:16.756579] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.3125x0.4375
+[03:57:16.756583] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:16.756586] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:16.756589] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:16.756591] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:16.756593] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:16.756595] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:16.756599] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:16.756602] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 133.1157
+[03:57:16.756605] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:16.756643] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:16.888660] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:16.888684] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: 0.3125x-0.1875
+[03:57:16.888692] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:16.888695] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:16.888697] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:16.888699] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:16.888701] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:16.888702] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:16.888707] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:16.888710] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 132.1066
+[03:57:16.888712] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:16.888748] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:17.020932] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:17.020956] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.0625x0.1875
+[03:57:17.020960] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:17.020963] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:17.020965] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:17.020967] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:17.020969] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:17.020983] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:17.020987] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:17.020991] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 132.2798
+[03:57:17.020993] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:17.021029] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:17.153172] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:17.153196] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.4375x-0.4375
+[03:57:17.153202] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:17.153204] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:17.153207] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:17.153209] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:17.153211] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:17.153213] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:17.153217] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:17.153220] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 132.228
+[03:57:17.153222] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:17.153261] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:17.285527] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:17.285552] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: 0.1875x-0.0625
+[03:57:17.285557] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:17.285559] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:17.285562] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:17.285565] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:17.285567] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:17.285569] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:17.285572] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:17.285576] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 132.3541
+[03:57:17.285578] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:17.285616] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:17.417153] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:17.417177] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.1875x0.3125
+[03:57:17.417182] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:17.417185] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:17.417188] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:17.417191] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:17.417193] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:17.417195] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:17.417198] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:17.417207] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 131.6307
+[03:57:17.417210] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:17.417249] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:17.548653] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:17.548679] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: 0.4375x-0.3125
+[03:57:17.548684] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:17.548687] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:17.548689] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:17.548691] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:17.548694] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:17.548695] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:17.548699] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:17.548704] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 131.4952
+[03:57:17.548707] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:17.548743] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:17.680784] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:17.680812] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: 0.0625x0.0625
+[03:57:17.680817] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:17.680820] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:17.680822] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:17.680824] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:17.680826] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:17.680828] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:17.680832] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:17.680837] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 132.1313
+[03:57:17.680839] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:17.680877] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:17.832939] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:17.832963] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.3125x0.4375
+[03:57:17.832968] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:17.832971] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:17.832974] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:17.832976] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:17.832979] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:17.832981] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:17.832985] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:17.832989] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 152.1511
+[03:57:17.832992] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:17.833031] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:17.964961] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:17.964985] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: 0.3125x-0.1875
+[03:57:17.964990] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:17.964993] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:17.964995] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:17.964998] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:17.965011] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:17.965013] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:17.965016] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:17.965020] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 132.0299
+[03:57:17.965022] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:17.965060] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:18.097935] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:18.097961] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.0625x0.1875
+[03:57:18.097965] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:18.097968] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:18.097976] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:18.097980] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:18.097993] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:18.097995] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:18.097999] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:18.098002] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 132.981
+[03:57:18.098004] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:18.098044] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:18.241638] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:18.241662] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.4375x-0.4375
+[03:57:18.241667] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:18.241670] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:18.241672] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:18.241675] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:18.241677] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:18.241679] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:18.241682] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:18.241685] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 143.682
+[03:57:18.241688] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:18.241725] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:18.374691] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:18.374715] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: 0.1875x-0.0625
+[03:57:18.374720] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:18.374723] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:18.374725] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:18.374728] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:18.374730] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:18.374732] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:18.374735] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:18.374739] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 133.0519
+[03:57:18.374741] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:18.374779] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:18.508890] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:18.508915] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.1875x0.3125
+[03:57:18.508920] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:18.508923] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:18.508926] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:18.508928] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:18.508930] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:18.508932] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:18.508935] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:18.508939] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 134.1989
+[03:57:18.508941] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:18.508979] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:18.641766] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:18.641790] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: 0.4375x-0.3125
+[03:57:18.641795] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:18.641797] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:18.641802] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:18.641804] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:18.641806] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:18.641808] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:18.641812] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:18.641816] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 132.876
+[03:57:18.641819] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:18.641864] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:18.773751] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:18.773775] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: 0.0625x0.0625
+[03:57:18.773779] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:18.773782] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:18.773785] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:18.773788] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:18.773790] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:18.773792] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:18.773795] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:18.773801] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 131.9819
+[03:57:18.773803] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:18.773842] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:18.905711] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:18.905748] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.3125x0.4375
+[03:57:18.905753] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:18.905756] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:18.905758] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:18.905761] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:18.905763] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:18.905765] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:18.905768] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:18.905772] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 131.9718
+[03:57:18.905774] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:18.905823] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:19.037978] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:19.038003] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: 0.3125x-0.1875
+[03:57:19.038008] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:19.038011] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:19.038013] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:19.038016] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:19.038018] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:19.038020] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:19.038024] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:19.038027] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 132.2541
+[03:57:19.038029] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:19.038067] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:19.170566] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:19.170590] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.0625x0.1875
+[03:57:19.170595] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:19.170598] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:19.170600] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:19.170602] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:19.170605] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:19.170607] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:19.170610] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:19.170614] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 132.5852
+[03:57:19.170616] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:19.170655] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:19.302861] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:19.302886] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.4375x-0.4375
+[03:57:19.302891] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:19.302894] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:19.302897] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:19.302899] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:19.302907] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:19.302909] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:19.302913] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:19.302917] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 132.3015
+[03:57:19.302919] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:19.302957] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:19.434889] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:19.434913] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: 0.1875x-0.0625
+[03:57:19.434917] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:19.434920] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:19.434923] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:19.434925] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:19.434927] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:19.434929] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:19.434933] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:19.434936] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 132.0186
+[03:57:19.434938] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:19.434974] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:19.566812] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:19.566839] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.1875x0.3125
+[03:57:19.566844] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:19.566847] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:19.566850] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:19.566852] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:19.566854] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:19.566856] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:19.566860] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:19.566864] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 131.9262
+[03:57:19.566866] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:19.566907] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:19.698969] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:19.698997] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: 0.4375x-0.3125
+[03:57:19.699002] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:19.699005] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:19.699008] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:19.699010] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:19.699013] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:19.699015] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:19.699018] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:19.699021] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 132.1566
+[03:57:19.699023] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:19.699063] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:19.831140] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:19.831165] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: 0.0625x0.0625
+[03:57:19.831170] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:19.831172] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:19.831175] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:19.831177] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:19.831189] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:19.831191] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:19.831195] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:19.831198] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 132.1757
+[03:57:19.831200] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:19.831239] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:19.983051] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:19.983080] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.3125x0.4375
+[03:57:19.983085] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:19.983087] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:19.983090] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:19.983092] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:19.983096] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:19.983099] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:19.983102] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:19.983106] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 151.9063
+[03:57:19.983108] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:19.983149] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:20.115779] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:20.115810] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: 0.3125x-0.1875
+[03:57:20.115815] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:20.115818] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:20.115821] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:20.115823] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:20.115826] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:20.115828] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:20.115832] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:20.115836] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 132.7285
+[03:57:20.115838] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:20.115875] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:20.247339] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:20.247364] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.0625x0.1875
+[03:57:20.247369] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:20.247372] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:20.247375] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:20.247377] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:20.247380] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:20.247382] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:20.247385] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:20.247390] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 131.5528
+[03:57:20.247392] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:20.247429] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:20.379245] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:20.379273] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.4375x-0.4375
+[03:57:20.379278] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:20.379281] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:20.379284] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:20.379286] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:20.379288] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:20.379291] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:20.379295] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:20.379299] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 131.9082
+[03:57:20.379302] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:20.379341] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:20.511006] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:20.511028] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: 0.1875x-0.0625
+[03:57:20.511032] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:20.511035] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:20.511038] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:20.511040] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:20.511042] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:20.511044] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:20.511052] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:20.511056] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 131.7555
+[03:57:20.511058] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:20.511095] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:20.643100] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:20.643124] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: -0.1875x0.3125
+[03:57:20.643129] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:20.643132] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:20.643135] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:20.643138] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:20.643140] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:20.643142] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:20.643147] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:20.643150] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 132.0934
+[03:57:20.643153] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:20.643191] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:20.856238] [D] NVSDK_NGX_D3D12_EvaluateFeature Handle: 1000000, CmdList: 8AF9C0
+[03:57:20.856264] [D] FSR2FeatureDx12_212::Evaluate Jitter Offset: 0.4375x-0.3125
+[03:57:20.856269] [D] FSR2FeatureDx12_212::Evaluate Input Resolution: 2560x1440
+[03:57:20.856272] [D] FSR2FeatureDx12_212::Evaluate Color exist..
+[03:57:20.856275] [D] FSR2FeatureDx12_212::Evaluate MotionVectors exist..
+[03:57:20.856278] [D] FSR2FeatureDx12_212::Evaluate Output exist..
+[03:57:20.856280] [D] FSR2FeatureDx12_212::Evaluate Depth exist..
+[03:57:20.856283] [D] FSR2FeatureDx12_212::Evaluate AutoExposure enabled!
+[03:57:20.856286] [D] FSR2FeatureDx12_212::Evaluate Sharpness: 0
+[03:57:20.856290] [D] FSR2FeatureDx12_212::Evaluate FrameTimeDeltaInMsec: 213.1377
+[03:57:20.856292] [D] FSR2FeatureDx12_212::Evaluate Dispatch!!
+[03:57:20.856337] [D] NVSDK_NGX_D3D12_EvaluateFeature Upscaling done: true
+[03:57:20.974936] [I] NVSDK_NGX_D3D12_ReleaseFeature releasing feature with id 1000000
+[03:57:20.975544] [I] NVSDK_NGX_D3D12_DestroyParameters calling NVNGXProxy::D3D12_DestroyParameters
+[03:57:20.975557] [I] NVSDK_NGX_D3D12_DestroyParameters calling NVNGXProxy::D3D12_DestroyParameters result: 1
+[03:57:20.981044] [I] 
+[03:57:20.981053] [I] DLL_PROCESS_DETACH
+[03:57:20.981056] [I] Unloading OptiScaler

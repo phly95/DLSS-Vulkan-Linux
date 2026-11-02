@@ -230,6 +230,16 @@ int main(int argc, char** argv) {
         auto jitp = jget(pf, "jitter_prev");
         fp.jpx = float(jitp.size() > 0 ? jitp[0] : 0.0);
         fp.jpy = float(jitp.size() > 1 ? jitp[1] : 0.0);
+        // S8 quality matrix: the in-game MV unit pair (NGX MV.Scale.X/.Y, e.g. (1280, -720) =
+        // UV-normalized MVs).  The offline runner never read it before, so a corpus carrying
+        // non-identity mv_scale ran with (1,1) here while the oracle honored it - cells of that
+        // shape could not test the S6 decode.  Same guard as read_frame_params (nvngx.cpp:
+        // non-finite || 0 -> 1.0, DlssNr_Pipeline_Dx12.cpp:123-128).
+        auto mvs = jget(pf, "mv_scale");
+        fp.mv_scale_x = float(mvs.size() > 0 ? mvs[0] : 1.0);
+        fp.mv_scale_y = float(mvs.size() > 1 ? mvs[1] : 1.0);
+        if (!std::isfinite(fp.mv_scale_x) || fp.mv_scale_x == 0.0f) fp.mv_scale_x = 1.0f;
+        if (!std::isfinite(fp.mv_scale_y) || fp.mv_scale_y == 0.0f) fp.mv_scale_y = 1.0f;
         fp.frame_index = fi;      // monotonic sequence index (injection dump dir; pipeline.h)
 
         // Load frame textures. RR slots follow the same rule as the oracle (rrref.cpp):
